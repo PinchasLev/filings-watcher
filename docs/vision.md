@@ -42,11 +42,13 @@ A real-time service over SEC EDGAR that ingests Form 8-K filings as they publish
 ## Vision tiers — for narrative, not for v0 architecture
 
 **Tier 1 — natural extensions (slot into v0 shape, no redesign):**
+
 - Form coverage: 10-K, 10-Q, S-1, 13D/G, 13F, Form 4, DEF 14A
 - Amendments (`*/A` filings) — restatement signal in their own right
 - Watchlists with email / Slack / webhook alerts
 
 **Tier 2 — intelligence layer (where this becomes a real product):**
+
 - Cross-filing correlation (Form 4 + 8-K linkages, executive trajectories)
 - Insider trading + event correlation
 - Peer-group comparison on disclosed risk factors
@@ -56,6 +58,7 @@ A real-time service over SEC EDGAR that ingests Form 8-K filings as they publish
 - Filing-similarity clustering
 
 **Tier 3 — product surface (architectural rework, defer hard):**
+
 - Multi-tenancy with auth, isolation, per-user watchlists
 - Custom natural-language alert rules
 - Paid API with rate limiting + billing

@@ -23,7 +23,7 @@ Deploy target: AWS App Runner behind CloudFront + WAF, on a custom domain.
 
 ## Planned layout
 
-```
+```text
 filings-watcher/
 ├── docs/               vision, decisions, runbooks
 ├── orchestrator/       Python: LangGraph agents

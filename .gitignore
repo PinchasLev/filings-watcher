@@ -1,0 +1,59 @@
+# --- secrets / environment ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
+credentials.json
+*.tfstate
+*.tfstate.backup
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# --- Go ---
+*.exe
+*.test
+*.out
+bin/
+vendor/
+
+# --- Rust ---
+target/
+**/*.rs.bk
+
+# --- editors / OS ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- logs / local data ---
+*.log
+logs/
+.cache/
+data/local/
+
+# --- node (if any tooling sneaks in) ---
+node_modules/

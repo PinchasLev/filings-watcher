@@ -66,3 +66,9 @@ Each PR body answers three questions:
 3. **Notes** — caveats, follow-ups, anything a reviewer should know
 
 For solo work, the **Why** section is the most important. It captures decision context that the code itself can't.
+
+## Architecture decisions
+
+Substantial decisions (technology choice, design pattern, scope cut, positioning) are recorded as [ADRs](docs/decisions/) — short, numbered, dated markdown files capturing context, the decision, the alternatives that were rejected, and the consequences accepted.
+
+When a PR involves an ADR-worthy decision, include the new ADR in the same PR as the change it justifies. Use [docs/decisions/template.md](docs/decisions/template.md) as a starting point.

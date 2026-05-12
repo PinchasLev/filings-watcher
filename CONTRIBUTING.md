@@ -52,10 +52,24 @@ Examples:
 
 Every PR must pass before merge:
 
-- **`scan-secrets`** — `gitleaks` scan of working tree and history
-- **`lint-docs`** — `markdownlint-cli2` over all `.md` files
+- **`scan-secrets`** — `gitleaks` scan of working tree and history (CI uses `gitleaks` v8.18.4)
+- **`lint-docs`** — `markdownlint-cli2` over all `.md` files (CI uses `markdownlint-cli2` v0.22.1)
 
 Language-specific gates (Python lint/test, Go build/test, Rust check/test) will be added in follow-up PRs as the corresponding code lands.
+
+### Running the gates locally
+
+To match CI exactly (same versions, same rules), use the pinned commands:
+
+```bash
+# Markdown lint
+npx --yes markdownlint-cli2@0.22.1 "**/*.md"
+
+# Secrets scan (install gitleaks v8.18.4 first via brew, apt, or the GitHub release)
+gitleaks detect --no-banner --verbose
+```
+
+If a local run passes and CI fails (or vice versa), the version pin has drifted — fix the pin, don't silence the rule.
 
 ## PR descriptions
 

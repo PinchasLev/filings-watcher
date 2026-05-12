@@ -32,11 +32,19 @@ jobs:
   lint-docs:
     name: Lint markdown
     runs-on: ubuntu-latest
+    env:
+      MARKDOWNLINT_CLI2_VERSION: 0.22.1
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Markdownlint
-        uses: DavidAnson/markdownlint-cli2-action@v17
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          globs: '**/*.md'
+          node-version: '20'
+
+      - name: Install markdownlint-cli2 (pinned)
+        run: npm install -g "markdownlint-cli2@${MARKDOWNLINT_CLI2_VERSION}"
+
+      - name: Run markdownlint-cli2
+        run: markdownlint-cli2 "**/*.md"

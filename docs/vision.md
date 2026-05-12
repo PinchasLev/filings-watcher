@@ -9,7 +9,20 @@
 
 ## What it is
 
-A real-time service over SEC EDGAR that ingests Form 8-K filings as they publish, classifies each by material event type, generates a concise human-readable brief, and serves a live single-page dashboard. Built as a portfolio piece aimed at FinTech / hedge fund / bank engineering roles, and as the seed of a future B2B research product.
+A real-time service over SEC EDGAR that ingests Form 8-K filings as they publish, classifies each by material event type, generates a concise human-readable brief, and serves a live single-page dashboard. Built as a portfolio piece aimed at FinTech / hedge fund / bank engineering roles, and as the seed of a future B2B investment-grade signal product.
+
+## North star
+
+The end-state product is an **early-warning system for corporate deterioration** — identifying companies showing leading indicators of subsequent material events (going-concern doubts, auditor changes, restatements, executive exits, covenant breaches, delayed filings) before those events fully surface in the filings stream. The audience for the end-state: hedge funds, credit analysts, short-sellers, M&A diligence teams — buyers who pay for *seeing trouble three quarters early*.
+
+Done credibly, this requires methodology that naive approaches skip:
+
+- **Training data free of survivorship bias** — failed and delisted companies must be in the corpus, not just survivors
+- **Features that respect filing timestamps** — every feature available at prediction time only, no look-ahead leakage
+- **Evaluation calibrated to low base rates** — true distress is rare; naive accuracy is misleading and false-positive cost is asymmetric
+- **Output framing that respects the legal surface** — public labeling of specific live companies as "likely to fail" is defamation-actionable; product copy and UI accommodate this
+
+**V0 (the 8-K classifier) is foundation, not destination.** Every Tier 2 capability in this doc is selected for its contribution to the north star — not as a list of "cool things to add."
 
 ## Who it's for
 
@@ -47,15 +60,17 @@ A real-time service over SEC EDGAR that ingests Form 8-K filings as they publish
 - Amendments (`*/A` filings) — restatement signal in their own right
 - Watchlists with email / Slack / webhook alerts
 
-**Tier 2 — intelligence layer (where this becomes a real product):**
+**Tier 2 — Early-warning intelligence (the north-star thread):**
 
-- Cross-filing correlation (Form 4 + 8-K linkages, executive trajectories)
-- Insider trading + event correlation
-- Peer-group comparison on disclosed risk factors
-- Sector-level NLP trend mining over Risk Factors / MD&A (Tantivy MCP server earns its keep here)
-- Anomaly scoring vs. company's historical disclosure pattern
-- Calibrated materiality probability
-- Filing-similarity clustering
+This is the layer that turns a research tool into an investment-grade signal product. Each capability is selected for its contribution to detecting deterioration earlier than the prevailing market read.
+
+- **Calibrated materiality probability** — every downstream signal needs calibration; this is the foundation
+- **Cross-filing correlation** — executive trajectories via Form 4 + 8-K linkages, insider departures preceding disclosure shifts
+- **Insider trading + event correlation** — Form 4 patterns as leading indicators of subsequent 8-K and 10-Q content
+- **Anomaly scoring vs. a company's own historical disclosure pattern** — change in language is itself a signal
+- **Peer-group comparison on disclosed risk factors** — distress is most legible relative to peers
+- **Sector-level NLP trend mining over Risk Factors / MD&A** — base-rates for what "normal" looks like in a sector (Tantivy MCP server earns its keep here)
+- **Filing-similarity clustering** — discovery surface for analyst use; supporting capability for the others
 
 **Tier 3 — product surface (architectural rework, defer hard):**
 
@@ -69,7 +84,11 @@ A real-time service over SEC EDGAR that ingests Form 8-K filings as they publish
 
 ## Positioning
 
-This is a **research tool**, not an investment-signal product or a compliance system. The output is human-readable briefs; it makes no recommendations and explicitly does not constitute investment advice. Positioning matters for the product story (research tools have a different go-to-market than signals or recos) and for the regulatory surface (citing and summarizing public filings is straightforward; "signal" or "recommendation" services have different liability shape).
+V0 is positioned as a **research tool** — human-readable briefs over public filings, no recommendations, not investment advice. This is a deliberate intermediate state, not the end product (see [North star](#north-star) above).
+
+Phasing matters: scoring without a calibrated classifier is theatre. V0 establishes the classification foundation; signal generation joins the product when Tier 2 capabilities support it rigorously.
+
+Positioning also shapes regulatory surface — research tools over public filings have a clean legal posture; signal services labeling specific companies have a different one. We earn the latter framing through methodology, not marketing.
 
 ## Stack rationale — each language earns its seat
 

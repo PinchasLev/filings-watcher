@@ -34,6 +34,10 @@ filings-watcher/
 
 Not all directories exist yet — the repo grows as the project is built.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for branch naming, commit conventions, and the PR workflow.
+
 ## License
 
 [MIT](LICENSE)

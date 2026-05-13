@@ -67,7 +67,6 @@ Rejected. "Just spawn a goroutine / asyncio task" works at the prototype level a
 - **Easier:** Dashboard latency is bounded by Postgres + Go, both of which are under our operational control. Claude's bad day cannot bring the dashboard down.
 - **Easier:** Worker pool scales independently of read traffic. Backfill bursts and steady-state classification share the same pattern with different queue depths.
 - **Easier:** Each component has a single clear responsibility. The Go service is "serve reads"; the Python worker is "do LLM work and write results." Failure modes are independently diagnosable.
-- **Easier:** Interview narrative — "we separate latency profiles structurally; slow operations never block reads" is a senior answer.
 - **Harder:** Two deploy targets instead of one. Two sets of logs to correlate when debugging an end-to-end flow. Mitigated by tracing both ends to LangSmith and structured logs in the service.
 - **Harder:** A queue is operational surface. SQS is cheap and managed, but it's still a dependency to monitor (queue depth alarms, DLQ handling, retry policy).
 - **Harder:** The SSE-from-worker-to-browser path requires the service to bridge the worker's output stream back to the user's connection. Concretely: worker writes intermediate state to Postgres or publishes to a pub/sub channel; service watches that channel and pushes to the SSE connection. One extra hop; well-trodden pattern.

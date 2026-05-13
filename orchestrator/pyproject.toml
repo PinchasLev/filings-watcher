@@ -1,0 +1,41 @@
+[project]
+name = "filings-orchestrator"
+version = "0.1.0"
+description = "Agent orchestration for filings-watcher: ingest, classify, and brief SEC 8-K filings"
+readme = "README.md"
+authors = [
+    { name = "Pinchas Lev", email = "34498865+PinchasLev@users.noreply.github.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "langchain-anthropic>=1.4.3",
+    "langgraph>=1.2.0",
+    "langsmith>=0.8.3",
+    "python-dotenv>=1.2.2",
+]
+
+[project.scripts]
+smoke-test = "filings_orchestrator.smoke_test:main"
+
+[build-system]
+requires = ["uv_build>=0.11.14,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.1.0",
+    "ruff>=0.15.12",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "RUF"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_return_any = true
+warn_unused_configs = true

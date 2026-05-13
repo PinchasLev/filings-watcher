@@ -1,0 +1,11 @@
+// markdownlint-cli2 reads rule config from .markdownlint.json (sibling file)
+// and applies these ignore patterns. Keeps local runs aligned with CI by
+// excluding artifacts that may exist locally but not in the CI runner.
+{
+  "ignores": [
+    "**/.venv/**",
+    "**/node_modules/**",
+    "**/target/**",
+    "**/.git/**"
+  ]
+}

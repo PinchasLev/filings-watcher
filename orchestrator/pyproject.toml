@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "httpx>=0.28.1",
     "langchain-anthropic>=1.4.3",
     "langgraph>=1.2.0",
     "langsmith>=0.8.3",
@@ -16,6 +17,7 @@ dependencies = [
 
 [project.scripts]
 smoke-test = "filings_orchestrator.smoke_test:main"
+fetch-edgar = "filings_orchestrator.cli.fetch_edgar:main"
 
 [build-system]
 requires = ["uv_build>=0.11.14,<0.12.0"]
@@ -24,6 +26,9 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "mypy>=2.1.0",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.3.0",
+    "respx>=0.23.1",
     "ruff>=0.15.12",
 ]
 
@@ -39,3 +44,7 @@ python_version = "3.13"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -4,7 +4,7 @@ Python agent layer for filings-watcher. Owns LangGraph orchestration, LLM-based 
 
 ## Status
 
-Scaffold only. The smoke test proves the wiring (Anthropic API key → LangGraph node → LangSmith trace) works end-to-end. Real classification logic lands in follow-up PRs (see [docs/vision.md](../docs/vision.md)).
+Scaffold and ingestion only. The smoke test verifies the wiring (Anthropic API key → LangGraph node → LangSmith trace) end-to-end. Classification logic is in scope but not yet implemented; see [docs/vision.md](../docs/vision.md).
 
 ## Layout
 

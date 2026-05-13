@@ -14,7 +14,7 @@ EDGAR 8-K primary documents are HTML files with several practical complications:
 - **Heading variability**: Item headings appear as "Item 5.02 Departure of Directors...", "ITEM 5.02.", "Item 5.02 — Departure of Directors", or as separate paragraphs. There is no canonical form.
 - **Boilerplate**: cover pages, signature lines, and exhibit lists surround the substantive disclosures.
 
-The classifier in the following PR consumes this output, so the parsing produces a structure the LLM can reason over: clean text plus a best-effort split of that text into per-Item sections.
+The classifier consumes this output, so the parsing produces a structure the LLM can reason over: clean text plus a best-effort split of that text into per-Item sections.
 
 ## Decision
 
@@ -35,11 +35,11 @@ Rejected. Tools like `trafilatura` are tuned for journalism — they aggressivel
 
 ### html.parser (stdlib only, no third-party deps)
 
-Rejected. The stdlib parser handles well-formed HTML but copes poorly with malformed real-world filings. The marginal dependency cost of bs4+lxml is justified by the dramatic improvement in robustness against the kinds of HTML EDGAR actually serves.
+Rejected. The stdlib parser handles well-formed HTML but copes poorly with malformed real-world filings. The marginal dependency cost of bs4+lxml is justified by the improvement in robustness against the kinds of HTML EDGAR serves.
 
 ### Faster parsers (selectolax)
 
-Rejected for v0. selectolax is meaningfully faster than bs4+lxml on large documents, but our hot path is bounded by network fetch and downstream LLM latency, not parser speed. The familiarity and ecosystem of bs4 wins at this stage. The interface in `_extract_plain_text` is narrow enough that swapping parsers later is a small change.
+Rejected for v0. selectolax is meaningfully faster than bs4+lxml on large documents, but the hot path is bounded by network fetch and downstream LLM latency, not parser speed. The bs4 ecosystem is sufficient at this stage. The interface in `_extract_plain_text` is narrow enough that swapping parsers later is a small change.
 
 ### Structured Item extraction via XBRL tags
 
@@ -59,6 +59,6 @@ Rejected. The variability in real 8-K HTML means strict parsing would error on a
 
 ## Deferred
 
-- **Local caching of fetched documents.** Filings are immutable once filed; the URL content never changes. A simple on-disk cache keyed by accession number would eliminate repeat fetches during development and eval-set construction. Worth doing when the eval-set work begins.
+- **Local caching of fetched documents.** Filings are immutable once filed; the URL content never changes. A simple on-disk cache keyed by accession number would eliminate repeat fetches during development and eval-set construction. Needed when the eval-set work begins.
 - **Exhibit retrieval.** Many 8-Ks reference exhibits (e.g., the press release in Item 2.02 is attached as Exhibit 99.1) that live as separate documents in the same accession folder. V0 classification uses only the primary document; exhibits become relevant if the classifier later needs to read the press release verbatim.
 - **PDF and non-HTML primaries.** A small fraction of filings have a PDF primary document. V0 ignores these and the empty-text result will surface them; a follow-up can add PDF extraction (`pypdf` or similar) when needed.

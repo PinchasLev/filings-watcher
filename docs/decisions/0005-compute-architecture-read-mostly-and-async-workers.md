@@ -7,14 +7,14 @@
 
 The project mixes operations with very different latency profiles:
 
-- **Reads** (dashboard, search results, filing detail views) — should return in tens of milliseconds. The user is staring at a browser; standard half-second-or-bust rule applies.
-- **Classification of an 8-K** — a Claude call. 5–30 seconds typical, occasionally longer. The latency is not under our control: third-party API, variable model load, retries.
-- **Backfill** (e.g., classify five years of historical 8-Ks for a watchlist) — minutes to hours of bulk work.
-- **Eventual user-triggered queries** (e.g., "explain this classification," "find filings matching X") — same Claude-call profile as classification: seconds, variable.
+- **Reads** (dashboard, search results, filing detail views) — tens of milliseconds; interactive request-response.
+- **Classification of an 8-K** — a Claude call. 5–30 seconds typical, occasionally longer. Latency is determined by a third-party API and is not under our operational control.
+- **Backfill** (e.g., classify multiple years of historical 8-Ks for a watchlist) — minutes to hours of bulk work.
+- **Eventual user-triggered queries** (e.g., explanation of a classification, ad-hoc search across filings) — same latency profile as classification.
 
-A single request-response service that does classification inline on a user's HTTP request would tie up server resources for the duration of the Claude call. Under any concurrency, this breaks: a latency spike on Claude's side propagates as thread-pool exhaustion on ours, and the dashboard goes down with the worker. This is the failure mode the architecture must structurally rule out.
+Inline classification on a user-facing HTTP request ties up a server worker for the duration of the Claude call. Under concurrency, an upstream latency spike propagates as thread-pool exhaustion downstream, taking the dashboard down with the classification path. This failure mode must be ruled out structurally, not by tuning.
 
-The dashboard for v0 is read-mostly and could in principle ship without ever solving the slow-operation problem — but the design must not paint us into a corner once Tier 1 / Tier 2 features (interactive queries, "explain this," ad-hoc searches) arrive.
+V0 ships only the dashboard, which is read-mostly. The decision must not foreclose Tier 1 and Tier 2 features (interactive queries, explanations, ad-hoc searches) that depend on the same Claude-latency profile.
 
 ## Decision
 
@@ -32,7 +32,7 @@ The deploy platform (App Runner, Fargate, Lambda, EC2, EKS) is **explicitly defe
 
 ### Why never compute inline on a request
 
-The rule, generalized: **do not block synchronously on operations whose latency you do not control.** Internal database lookups in your own region are under your operational control (milliseconds, you'd notice and address a regression) — inline is correct. Third-party API calls (LLMs, payment processors, external scrapers) are not — a latency spike from 2 s to 30 s on their side becomes thread-pool exhaustion on yours. Async-by-default for these calls protects against the entire class of "their bad day becomes our outage" failures.
+The general principle: **do not block synchronously on operations whose latency is not under your operational control.** Internal database lookups in your own region are operationally controlled — observable latency, addressable regressions — and inline is correct. Third-party API calls (LLMs, payment processors, external scrapers) are not operationally controlled — a 2 s → 30 s spike upstream produces thread-pool exhaustion downstream. Async-by-default for these calls eliminates the class of cascading failures induced by upstream latency variance.
 
 ### Why streaming makes long operations feel fast
 
@@ -44,27 +44,27 @@ Streaming and queuing compose: for short interactive queries, stream tokens dire
 
 ### Synchronous classification inline on user requests
 
-Rejected. Convenient in v0 when traffic is just the developer hitting refresh; ruinous the first time anyone else hits the dashboard during a Claude latency spike. The fix later is the same work as doing it right now, plus the migration. Pay it once.
+Rejected. Adequate for single-user development load; fails under concurrent traffic the first time Claude latency spikes. The remediation later is the same architectural change as adopting it now, with the additional cost of a live migration. Adopt the target architecture once.
 
 ### All-in-one Python service (no separate read service)
 
-Rejected. Python is the right tool for the agent layer but a weaker fit for HTTP/SSE under any meaningful concurrency. More importantly, mixing fast-read and slow-write traffic on the same process is exactly the failure mode we're protecting against — a queue of Claude calls on the same event loop as the dashboard's SSE connections is asking for slow operations to starve fast ones.
+Rejected. Python is well-suited to the agent layer but a weaker fit for the HTTP/SSE service profile under concurrency. Mixing fast-read and slow-write traffic in a single process violates the latency-separation principle established above: a queue of Claude calls on the same event loop as dashboard SSE connections allows slow operations to block fast ones.
 
 ### Lambda for everything, no persistent service
 
-Rejected. Lambda's per-invocation model fits async workers well but is a poor fit for SSE (requires keep-alive, hits invocation timeouts, awkward to scale steady connections). Holding a persistent service for the dashboard alongside Lambda workers is possible but adds two deploy targets where one architectural pattern with two components is cleaner.
+Rejected. Lambda's per-invocation model fits async workers but is a poor fit for SSE (requires long-lived connections, hits invocation timeouts, scales steady connections awkwardly). Combining a persistent service for the dashboard with Lambda workers is possible but adds two deploy targets where the two-component pattern adopted here covers the same ground more uniformly.
 
 ### Inline classification, with a circuit breaker on Claude latency
 
-Rejected. Circuit breakers protect downstream services from cascading failure; they don't make slow operations fast. When the breaker opens, the dashboard returns errors instead of classifications — same outage shape, dressed up.
+Rejected. Circuit breakers prevent cascading failure; they do not reduce operation latency. When the breaker opens, the dashboard returns errors for classification paths — the same user-visible failure mode as the unprotected sync case, with a different trigger.
 
 ### Skip the queue, use background tasks within the same process
 
-Rejected. "Just spawn a goroutine / asyncio task" works at the prototype level and quietly fails at any operational seriousness: no retry semantics, no visibility, no durable record if the process crashes mid-task, no horizontal scaling. The queue is the seam that makes the worker pool scalable and the work durable.
+Rejected. In-process background tasks (goroutines, asyncio tasks) lack retry semantics, observability, durability across process restarts, and horizontal scaling. A managed queue is the seam that provides these properties.
 
 ## Consequences
 
-- **Easier:** Dashboard latency is bounded by Postgres + Go, both of which are under our operational control. Claude's bad day cannot bring the dashboard down.
+- **Easier:** Dashboard latency is bounded by Postgres + the Go service, both under direct operational control. Third-party latency variance cannot propagate to the dashboard path.
 - **Easier:** Worker pool scales independently of read traffic. Backfill bursts and steady-state classification share the same pattern with different queue depths.
 - **Easier:** Each component has a single clear responsibility. The Go service is "serve reads"; the Python worker is "do LLM work and write results." Failure modes are independently diagnosable.
 - **Harder:** Two deploy targets instead of one. Two sets of logs to correlate when debugging an end-to-end flow. Mitigated by tracing both ends to LangSmith and structured logs in the service.

@@ -13,9 +13,13 @@ orchestrator/
 ├── pyproject.toml          uv-managed project; Python 3.13 pinned
 ├── uv.lock                 dependency lockfile
 ├── .env.example            copy to .env (gitignored) and fill in real values
-└── src/filings_orchestrator/
-    ├── __init__.py
-    └── smoke_test.py       single-node LangGraph + LangSmith trace
+├── src/filings_orchestrator/
+│   ├── __init__.py
+│   ├── config.py           secrets/config seam
+│   ├── smoke_test.py       single-node LangGraph + LangSmith trace
+│   ├── edgar/              EDGAR client and filing data structures
+│   └── cli/                command-line entry points
+└── tests/                  pytest suite with respx-mocked EDGAR responses
 ```
 
 ## Setup
@@ -31,14 +35,16 @@ Required env vars (see [.env.example](.env.example)):
 
 - `ANTHROPIC_API_KEY` — from <https://console.anthropic.com/settings/keys>
 - `LANGSMITH_API_KEY` — from <https://smith.langchain.com/settings>
+- `EDGAR_USER_AGENT` — descriptive string ending in your contact email (SEC requires this on every request)
 
-## Run the smoke test
+## Commands
 
 ```bash
-uv run smoke-test
+uv run smoke-test                  # verify LangGraph + LangSmith + Anthropic wiring
+uv run fetch-edgar AAPL            # fetch recent 8-K filings for a ticker
+uv run fetch-edgar AAPL --limit 5  # limit to 5 most recent
+uv run pytest                       # run the test suite
 ```
-
-Expected output: a short answer from Claude about Form 8-K, plus a pointer to <https://smith.langchain.com/> where the trace will be visible in your `filings-watcher` project.
 
 ## Lint and type-check (matches CI)
 

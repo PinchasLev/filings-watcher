@@ -8,10 +8,12 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "beautifulsoup4>=4.14.3",
     "httpx>=0.28.1",
     "langchain-anthropic>=1.4.3",
     "langgraph>=1.2.0",
     "langsmith>=0.8.3",
+    "lxml>=6.1.0",
     "python-dotenv>=1.2.2",
 ]
 

@@ -40,10 +40,11 @@ Required env vars (see [.env.example](.env.example)):
 ## Commands
 
 ```bash
-uv run smoke-test                  # verify LangGraph + LangSmith + Anthropic wiring
-uv run fetch-edgar AAPL            # fetch recent 8-K filings for a ticker
-uv run fetch-edgar AAPL --limit 5  # limit to 5 most recent
-uv run pytest                       # run the test suite
+uv run smoke-test                       # verify LangGraph + LangSmith + Anthropic wiring
+uv run fetch-edgar AAPL                 # list recent 8-K filings for a ticker
+uv run fetch-edgar AAPL --limit 5       # limit to 5 most recent
+uv run fetch-edgar AAPL --detail 0      # also fetch the body of the first filing
+uv run pytest                            # run the test suite
 ```
 
 ## Lint and type-check (matches CI)

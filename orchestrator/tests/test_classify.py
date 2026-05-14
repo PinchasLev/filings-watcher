@@ -14,9 +14,12 @@ from unittest.mock import patch
 import pytest
 
 from filings_orchestrator.classify import (
+    EVENT_TO_DOMAIN,
     Classification,
+    EventDomain,
     EventType,
     classify_filing,
+    domain_for,
 )
 from filings_orchestrator.classify.classifier import _build_user_message
 from filings_orchestrator.classify.taxonomy import (
@@ -79,6 +82,31 @@ def test_taxonomy_descriptions_cover_every_event_type() -> None:
 def test_non_substantive_items_includes_exhibits_only() -> None:
     """Item 9.01 is pure scaffolding; skipping it keeps the classifier focused."""
     assert "9.01" in NON_SUBSTANTIVE_ITEMS
+
+
+def test_every_event_type_has_a_domain_mapping() -> None:
+    """The post-hoc domain mapping must cover every EventType. Drift here would
+    silently send some classifications to a KeyError at runtime."""
+    for event in EventType:
+        assert event in EVENT_TO_DOMAIN, f"missing domain mapping for {event}"
+
+
+def test_every_domain_has_at_least_one_event_type() -> None:
+    """Every declared EventDomain should be reachable from at least one
+    EventType. An orphan domain is a sign of dead taxonomy structure."""
+    domains_used = set(EVENT_TO_DOMAIN.values())
+    for domain in EventDomain:
+        assert domain in domains_used, f"unused EventDomain: {domain}"
+
+
+def test_domain_for_returns_expected_domain() -> None:
+    """Spot-check a few mappings to lock in the intended grouping."""
+    assert domain_for(EventType.EXEC_DEPARTURE) == EventDomain.GOVERNANCE
+    assert domain_for(EventType.EARNINGS_RELEASE) == EventDomain.FINANCIAL
+    assert domain_for(EventType.MA_ACTIVITY) == EventDomain.OPERATIONAL
+    assert domain_for(EventType.MATERIAL_LITIGATION) == EventDomain.LEGAL
+    assert domain_for(EventType.BANKRUPTCY_FILING) == EventDomain.TERMINAL
+    assert domain_for(EventType.OTHER_MATERIAL) == EventDomain.CATCHALL
 
 
 def test_build_user_message_includes_metadata_and_section_text() -> None:

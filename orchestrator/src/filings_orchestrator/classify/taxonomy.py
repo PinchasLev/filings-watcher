@@ -140,3 +140,62 @@ NON_SUBSTANTIVE_ITEMS: frozenset[str] = frozenset(
         "9.01",  # Financial Statements and Exhibits — references attached exhibits
     }
 )
+
+
+class EventDomain(StrEnum):
+    """High-level grouping of event types.
+
+    Each `EventType` maps to exactly one `EventDomain` via `EVENT_TO_DOMAIN`.
+    Domains group fine-grained event types into coarser categories useful for
+    dashboard organization, watchlist alerting at the group level, and
+    cross-filing pattern detection where the specific event type is less
+    important than the kind of event.
+
+    This is a post-hoc mapping derived from the leaf classification, not a
+    hierarchical classifier — the model still picks one `EventType` per
+    section, and the domain follows mechanically. See ADR 0010 for the
+    trade-off against a full hierarchical classifier.
+    """
+
+    GOVERNANCE = "governance"
+    FINANCIAL = "financial"
+    OPERATIONAL = "operational"
+    LEGAL = "legal"
+    TERMINAL = "terminal"
+    CATCHALL = "catchall"
+
+
+EVENT_TO_DOMAIN: dict[EventType, EventDomain] = {
+    # Governance: who runs the company, who audits it, what shareholders vote on.
+    EventType.EXEC_DEPARTURE: EventDomain.GOVERNANCE,
+    EventType.EXEC_APPOINTMENT: EventDomain.GOVERNANCE,
+    EventType.EXEC_COMPENSATION: EventDomain.GOVERNANCE,
+    EventType.AUDITOR_CHANGE: EventDomain.GOVERNANCE,
+    EventType.SHAREHOLDER_VOTE_RESULTS: EventDomain.GOVERNANCE,
+    # Financial: the numbers, the obligations, the equity.
+    EventType.EARNINGS_RELEASE: EventDomain.FINANCIAL,
+    EventType.RESTATEMENT: EventDomain.FINANCIAL,
+    EventType.MATERIAL_IMPAIRMENT: EventDomain.FINANCIAL,
+    EventType.COVENANT_BREACH: EventDomain.FINANCIAL,
+    EventType.DILUTIVE_ISSUANCE: EventDomain.FINANCIAL,
+    # Operational: structural business changes.
+    EventType.MA_ACTIVITY: EventDomain.OPERATIONAL,
+    # Legal: external pressure or risk from courts, regulators, or attackers.
+    EventType.MATERIAL_LITIGATION: EventDomain.LEGAL,
+    EventType.CYBERSECURITY_INCIDENT: EventDomain.LEGAL,
+    # Terminal: events that materially threaten the registrant's continuing existence.
+    EventType.GOING_CONCERN: EventDomain.TERMINAL,
+    EventType.DELISTING_RISK: EventDomain.TERMINAL,
+    EventType.BANKRUPTCY_FILING: EventDomain.TERMINAL,
+    # Catch-all.
+    EventType.OTHER_MATERIAL: EventDomain.CATCHALL,
+}
+
+
+def domain_for(event_type: EventType) -> EventDomain:
+    """Return the EventDomain for a given EventType.
+
+    Raises KeyError if `EVENT_TO_DOMAIN` and `EventType` ever drift — guarded
+    against by the taxonomy-coverage test.
+    """
+    return EVENT_TO_DOMAIN[event_type]

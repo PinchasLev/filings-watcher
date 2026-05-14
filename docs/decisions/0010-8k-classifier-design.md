@@ -21,7 +21,7 @@ These choices set the shape every downstream capability (entity extraction, brie
 
 **Granularity: per-Item.** Each substantive Item section in the parsed document is classified independently. Pure-supporting Items (initially only Item 9.01 Financial Statements and Exhibits) are skipped. When the document parser produced no Item sections, the classifier falls back to one classification of the whole filing body.
 
-**Taxonomy.** Eleven categories, grounded in the SEC's Item structure where the mapping is clean, expanded only where one Item covers materially distinct events (notably Item 5.02 — `exec_departure` and `exec_appointment` are separate signals). Each label carries a description used in the system prompt so the model has consistent definitions to classify against.
+**Taxonomy.** Sixteen categories, grounded in the SEC's Item structure where the mapping is clean, expanded where one Item covers materially distinct events (notably Item 5.02 — `exec_departure` and `exec_appointment` are separate signals) and where high-signal events have no dedicated Item (notably `material_litigation`, typically disclosed under Item 8.01). Each label carries a description used in the system prompt so the model has consistent definitions to classify against. See "Taxonomy composition and the eval-set path" below for the rationale behind the specific categories chosen.
 
 **Per-section text cap.** Input text is truncated at 12,000 characters per section before being sent. Bounds token cost on outlier filings without losing the substantive disclosure observed in normal 8-Ks.
 
@@ -61,8 +61,20 @@ Rejected for v0. The project's model layer is Anthropic-only at this stage. Addi
 - **Harder:** Tool-use specifies a schema for what the model returns, not the *quality* of what's inside that schema. Confidence calibration and reasoning quality are model-bound, not framework-bound, and become the subject of the eval set work.
 - **Accepted commitment:** The classification taxonomy is part of the public API of the orchestrator. Adding a new event type is a coordinated change across taxonomy, system prompt, eval set, and any downstream consumer that branches on event type.
 
+## Taxonomy composition and the eval-set path
+
+The sixteen categories are not derived from an authoritative source — they are an editorial selection across two considerations:
+
+1. **SEC Item alignment where clean.** Items 2.02, 5.02, 4.02, 4.01, 2.06, 5.07, 3.01, 1.03, 2.04, 1.05, 3.02 each map cleanly to a single category. Item 5.02 is split into `exec_departure` and `exec_appointment` because the Item covers both and they are materially different signals. Items 1.01, 1.02, 2.01, 5.01 collapse into `ma_activity` because the distinctions between them rarely matter for our use case.
+2. **High-signal events without a dedicated Item.** `material_litigation` and `going_concern` have no single Item code — they appear in catchalls (most commonly Item 8.01) but the language is unmistakable. Surfacing them as named categories is the classifier's primary value over Item-number-only routing.
+
+The taxonomy deliberately leaves some events as `other_material` rather than guessing at the granularity that will be useful later. Examples currently routed there: material customer loss, ordinary debt issuance, reverse stock splits, material related-party transactions, change-of-control provisions in compensation agreements. These may become their own categories once eval-set data shows which patterns cluster meaningfully under `other_material`.
+
+The path forward is data-driven: build an eval set covering a diverse sample of filers (large-cap, mid-cap, small-cap, distressed) and measure how `other_material` distributes. Patterns that recur and carry distinct downstream consequences earn their own category in a follow-up; categories that prove low-volume or hard to distinguish from neighbors get rolled back.
+
 ## Deferred
 
+- **Taxonomy distribution monitoring.** Once persistence lands, classification results across the running corpus need to be inspected for distribution shape. Two specific watch-fors: (1) `other_material` share above ~15-20% suggests the taxonomy has gaps that should be filled with new categories; (2) any single category absorbing a disproportionate share of filings suggests the classifier is reaching for an easy label rather than the precise one, or that the category's description in the prompt is too broad. The monitoring is straightforward — a periodic SQL query over the classifications table — and the threshold-driven re-evaluation of the taxonomy is the closing loop on the eval-set path described above.
 - **Parallel per-Item classification.** Sequential calls are simple and sufficient at v0 traffic. When the worker pool processes many filings or one filing has many Items, parallel edges through LangGraph or asyncio gather are the upgrade path.
 - **Confidence calibration.** The model emits a 0..1 confidence; whether that score is *calibrated* (e.g., classifications at 0.9 confidence are correct 90% of the time) is a measurable property of the eval set, not the framework. Captured in the eval-set work.
 - **Exhibit retrieval.** Some Items reference disclosures in attached exhibits (e.g., Item 2.02 cites a press release as Exhibit 99.1). V0 classifies on the primary document only; richer classification of the actual press release prose is a follow-up that requires the exhibit-fetch capability deferred from ADR 0007.

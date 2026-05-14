@@ -37,6 +37,11 @@ class EventType(StrEnum):
     MATERIAL_IMPAIRMENT = "material_impairment"
     SHAREHOLDER_VOTE_RESULTS = "shareholder_vote_results"
     DELISTING_RISK = "delisting_risk"
+    BANKRUPTCY_FILING = "bankruptcy_filing"
+    COVENANT_BREACH = "covenant_breach"
+    CYBERSECURITY_INCIDENT = "cybersecurity_incident"
+    DILUTIVE_ISSUANCE = "dilutive_issuance"
+    MATERIAL_LITIGATION = "material_litigation"
     OTHER_MATERIAL = "other_material"
 
 
@@ -84,6 +89,33 @@ EVENT_TYPE_DESCRIPTIONS: dict[EventType, str] = {
     EventType.DELISTING_RISK: (
         "Notice of delisting, failure to satisfy a continued listing rule, "
         "or transfer of listing (Item 3.01)."
+    ),
+    EventType.BANKRUPTCY_FILING: (
+        "Voluntary or involuntary bankruptcy or receivership filing — "
+        "Chapter 7, Chapter 11, or analogous proceedings (Item 1.03). "
+        "Terminal signal."
+    ),
+    EventType.COVENANT_BREACH: (
+        "Triggering event that accelerates or increases a direct financial "
+        "obligation — debt covenant violation, cross-default, or technical "
+        "default (Item 2.04). Often the earliest visible indicator of "
+        "financial stress."
+    ),
+    EventType.CYBERSECURITY_INCIDENT: (
+        "Material cybersecurity incident — breach, ransomware, data "
+        "exfiltration, or other compromise of information systems "
+        "(Item 1.05, required since 2023)."
+    ),
+    EventType.DILUTIVE_ISSUANCE: (
+        "Unregistered sale of equity securities — private placements, "
+        "PIPEs, convertible notes, ATM offerings (Item 3.02). Strong "
+        "signal at small- and mid-cap issuers raising cash."
+    ),
+    EventType.MATERIAL_LITIGATION: (
+        "Material litigation, regulatory investigation, or settlement — "
+        "lawsuits filed against the registrant, government investigations "
+        "or charges, large settlements or judgments. Typically disclosed "
+        "under Item 8.01 (Other Events); no dedicated 8-K Item."
     ),
     EventType.OTHER_MATERIAL: (
         "A material event that does not fit any of the more specific "

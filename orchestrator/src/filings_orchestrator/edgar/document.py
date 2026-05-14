@@ -68,12 +68,13 @@ def fetch_filing_document(filing: Filing, client: EdgarClient) -> FilingDocument
 
 
 def _extract_plain_text(html: str) -> str:
-    """Convert filing HTML to whitespace-normalized plain text.
+    """Convert filing markup to whitespace-normalized plain text.
 
-    Strips script, style, and HTML comments; preserves block-level boundaries
-    as newlines; collapses runs of whitespace.
+    Strips script, style, and comment nodes; preserves block-level
+    boundaries as newlines; collapses runs of whitespace. Selects the
+    parser based on the document's declared shape (see `_choose_parser`).
     """
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, _choose_parser(html))
 
     for element in soup(["script", "style", "noscript"]):
         element.decompose()
@@ -95,6 +96,21 @@ def _extract_plain_text(html: str) -> str:
             blank_streak = 0
             normalized.append(line)
     return "\n".join(normalized).strip()
+
+
+def _choose_parser(raw: str) -> str:
+    """Pick the BeautifulSoup parser appropriate for the document shape.
+
+    EDGAR filings are served as a mix of plain HTML and XHTML (the XML-
+    conformant variant of HTML, identified by a leading `<?xml ... ?>`
+    declaration). Using `lxml-xml` on XHTML avoids a misparse warning and
+    preserves namespaced elements; using `lxml` on plain HTML is more
+    tolerant of the malformed markup common in older filings.
+    """
+    leading = raw.lstrip()[:256].lower()
+    if leading.startswith("<?xml"):
+        return "lxml-xml"
+    return "lxml"
 
 
 def _split_into_item_sections(text: str) -> list[ItemSection]:

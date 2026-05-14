@@ -13,6 +13,7 @@ import respx
 
 from filings_orchestrator.edgar import EdgarClient, fetch_filing_document
 from filings_orchestrator.edgar.document import (
+    _choose_parser,
     _extract_plain_text,
     _split_into_item_sections,
 )
@@ -85,6 +86,55 @@ def test_split_into_item_sections_captures_body_between_headings() -> None:
 def test_split_into_item_sections_returns_empty_when_no_headings() -> None:
     text = "Just some prose without any item headings at all."
     assert _split_into_item_sections(text) == []
+
+
+def test_choose_parser_detects_xml_declaration() -> None:
+    xhtml = '<?xml version="1.0"?>\n<html><body>x</body></html>'
+    html = "<!DOCTYPE html>\n<html><body>x</body></html>"
+    assert _choose_parser(xhtml) == "lxml-xml"
+    assert _choose_parser(html) == "lxml"
+
+
+def test_choose_parser_tolerates_leading_whitespace() -> None:
+    xhtml = '   \n   <?xml version="1.0"?>\n<html><body>x</body></html>'
+    assert _choose_parser(xhtml) == "lxml-xml"
+
+
+def test_choose_parser_is_case_insensitive() -> None:
+    # SGML/XML declarations are case-insensitive in practice.
+    weird = '<?XML version="1.0"?>\n<html/>'
+    assert _choose_parser(weird) == "lxml-xml"
+
+
+def test_xhtml_filing_parses_without_warning_and_extracts_text() -> None:
+    """An XHTML filing should select the XML parser and emit no warning."""
+    import warnings
+
+    from bs4 import XMLParsedAsHTMLWarning
+
+    xhtml = (FIXTURES / "sample_8k_xhtml.html").read_text()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        text = _extract_plain_text(xhtml)
+
+    xml_warnings = [w for w in caught if issubclass(w.category, XMLParsedAsHTMLWarning)]
+    assert not xml_warnings, f"unexpected XML warnings: {[str(w.message) for w in xml_warnings]}"
+
+    # Substance is preserved through the XML parser.
+    assert "Item 5.02" in text
+    assert "Jane Doe" in text
+    assert "Interim Chief Financial Officer" in text
+
+
+def test_xhtml_section_splitting_still_works() -> None:
+    """Item splitting works on text extracted via the XML parser."""
+    xhtml = (FIXTURES / "sample_8k_xhtml.html").read_text()
+    text = _extract_plain_text(xhtml)
+    sections = _split_into_item_sections(text)
+    assert [s.number for s in sections] == ["5.02", "9.01"]
+    assert sections[0].title is not None
+    assert "Departure of Directors" in sections[0].title
 
 
 def test_fetch_filing_document_end_to_end() -> None:

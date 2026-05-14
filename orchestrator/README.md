@@ -61,3 +61,9 @@ uv run ruff check .
 uv run ruff format --check .
 uv run mypy src
 ```
+
+Or from the repo root, run every check across both languages plus markdown in one command:
+
+```bash
+just check
+```

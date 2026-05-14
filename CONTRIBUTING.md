@@ -54,22 +54,23 @@ Every PR must pass before merge:
 
 - **`scan-secrets`** — `gitleaks` scan of working tree and history (CI uses `gitleaks` v8.18.4)
 - **`lint-docs`** — `markdownlint-cli2` over all `.md` files (CI uses `markdownlint-cli2` v0.22.1)
-
-Language-specific gates (Python lint/test, Go build/test, Rust check/test) will be added in follow-up PRs as the corresponding code lands.
+- **`lint-python`** — `ruff check`, `ruff format --check`, `mypy --strict`, `pytest` (CI uses `uv` v0.11.14)
+- **`lint-go`** — `go mod tidy` check, `go build`, `gofmt -l`, `go vet`, `go test -race` (Go version pinned via `service/go.mod`)
 
 ### Running the gates locally
 
-To match CI exactly (same versions, same rules), use the pinned commands:
+The fastest path is `just check`, which runs every lint + every test across both languages plus markdown:
 
 ```bash
-# Markdown lint
-npx --yes markdownlint-cli2@0.22.1 "**/*.md"
-
-# Secrets scan (install gitleaks v8.18.4 first via brew, apt, or the GitHub release)
-gitleaks detect --no-banner --verbose
+just check       # full gauntlet — what should be green before pushing
+just test        # just the tests
+just lint        # just the lints
+just --list      # see every recipe
 ```
 
-If a local run passes and CI fails (or vice versa), the version pin has drifted — fix the pin, don't silence the rule.
+Install `just` via `cargo install just`, your package manager, or the install script at <https://just.systems>.
+
+The recipes call the same pinned versions CI uses. If a local run passes and CI fails (or vice versa), the version pin has drifted — fix the pin, don't silence the rule.
 
 ## PR descriptions
 

@@ -29,15 +29,15 @@ These choices set the shape every downstream capability (entity extraction, brie
 
 ### Direct Anthropic SDK call, no orchestration framework
 
-Rejected. For a single classification call today, plain SDK use is simpler. Future capabilities (entity extraction, brief generation, cross-filing correlation) will need state across multiple model calls and branching logic. LangGraph commits to the orchestration story up front; the abstraction overhead at one node is small, and the migration cost of adding LangGraph later, after callers depend on the simpler shape, would be larger.
+Rejected. For a single classification call today, plain SDK use is simpler. Future capabilities (entity extraction, brief generation, cross-filing correlation) will need state across multiple model calls and branching logic. Committing to the LangGraph orchestration framework up front carries a small abstraction overhead at one node; introducing it later, after callers depend on the simpler shape, would carry a larger migration cost.
 
 ### Prompt-engineered JSON output
 
-Rejected. Claude can be prompted to emit JSON, and parsing that with `json.loads` and `Classification.model_validate` would work most of the time. Failure modes include trailing prose around the JSON, model-version drift in formatting habits, and silent acceptance of fields outside the schema. Tool-use enforces the schema at the API layer — the model literally cannot return a non-conforming structure.
+Rejected. Claude can be prompted to emit JSON, and parsing that with `json.loads` and `Classification.model_validate` would work in most cases. Failure modes include trailing prose around the JSON, model-version drift in formatting habits, and silent acceptance of fields outside the schema. Tool-use enforces the schema at the API layer — the model cannot return a non-conforming structure.
 
 ### Response prefill / partial assistant message
 
-Rejected. Prefilling `{"event_type":` and parsing what Claude completes is reliable for simple shapes, but introduces an ad-hoc parser the team maintains, and degrades on schemas with optional fields or nested structures. Tool-use is the supported, documented path.
+Rejected. Prefilling `{"event_type":` and parsing what Claude completes is reliable for simple shapes, but requires an ad-hoc parser maintained alongside the schema, and degrades on schemas with optional fields or nested structures. Tool-use is the supported, documented path.
 
 ### Per-filing classification (one classification per 8-K)
 
@@ -57,7 +57,7 @@ Rejected for v0. The project's model layer is Anthropic-only at this stage. Addi
 - **Easier:** LangGraph state passes cleanly to future nodes. Entity extraction (Tier 1) attaches as a second node consuming the classification output without restructuring the orchestrator.
 - **Easier:** Per-Item granularity preserves multi-event signal in the filings stream — a Tesla 5.02+5.07 filing produces two classifications, each independently consumable by alerts or the dashboard.
 - **Harder:** A multi-Item filing makes N model calls instead of one. Sequential at v0; parallel-edge LangGraph or asyncio gather can replace the loop when classifier latency dominates wall-clock time.
-- **Harder:** The taxonomy is finite and explicit. Events outside the eleven categories collapse to `other_material`; expanding the taxonomy is a deliberate code change rather than a free-form output.
+- **Harder:** The taxonomy is finite and explicit. Events outside the sixteen categories collapse to `other_material`; expanding the taxonomy is a deliberate code change rather than a free-form output.
 - **Harder:** Tool-use specifies a schema for what the model returns, not the *quality* of what's inside that schema. Confidence calibration and reasoning quality are model-bound, not framework-bound, and become the subject of the eval set work.
 - **Accepted commitment:** The classification taxonomy is part of the public API of the orchestrator. Adding a new event type is a coordinated change across taxonomy, system prompt, eval set, and any downstream consumer that branches on event type.
 
@@ -74,7 +74,7 @@ The path forward is data-driven: build an eval set covering a diverse sample of 
 
 ## Deferred
 
-- **Taxonomy distribution monitoring.** Once persistence lands, classification results across the running corpus need to be inspected for distribution shape. Two specific watch-fors: (1) `other_material` share above ~15-20% suggests the taxonomy has gaps that should be filled with new categories; (2) any single category absorbing a disproportionate share of filings suggests the classifier is reaching for an easy label rather than the precise one, or that the category's description in the prompt is too broad. The monitoring is straightforward — a periodic SQL query over the classifications table — and the threshold-driven re-evaluation of the taxonomy is the closing loop on the eval-set path described above.
+- **Taxonomy distribution monitoring.** Once persistence lands, classification results across the running corpus must be inspected for distribution shape. Two patterns warrant monitoring: (1) `other_material` share above ~15-20% indicates taxonomy gaps that should be filled with new categories; (2) any single category absorbing a disproportionate share of filings indicates either the classifier selecting the easiest-fitting label rather than the most precise, or a category description in the prompt that is too broad. The monitoring is straightforward — a periodic SQL query over the classifications table — and the threshold-driven re-evaluation of the taxonomy is the closing loop on the eval-set path described above.
 - **Parallel per-Item classification.** Sequential calls are simple and sufficient at v0 traffic. When the worker pool processes many filings or one filing has many Items, parallel edges through LangGraph or asyncio gather are the upgrade path.
 - **Confidence calibration.** The model emits a 0..1 confidence; whether that score is *calibrated* (e.g., classifications at 0.9 confidence are correct 90% of the time) is a measurable property of the eval set, not the framework. Captured in the eval-set work.
 - **Exhibit retrieval.** Some Items reference disclosures in attached exhibits (e.g., Item 2.02 cites a press release as Exhibit 99.1). V0 classifies on the primary document only; richer classification of the actual press release prose is a follow-up that requires the exhibit-fetch capability deferred from ADR 0007.

@@ -134,7 +134,7 @@ def _call_classifier(model: Any, system: str, user: str) -> Classification:
 def _classify_node(state: _State) -> _State:
     """One LangGraph node that classifies every substantive Item.
 
-    A single node keeps the graph trivially debuggable in LangSmith.
+    Keeping the graph single-node keeps the LangSmith trace easy to read.
     Concurrent per-item classification can replace this with parallel
     edges later if classifier latency dominates wall-clock time.
     """

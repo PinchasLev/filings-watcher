@@ -15,12 +15,14 @@ dependencies = [
     "langsmith>=0.8.3",
     "lxml>=6.1.0",
     "python-dotenv>=1.2.2",
+    "sqlalchemy>=2.0.49",
 ]
 
 [project.scripts]
 smoke-test = "filings_orchestrator.smoke_test:main"
 fetch-edgar = "filings_orchestrator.cli.fetch_edgar:main"
 classify-filing = "filings_orchestrator.cli.classify_filing:main"
+migrate-db = "filings_orchestrator.cli.migrate_db:main"
 
 [build-system]
 requires = ["uv_build>=0.11.14,<0.12.0"]

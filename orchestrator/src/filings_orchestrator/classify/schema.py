@@ -75,3 +75,5 @@ class FilingClassification(BaseModel):
     whole_filing: Classification | None = None
     classified_at: datetime
     model: str
+    classifier_version: str
+    taxonomy_version: str

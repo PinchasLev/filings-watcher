@@ -4,7 +4,7 @@ Python agent layer for filings-watcher. Owns LangGraph orchestration, LLM-based 
 
 ## Status
 
-Ingestion and classification working end-to-end. The classifier reads a filing's parsed Item sections and produces typed `Classification` results with reasoning traces visible in LangSmith. Persistence and the Go service are the next layers; see [docs/vision.md](../docs/vision.md).
+Ingestion, classification, and persistence working end-to-end. The classifier reads a filing's parsed Item sections, produces typed `Classification` results with reasoning traces visible in LangSmith, and persists immutable version-tagged rows to a SQLite database. The Go service is the next layer; see [docs/vision.md](../docs/vision.md).
 
 ## Layout
 
@@ -13,12 +13,14 @@ orchestrator/
 ├── pyproject.toml          uv-managed project; Python 3.13 pinned
 ├── uv.lock                 dependency lockfile
 ├── .env.example            copy to .env (gitignored) and fill in real values
+├── db/migrations/          numbered portable SQL files for SQLite + Postgres
 ├── src/filings_orchestrator/
 │   ├── __init__.py
 │   ├── config.py           secrets/config seam
 │   ├── smoke_test.py       single-node LangGraph + LangSmith trace
 │   ├── edgar/              EDGAR client, document fetch, and item parsing
 │   ├── classify/           LangGraph + Claude tool-use classifier
+│   ├── persistence/        SQLAlchemy Core repository over portable SQL
 │   └── cli/                command-line entry points
 └── tests/                  pytest suite (respx-mocked EDGAR, mock-patched Claude)
 ```
@@ -45,7 +47,9 @@ uv run smoke-test                       # verify LangGraph + LangSmith + Anthrop
 uv run fetch-edgar AAPL                 # list recent 8-K filings for a ticker
 uv run fetch-edgar AAPL --limit 5       # limit to 5 most recent
 uv run fetch-edgar AAPL --detail 0      # also fetch the body of the first filing
+uv run migrate-db                       # apply pending DB migrations
 uv run classify-filing AAPL 0           # fetch + classify each Item via Claude
+uv run classify-filing AAPL 0 --save    # also persist to FILINGS_DB_PATH
 uv run classify-filing AAPL 0 --json    # machine-readable JSON output
 uv run pytest                            # run the test suite
 ```

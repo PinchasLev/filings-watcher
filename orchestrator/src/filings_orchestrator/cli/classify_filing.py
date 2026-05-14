@@ -3,6 +3,7 @@
 Usage:
     uv run classify-filing AAPL 0
     uv run classify-filing TSLA 4 --json
+    uv run classify-filing AAPL 0 --save     # also persist to the filings DB
 """
 
 from __future__ import annotations
@@ -14,6 +15,11 @@ import sys
 from filings_orchestrator.classify import classify_filing
 from filings_orchestrator.config import MissingConfigError, load_config
 from filings_orchestrator.edgar import EdgarClient, fetch_filing_document, recent_8k_filings
+from filings_orchestrator.persistence import open_engine
+from filings_orchestrator.persistence.repository import (
+    insert_classifications,
+    upsert_filing_document,
+)
 
 
 def main() -> None:
@@ -37,6 +43,11 @@ def main() -> None:
         "--json",
         action="store_true",
         help="Emit machine-readable JSON instead of the human summary",
+    )
+    parser.add_argument(
+        "--save",
+        action="store_true",
+        help="Persist the filing and classifications to the configured DB",
     )
     args = parser.parse_args()
 
@@ -62,6 +73,13 @@ def main() -> None:
         document = fetch_filing_document(filings[args.index], client)
 
     result = classify_filing(document)
+
+    if args.save:
+        engine = open_engine(config.filings_db_path)
+        upsert_filing_document(engine, document)
+        inserted = insert_classifications(engine, result)
+        print(f"Saved to {config.filings_db_path}: {inserted} new classification row(s).")
+        print()
 
     if args.json:
         print(result.model_dump_json(indent=2))

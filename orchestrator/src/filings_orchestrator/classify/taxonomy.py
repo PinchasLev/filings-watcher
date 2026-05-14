@@ -19,6 +19,12 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+# Bump this every time the EventType enum, EVENT_TYPE_DESCRIPTIONS, or
+# EVENT_TO_DOMAIN mapping changes. Persisted classifications carry this
+# value so historical rows remain interpretable under their original
+# taxonomy. See ADR 0011.
+TAXONOMY_VERSION = "v1"
+
 
 class EventType(StrEnum):
     """Material event types classified from 8-K Item content.

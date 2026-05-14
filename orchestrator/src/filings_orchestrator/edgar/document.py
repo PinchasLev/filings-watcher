@@ -18,10 +18,44 @@ import re
 from typing import cast
 
 from bs4 import BeautifulSoup, Comment
+from bs4.element import NavigableString
 from pydantic import BaseModel, Field
 
 from filings_orchestrator.edgar.client import EdgarClient
 from filings_orchestrator.edgar.models import Filing
+
+# Inline HTML elements: their text continues a line of prose and must not
+# be separated from surrounding text by newlines. Filings sometimes wrap
+# single letters in these for visual styling (drop caps, font tweaks);
+# letting `get_text(separator="\n")` split on each one produces output
+# like "F irst" instead of "First".
+_INLINE_TAGS = frozenset(
+    {
+        "a",
+        "abbr",
+        "b",
+        "cite",
+        "code",
+        "del",
+        "em",
+        "font",
+        "i",
+        "ins",
+        "kbd",
+        "mark",
+        "q",
+        "s",
+        "small",
+        "span",
+        "strong",
+        "sub",
+        "sup",
+        "time",
+        "tt",
+        "u",
+        "var",
+    }
+)
 
 # Match a line that opens an Item section. Captures the dotted number
 # ("5.02") and any inline title text that follows on the same line.
@@ -70,9 +104,11 @@ def fetch_filing_document(filing: Filing, client: EdgarClient) -> FilingDocument
 def _extract_plain_text(html: str) -> str:
     """Convert filing markup to whitespace-normalized plain text.
 
-    Strips script, style, and comment nodes; preserves block-level
-    boundaries as newlines; collapses runs of whitespace. Selects the
-    parser based on the document's declared shape (see `_choose_parser`).
+    Strips script, style, and comment nodes; flattens inline emphasis
+    tags so their content reads as continuous prose rather than splitting
+    surrounding words; preserves block-level boundaries as newlines;
+    collapses runs of whitespace. Selects the parser based on the
+    document's declared shape (see `_choose_parser`).
     """
     soup = BeautifulSoup(html, _choose_parser(html))
 
@@ -80,6 +116,14 @@ def _extract_plain_text(html: str) -> str:
         element.decompose()
     for comment in soup.find_all(string=lambda s: isinstance(s, Comment)):
         comment.extract()
+
+    # Flatten inline tags into NavigableStrings, then smooth so adjacent
+    # strings merge. Without this, get_text(separator="\n") would split
+    # text across every inline boundary (e.g., "F" + "irst" becomes
+    # "F\nirst" when the source HTML is "<b>F</b>irst").
+    for tag in list(soup.find_all(_INLINE_TAGS)):
+        tag.replace_with(NavigableString(tag.get_text()))
+    soup.smooth()
 
     raw = soup.get_text(separator="\n")
     # Normalize whitespace: collapse runs of spaces/tabs/NBSP and limit

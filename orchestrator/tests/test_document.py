@@ -127,6 +127,35 @@ def test_xhtml_filing_parses_without_warning_and_extracts_text() -> None:
     assert "Interim Chief Financial Officer" in text
 
 
+def test_inline_emphasis_tags_do_not_split_words() -> None:
+    """Filings sometimes wrap initial letters in <b>/<span>; extraction
+    must reassemble them as continuous prose, not "F irst" / "A pril"."""
+    html = (FIXTURES / "sample_8k_inline_tags.html").read_text()
+    text = _extract_plain_text(html)
+
+    assert "First Quarter" in text
+    assert "April 22" in text
+    assert "F irst" not in text
+    assert "A pril" not in text
+    # Adjacent spans should join with one space between them, not newlines.
+    assert "Securities Exchange Act" in text
+
+
+def test_inline_tags_preserve_block_boundaries() -> None:
+    """Flattening inline tags must not collapse paragraph or table breaks."""
+    html = (FIXTURES / "sample_8k_inline_tags.html").read_text()
+    text = _extract_plain_text(html)
+    # Heading is a block element; should be its own line.
+    lines = text.splitlines()
+    heading_line = next(
+        (i for i, line in enumerate(lines) if "Item 9.01" in line),
+        None,
+    )
+    assert heading_line is not None
+    # The "(d) Exhibits." block should not be merged into the heading line.
+    assert "Item 9.01" not in lines[heading_line + 1 :][0] or "Exhibits" not in lines[heading_line]
+
+
 def test_xhtml_section_splitting_still_works() -> None:
     """Item splitting works on text extracted via the XML parser."""
     xhtml = (FIXTURES / "sample_8k_xhtml.html").read_text()

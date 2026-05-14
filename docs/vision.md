@@ -58,6 +58,7 @@ Done credibly, this requires methodology that naive approaches skip:
 
 - Form coverage: 10-K, 10-Q, S-1, 13D/G, 13F, Form 4, DEF 14A
 - Amendments (`*/A` filings) — restatement signal in their own right
+- Foreign Private Issuer (FPI) coverage via Form 6-K — many U.S.-listed Chinese, European, and Canadian issuers (e.g., BABA, JD, BIDU, NIO, BULL) file 6-K instead of 8-K. Same ingestion path; classification taxonomy needs adaptation since 6-K has no Item structure. Material disclosure baseline is meaningfully thinner for FPIs, which arguably makes early-warning coverage more valuable, not less
 - Watchlists with email / Slack / webhook alerts
 
 **Tier 2 — Early-warning intelligence (the north-star thread):**

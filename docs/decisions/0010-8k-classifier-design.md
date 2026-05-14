@@ -74,6 +74,14 @@ The taxonomy deliberately leaves some events as `other_material` rather than gue
 
 The path forward is data-driven: build an eval set covering a diverse sample of filers (large-cap, mid-cap, small-cap, distressed) and measure how `other_material` distributes. Patterns that recur and carry distinct downstream consequences earn their own category in a follow-up; categories that prove low-volume or hard to distinguish from neighbors get rolled back.
 
+## Post-hoc domain mapping (lite hierarchical grouping)
+
+The seventeen leaf categories are also grouped into six high-level domains — `governance`, `financial`, `operational`, `legal`, `terminal`, `catchall` — via a static `EventType → EventDomain` mapping defined in `taxonomy.py`. The classifier itself does not predict the domain; the domain follows mechanically from the chosen leaf category.
+
+This is deliberately not a hierarchical classifier. A true hierarchical model would predict the domain first and the leaf second, with potentially different confidence values at each level. That carries real benefits (graceful degradation under leaf-level uncertainty, smaller per-level decision spaces) and real costs (more complex prompt and schema, model confusion between near-neighbor domains, migration of all historical classifications when the mapping changes). At seventeen leaves and v0 traffic, the costs exceed the benefits.
+
+Post-hoc mapping captures the principal benefit of hierarchy — coarser grouping for dashboard organization, watchlist alerting at the group level, and cross-filing pattern detection at the domain level — at near-zero cost. A future move to a real hierarchical classifier would be evaluated against eval-set evidence: if the model is consistently confused between leaves within a domain but confident about the domain, the upgrade earns its seat.
+
 ## Determinism and the nature of `confidence`
 
 The classifier sets `temperature=0`, which instructs Claude to always select the highest-probability token at each step. This is "deterministic in intent" but not bit-deterministic in practice on a production API endpoint, for three reasons:

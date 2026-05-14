@@ -72,6 +72,27 @@ The taxonomy deliberately leaves some events as `other_material` rather than gue
 
 The path forward is data-driven: build an eval set covering a diverse sample of filers (large-cap, mid-cap, small-cap, distressed) and measure how `other_material` distributes. Patterns that recur and carry distinct downstream consequences earn their own category in a follow-up; categories that prove low-volume or hard to distinguish from neighbors get rolled back.
 
+## Determinism and the nature of `confidence`
+
+The classifier sets `temperature=0`, which instructs Claude to always select the highest-probability token at each step. This is "deterministic in intent" but not bit-deterministic in practice on a production API endpoint, for three reasons:
+
+- **Floating-point non-associativity.** GPU arithmetic isn't associative; the order of operations in batched inference can shift logit values by small amounts.
+- **Batched serving.** Production endpoints batch concurrent requests; the batch composition affects kernel execution paths.
+- **Cluster-level routing.** Requests may land on instances with minor differences during rolling deployments.
+
+Observed effects: the `event_type` is highly stable for clear-cut filings (the categorical decision rarely flips); the `confidence` value varies by approximately ±0.02 across repeated runs on the same filing. The reasoning prose paraphrases differently with stable substance.
+
+A related and load-bearing distinction: `confidence` in this system is the model's **self-reported** assessment, generated as part of the tool-call response, not an internal probability metric. The LLM does have token-level probabilities (the softmax distribution over the next token at the moment of generating, say, `earnings_release`), but those probabilities are not exposed through Anthropic's tool-use API as of this writing. What gets returned is the model's *description* of how confident it is, written as a number, based on its training to produce plausible-sounding confidence expressions.
+
+Practical implications:
+
+- `confidence` is interpretable as a coarse signal (high / medium / low) but is not a calibrated probability. A self-reported 0.98 does not imply 98% accuracy of the corresponding `event_type`.
+- Fine differences (0.97 vs 0.99) are within the noise floor and should not drive decisions.
+- Threshold-based downstream logic (e.g., "auto-alert when confidence > X") needs margin to absorb the observed variance.
+- Empirical calibration is a measurable property of the eval set: run the classifier multiple times on the same filing, observe how often `event_type` flips and how `confidence` distributes, and verify whether high-confidence predictions are in fact more often correct than low-confidence ones.
+
+Alternatives that would expose a real internal metric — logprobs (not available via tool-use), self-consistency voting (N samples at temperature>0), verifier-model agreement — are listed under Deferred below. The self-report is sufficient for v0 surface (dashboard display, alert thresholds) when treated as the coarse signal it is.
+
 ## Deferred
 
 - **Taxonomy distribution monitoring.** Once persistence lands, classification results across the running corpus must be inspected for distribution shape. Two patterns warrant monitoring: (1) `other_material` share above ~15-20% indicates taxonomy gaps that should be filled with new categories; (2) any single category absorbing a disproportionate share of filings indicates either the classifier selecting the easiest-fitting label rather than the most precise, or a category description in the prompt that is too broad. The monitoring is straightforward — a periodic SQL query over the classifications table — and the threshold-driven re-evaluation of the taxonomy is the closing loop on the eval-set path described above.

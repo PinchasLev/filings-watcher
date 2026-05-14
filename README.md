@@ -4,7 +4,7 @@ Real-time SEC filings monitor with agent-driven event classification and visible
 
 ## Status
 
-**Pre-v0** — actively scoping. See [docs/vision.md](docs/vision.md) for the project vision, scope, and success criteria.
+V0 in progress. The Python orchestrator (ingestion + classification + persistence) and the Go service (read-only HTTP API) are both wired end-to-end. Public dashboard, deployment, and the Rust components are next. See [docs/vision.md](docs/vision.md) for full scope and success criteria.
 
 ## What it does (target v0)
 

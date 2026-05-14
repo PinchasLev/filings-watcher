@@ -30,6 +30,7 @@ class EventType(StrEnum):
     EARNINGS_RELEASE = "earnings_release"
     EXEC_DEPARTURE = "exec_departure"
     EXEC_APPOINTMENT = "exec_appointment"
+    EXEC_COMPENSATION = "exec_compensation"
     MA_ACTIVITY = "ma_activity"
     RESTATEMENT = "restatement"
     AUDITOR_CHANGE = "auditor_change"
@@ -59,6 +60,14 @@ EVENT_TYPE_DESCRIPTIONS: dict[EventType, str] = {
         "Appointment or election of a director, officer, or named executive "
         "(commonly Item 5.02). Use this when the principal disclosed action "
         "is a person taking a role, even if a departure also occurred."
+    ),
+    EventType.EXEC_COMPENSATION: (
+        "Disclosure of compensatory arrangements for a director, officer, "
+        "or named executive — equity grants, performance awards, "
+        "compensation plan amendments, severance modifications, or "
+        "shareholder approval of such arrangements (typically Item 5.02(e)). "
+        "Distinct from `exec_departure` (a person leaving) and "
+        "`exec_appointment` (a person taking a role)."
     ),
     EventType.MA_ACTIVITY: (
         "Entry into, completion, or termination of a material acquisition, "

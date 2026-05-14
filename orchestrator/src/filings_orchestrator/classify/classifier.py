@@ -20,6 +20,7 @@ environment (loaded by `config.load_config()` at process startup).
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from typing import Any, TypedDict
 
@@ -35,6 +36,7 @@ from filings_orchestrator.classify.schema import (
 from filings_orchestrator.classify.taxonomy import (
     EVENT_TYPE_DESCRIPTIONS,
     NON_SUBSTANTIVE_ITEMS,
+    TAXONOMY_VERSION,
     EventType,
 )
 from filings_orchestrator.edgar.document import FilingDocument, ItemSection
@@ -175,6 +177,19 @@ def _build_graph() -> Any:
     return graph.compile()
 
 
+def classifier_version(model_name: str = DEFAULT_MODEL) -> str:
+    """Compose the classifier_version string for persistence.
+
+    Combines the model name with a short hash of the system prompt. Any
+    change to the prompt or the chosen model produces a new version string,
+    which the persistence layer uses to keep classifications immutable and
+    version-tagged. See ADR 0011.
+    """
+    prompt = _build_system_prompt()
+    prompt_sha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:8]
+    return f"{model_name}+prompt-{prompt_sha}"
+
+
 def classify_filing(
     document: FilingDocument,
     model_name: str = DEFAULT_MODEL,
@@ -202,4 +217,6 @@ def classify_filing(
         whole_filing=result["whole_filing"],
         classified_at=datetime.now(UTC),
         model=model_name,
+        classifier_version=classifier_version(model_name),
+        taxonomy_version=TAXONOMY_VERSION,
     )

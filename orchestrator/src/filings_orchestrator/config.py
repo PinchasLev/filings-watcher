@@ -38,6 +38,7 @@ class Config:
     langsmith_project: str
     langsmith_tracing: bool
     edgar_user_agent: str
+    filings_db_path: str
 
 
 _loaded = False
@@ -83,10 +84,14 @@ def get_config_str(name: str, default: str) -> str:
 
 def load_config() -> Config:
     """Load the full Config object. Use this at process startup."""
+    import os
+
+    default_db_path = os.path.expanduser("~/.filings-watcher/v0.db")
     return Config(
         anthropic_api_key=get_secret("ANTHROPIC_API_KEY"),
         langsmith_api_key=get_secret("LANGSMITH_API_KEY"),
         langsmith_project=get_config_str("LANGSMITH_PROJECT", "filings-watcher"),
         langsmith_tracing=get_config_bool("LANGSMITH_TRACING", default=True),
         edgar_user_agent=require_env("EDGAR_USER_AGENT"),
+        filings_db_path=get_config_str("FILINGS_DB_PATH", default_db_path),
     )

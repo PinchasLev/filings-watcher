@@ -93,6 +93,17 @@ def _classification_result(
     )
 
 
+def test_default_migrations_dir_resolves_to_real_directory() -> None:
+    """The default migrations dir resolved from this package must point at the
+    real on-disk db/migrations directory. Regression guard for the off-by-one
+    in `_MIGRATIONS_DIR_RELATIVE` that briefly resolved to the repo root."""
+    from filings_orchestrator.persistence.migrations import _migrations_dir
+
+    resolved = _migrations_dir()
+    assert resolved.exists(), f"default migrations dir does not exist: {resolved}"
+    assert (resolved / "001_initial_schema.sql").exists()
+
+
 def test_apply_migrations_creates_tables_and_records_version() -> None:
     engine = open_engine(":memory:")
     applied = apply_migrations(engine, migrations_dir=MIGRATIONS_DIR)

@@ -21,8 +21,13 @@ from typing import NamedTuple
 
 from sqlalchemy import Engine, text
 
-# Where the SQL files live, relative to this module's package.
-_MIGRATIONS_DIR_RELATIVE = Path("..") / ".." / ".." / ".." / "db" / "migrations"
+# Where the SQL files live, relative to this module.
+# Path layout:
+#   orchestrator/
+#   ├── db/migrations/
+#   └── src/filings_orchestrator/persistence/migrations.py  (this file)
+# So we walk up three: persistence/ → filings_orchestrator/ → src/ → orchestrator/.
+_MIGRATIONS_DIR_RELATIVE = Path("..") / ".." / ".." / "db" / "migrations"
 
 _CREATE_VERSIONS_TABLE = text(
     """

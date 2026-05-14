@@ -93,6 +93,16 @@ def _classification_result(
     )
 
 
+def test_open_engine_enables_wal_journal_mode(tmp_path: Path) -> None:
+    """WAL must be enabled on file-backed databases — required for concurrent
+    reads from the Go service alongside the Python writer."""
+    db_path = tmp_path / "wal.db"
+    engine = open_engine(str(db_path))
+    with engine.begin() as conn:
+        mode = conn.execute(text("PRAGMA journal_mode")).scalar_one()
+    assert str(mode).lower() == "wal"
+
+
 def test_default_migrations_dir_resolves_to_real_directory() -> None:
     """The default migrations dir resolved from this package must point at the
     real on-disk db/migrations directory. Regression guard for the off-by-one

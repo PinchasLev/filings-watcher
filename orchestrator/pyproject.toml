@@ -20,6 +20,7 @@ dependencies = [
 [project.scripts]
 smoke-test = "filings_orchestrator.smoke_test:main"
 fetch-edgar = "filings_orchestrator.cli.fetch_edgar:main"
+classify-filing = "filings_orchestrator.cli.classify_filing:main"
 
 [build-system]
 requires = ["uv_build>=0.11.14,<0.12.0"]

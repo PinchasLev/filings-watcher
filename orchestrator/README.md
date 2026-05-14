@@ -4,7 +4,7 @@ Python agent layer for filings-watcher. Owns LangGraph orchestration, LLM-based 
 
 ## Status
 
-Scaffold and ingestion only. The smoke test verifies the wiring (Anthropic API key → LangGraph node → LangSmith trace) end-to-end. Classification logic is in scope but not yet implemented; see [docs/vision.md](../docs/vision.md).
+Ingestion and classification working end-to-end. The classifier reads a filing's parsed Item sections and produces typed `Classification` results with reasoning traces visible in LangSmith. Persistence and the Go service are the next layers; see [docs/vision.md](../docs/vision.md).
 
 ## Layout
 
@@ -17,9 +17,10 @@ orchestrator/
 │   ├── __init__.py
 │   ├── config.py           secrets/config seam
 │   ├── smoke_test.py       single-node LangGraph + LangSmith trace
-│   ├── edgar/              EDGAR client and filing data structures
+│   ├── edgar/              EDGAR client, document fetch, and item parsing
+│   ├── classify/           LangGraph + Claude tool-use classifier
 │   └── cli/                command-line entry points
-└── tests/                  pytest suite with respx-mocked EDGAR responses
+└── tests/                  pytest suite (respx-mocked EDGAR, mock-patched Claude)
 ```
 
 ## Setup
@@ -44,6 +45,8 @@ uv run smoke-test                       # verify LangGraph + LangSmith + Anthrop
 uv run fetch-edgar AAPL                 # list recent 8-K filings for a ticker
 uv run fetch-edgar AAPL --limit 5       # limit to 5 most recent
 uv run fetch-edgar AAPL --detail 0      # also fetch the body of the first filing
+uv run classify-filing AAPL 0           # fetch + classify each Item via Claude
+uv run classify-filing AAPL 0 --json    # machine-readable JSON output
 uv run pytest                            # run the test suite
 ```
 

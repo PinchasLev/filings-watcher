@@ -10,7 +10,7 @@ resource "aws_security_group" "host" {
 
 resource "aws_vpc_security_group_ingress_rule" "http" {
   security_group_id = aws_security_group.host.id
-  description       = "HTTP for Let's Encrypt ACME HTTP-01 challenge and HTTPS redirect"
+  description       = "HTTP for ACME HTTP-01 challenge and HTTPS redirect to 443"
   ip_protocol       = "tcp"
   from_port         = 80
   to_port           = 80

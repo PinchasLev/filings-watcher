@@ -42,3 +42,8 @@ sync-go:
 
 # Sync both language dependency manifests.
 sync: sync-py sync-go
+
+# Delete local branches whose upstream branch is gone (squash-merged, deleted on GitHub, etc.).
+cleanup:
+    git fetch --prune --quiet
+    git branch -vv | awk '/: gone\]/ {print $1}' | xargs -r git branch -D

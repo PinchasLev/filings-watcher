@@ -28,7 +28,8 @@ resource "aws_instance" "host" {
 
   user_data_replace_on_change = true
   user_data = templatefile("${path.module}/user_data.sh.tpl", {
-    app_user = var.app_user
+    app_user   = var.app_user
+    acme_email = var.acme_email
   })
 
   root_block_device {

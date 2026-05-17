@@ -1,16 +1,8 @@
-# Copy this file to terraform.tfvars and fill in the values.
-# terraform.tfvars is gitignored — never commit your real values.
+# Copy this file to terraform.tfvars and uncomment any overrides you want.
+# terraform.tfvars is gitignored; the example is committed for reference.
+#
+# All variables have defaults; an empty terraform.tfvars (or none at all) is valid.
 
-# Your current public IP in CIDR form. Get it with:
-#   curl -s ifconfig.me && echo
-# Then append /32 (e.g., 203.0.113.42/32).
-operator_ip = "203.0.113.42/32"
-
-# Your SSH public key (typically ed25519). Get it with:
-#   cat ~/.ssh/id_ed25519.pub
-ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... your-comment-here"
-
-# Optional overrides (defaults shown for reference; remove these lines to use defaults):
 # aws_region        = "us-east-1"
 # availability_zone = "us-east-1a"
 # instance_type     = "t4g.small"

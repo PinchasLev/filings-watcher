@@ -18,17 +18,11 @@ data "aws_ami" "al2023_arm" {
   }
 }
 
-resource "aws_key_pair" "operator" {
-  key_name   = "filings-watcher-operator"
-  public_key = var.ssh_public_key
-}
-
 resource "aws_instance" "host" {
   ami                    = data.aws_ami.al2023_arm.id
   instance_type          = var.instance_type
   availability_zone      = var.availability_zone
   subnet_id              = data.aws_subnets.default_az.ids[0]
-  key_name               = aws_key_pair.operator.key_name
   vpc_security_group_ids = [aws_security_group.host.id]
   iam_instance_profile   = aws_iam_instance_profile.host.name
 

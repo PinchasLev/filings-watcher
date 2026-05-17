@@ -1,8 +1,11 @@
-# Copy this file to terraform.tfvars and uncomment any overrides you want.
+# Copy this file to terraform.tfvars and set the required value(s) below.
 # terraform.tfvars is gitignored; the example is committed for reference.
-#
-# All variables have defaults; an empty terraform.tfvars (or none at all) is valid.
 
+# Required: email address Caddy registers with Let's Encrypt for ACME
+# notifications (cert expiry, renewal failures). Use a real address you read.
+acme_email = "you@example.com"
+
+# Optional overrides (defaults shown for reference; uncomment to change):
 # aws_region        = "us-east-1"
 # availability_zone = "us-east-1a"
 # instance_type     = "t4g.small"

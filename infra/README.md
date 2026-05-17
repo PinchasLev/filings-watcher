@@ -6,15 +6,16 @@ See [ADR 0014](../docs/decisions/0014-operator-access-via-mesh-vpn.md) for the o
 
 ## What this provisions
 
-**Phase 4 slices 1 + 2** (current):
+**Phase 4 slices 1 + 2 + 3** (current):
 
 - One EC2 host (`t4g.small`, ARM, Amazon Linux 2023) in `us-east-1a`
 - Elastic IP attached to the host (public address survives instance replacement)
-- Security group with **no public ingress** — host is reachable only via Tailscale and AWS SSM Session Manager
+- Security group: public ingress on 80/tcp + 443/tcp for Caddy; operator access via Tailscale and AWS SSM Session Manager
 - IAM role on the instance with `AmazonSSMManagedInstanceCore`
-- First-boot provisioning via `user_data.sh.tpl`: security patches, 2 GB swap, automatic updates, journald retention, SSH hardening, `filings` application user, `/opt/filings-watcher/` directory tree, Tailscale daemon installed and enabled (not yet joined to the tailnet — operator does that post-provision)
+- Route53 A record `staging.filingsradar.com` → the EIP, plus a CAA record locking TLS issuance to Let's Encrypt
+- First-boot provisioning via `user_data.sh.tpl`: security patches, 2 GB swap, automatic updates, journald retention, SSH hardening, `filings` application user, `/opt/filings-watcher/` directory tree, Tailscale daemon installed (not yet joined — operator joins post-provision), Caddy installed and configured to serve `staging.filingsradar.com` with auto-issued Let's Encrypt cert
 
-Subsequent slices will add: Caddy + Route53 (slice 3), the S3 artifact bucket and GitHub OIDC role (slice 4), CloudWatch alarms (slice 7).
+Subsequent slices will add: S3 artifact bucket and GitHub OIDC role (slice 4), Go service deploy (slice 4), orchestrator (slice 5), systemd timer (slice 6), CloudWatch alarms (slice 7).
 
 ## Prerequisites
 
@@ -27,10 +28,12 @@ Subsequent slices will add: Caddy + Route53 (slice 3), the S3 artifact bucket an
 
 ```bash
 cd infra/
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars: set acme_email to a real address you read.
 terraform init
 ```
 
-All variables have defaults. Create `terraform.tfvars` only if you want to override anything (see `terraform.tfvars.example`).
+The only required input is `acme_email` — Let's Encrypt registers it for ACME notifications (cert expiry warnings, renewal failures). All other variables have sensible defaults.
 
 The provider lockfile (`.terraform.lock.hcl`) is committed; `terraform init` reuses pinned versions.
 
@@ -71,11 +74,32 @@ tailscale ssh ec2-user@<host-magicdns-name>   # opens a shell as ec2-user
 
 The host's MagicDNS name is whatever the OS reported during `tailscale up` (default: `ip-x-x-x-x` or similar — rename via `sudo tailscale set --hostname=...` if you want).
 
+## Verifying the public web surface
+
+After apply finishes and the instance has been up for ~2 minutes (cloud-init + Caddy's first ACME request):
+
+```bash
+dig staging.filingsradar.com A +short        # should return the EIP
+curl -I https://staging.filingsradar.com/    # 200, valid Let's Encrypt cert
+```
+
+A browser visit to `https://staging.filingsradar.com` should show a green padlock and the placeholder text. The cert issuer is "Let's Encrypt"; HSTS is enabled (1 year, includes subdomains, no preload).
+
+The Caddyfile is a placeholder until slice 4 deploys the Go service. To inspect or edit on the host:
+
+```bash
+aws ssm start-session --target <instance-id> --region us-east-1
+sudo cat /etc/caddy/Caddyfile
+sudo systemctl reload caddy   # after any edit
+```
+
 ## If something breaks
 
 - **Tailscale daemon didn't install or isn't running:** SSM in, `journalctl -u tailscaled` and `cat /var/log/cloud-init-output.log`.
 - **Can't reach the host from your tailnet:** check `tailscale status` on the host (via SSM) — it should show the device as online.
-- **Lost both SSM and Tailscale:** there is no public ingress fallback. Recovery is `terraform taint aws_instance.host && terraform apply` (replaces the instance, then re-bootstrap). The break-glass story is deferred per [ADR 0014](../docs/decisions/0014-operator-access-via-mesh-vpn.md).
+- **Cert not issued / browser warning:** Caddy retries ACME on a backoff. SSM in and check `journalctl -u caddy`. Common causes: DNS not propagated yet (wait, or `dig +trace`), port 80 blocked upstream, ACME rate limit hit (5 duplicate certs / week per domain — try `staging2.filingsradar.com` to recover).
+- **CAA record blocking issuance:** if you change the issuance CA from Let's Encrypt, update `aws_route53_record.caa` to match before applying.
+- **Lost both SSM and Tailscale:** there is no public ingress fallback for shell access. Recovery is `terraform taint aws_instance.host && terraform apply` (replaces the instance, then re-bootstrap). The break-glass story is deferred per [ADR 0014](../docs/decisions/0014-operator-access-via-mesh-vpn.md).
 
 ## Tearing down
 
@@ -101,6 +125,8 @@ Migration to S3 + DynamoDB remote state is deferred until a second engineer join
 | Elastic IP (detached, e.g., during instance replacement) | ~$3.65/mo if held |
 | Data transfer out (first 100 GB/month free) | $0 at v0 traffic |
 | Tailscale (free tier: 3 users, 100 devices) | $0 |
-| **Total (steady state)** | **~$14/month** |
+| Route53 hosted zone (already provisioned) | ~$0.50 |
+| Let's Encrypt certificates | $0 |
+| **Total (steady state)** | **~$14.50/month** |
 
-This sits inside the $20/month budget alarm. Adding Caddy (slice 3) does not change AWS costs.
+This sits inside the $20/month budget alarm.

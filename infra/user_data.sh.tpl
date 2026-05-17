@@ -54,4 +54,26 @@ curl -fsSL https://pkgs.tailscale.com/stable/amazon-linux/2023/tailscale.repo \
 dnf install -y tailscale
 systemctl enable --now tailscaled
 
-echo "$(date -Iseconds) slice-2 provisioning complete" > /var/log/filings-provision-complete
+# --- Caddy (TLS-terminating reverse proxy with Let's Encrypt auto-renewal) ---
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/setup.rpm.sh' | bash
+dnf install -y caddy
+
+cat > /etc/caddy/Caddyfile <<'CADDYFILE_EOF'
+{
+    email ${acme_email}
+}
+
+staging.filingsradar.com {
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "geolocation=(), microphone=(), camera=()"
+    }
+    respond "filings-watcher staging" 200
+}
+CADDYFILE_EOF
+
+systemctl enable --now caddy
+
+echo "$(date -Iseconds) slice-3 provisioning complete" > /var/log/filings-provision-complete

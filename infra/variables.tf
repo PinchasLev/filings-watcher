@@ -27,3 +27,13 @@ variable "app_user" {
   type        = string
   default     = "filings"
 }
+
+variable "acme_email" {
+  description = "Email address used by Caddy for ACME (Let's Encrypt) registration and expiry notifications."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.acme_email))
+    error_message = "acme_email must be a valid email address."
+  }
+}

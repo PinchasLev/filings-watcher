@@ -13,11 +13,6 @@ output "public_ip" {
   value       = aws_eip.host.public_ip
 }
 
-output "ssh_command" {
-  description = "Convenience: SSH command to reach the host."
-  value       = "ssh ec2-user@${aws_eip.host.public_ip}"
-}
-
 output "ssm_session_command" {
   description = "Convenience: SSM Session Manager command (fallback access path)."
   value       = "aws ssm start-session --target ${aws_instance.host.id} --region ${var.aws_region}"

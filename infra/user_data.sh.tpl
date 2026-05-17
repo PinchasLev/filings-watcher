@@ -48,4 +48,10 @@ install -d -o ${app_user} -g ${app_user} -m 0755 /opt/filings-watcher/releases
 install -d -o ${app_user} -g ${app_user} -m 0755 /opt/filings-watcher/bin
 install -d -o ${app_user} -g ${app_user} -m 0755 /var/lib/filings-watcher
 
-echo "$(date -Iseconds) slice-1 provisioning complete" > /var/log/filings-provision-complete
+# --- Tailscale daemon (operator runs `tailscale up --ssh` post-provision via SSM) ---
+curl -fsSL https://pkgs.tailscale.com/stable/amazon-linux/2023/tailscale.repo \
+  -o /etc/yum.repos.d/tailscale.repo
+dnf install -y tailscale
+systemctl enable --now tailscaled
+
+echo "$(date -Iseconds) slice-2 provisioning complete" > /var/log/filings-provision-complete

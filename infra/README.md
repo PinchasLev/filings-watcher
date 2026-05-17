@@ -6,16 +6,16 @@ See [ADR 0014](../docs/decisions/0014-operator-access-via-mesh-vpn.md) for the o
 
 ## What this provisions
 
-**Phase 4 slices 1 + 2 + 3** (current):
+**Phase 4 slices 1 + 2 + 3 + 4a** (current):
 
 - One EC2 host (`t4g.small`, ARM, Amazon Linux 2023) in `us-east-1a`
 - Elastic IP attached to the host (public address survives instance replacement)
 - Security group: public ingress on 80/tcp + 443/tcp for Caddy; operator access via Tailscale and AWS SSM Session Manager
 - IAM role on the instance with `AmazonSSMManagedInstanceCore`
 - Route53 A record `staging.filingsradar.com` → the EIP, plus a CAA record locking TLS issuance to Let's Encrypt
-- First-boot provisioning via `user_data.sh.tpl`: security patches, 2 GB swap, automatic updates, journald retention, SSH hardening, `filings` application user, `/opt/filings-watcher/` directory tree, Tailscale daemon installed (not yet joined — operator joins post-provision), Caddy installed and configured to serve `staging.filingsradar.com` with auto-issued Let's Encrypt cert
+- First-boot provisioning via `user_data.sh.tpl`: security patches, 2 GB swap, automatic updates, journald retention, SSH hardening, `filings` application user, `/opt/filings-watcher/` directory tree, empty SQLite DB at `/var/lib/filings-watcher/filings.db`, `filings-server.service` systemd unit installed and enabled, Tailscale daemon installed (operator joins post-provision), Caddy installed and configured to reverse-proxy `staging.filingsradar.com` to `127.0.0.1:8080`
 
-Subsequent slices will add: S3 artifact bucket and GitHub OIDC role (slice 4), Go service deploy (slice 4), orchestrator (slice 5), systemd timer (slice 6), CloudWatch alarms (slice 7).
+Subsequent slices will add: S3 artifact bucket and GitHub OIDC role (slice 4b), Go service deploy automation (slice 4b), orchestrator (slice 5), systemd timer (slice 6), CloudWatch alarms (slice 7).
 
 ## Prerequisites
 
@@ -80,18 +80,45 @@ After apply finishes and the instance has been up for ~2 minutes (cloud-init + C
 
 ```bash
 dig staging.filingsradar.com A +short        # should return the EIP
-curl -I https://staging.filingsradar.com/    # 200, valid Let's Encrypt cert
+curl -I https://staging.filingsradar.com/    # valid Let's Encrypt cert
 ```
 
-A browser visit to `https://staging.filingsradar.com` should show a green padlock and the placeholder text. The cert issuer is "Let's Encrypt"; HSTS is enabled (1 year, includes subdomains, no preload).
+`/` will currently return `502 Bad Gateway` from Caddy because no Go service binary has been deployed yet. The Caddy + TLS layer is working; the upstream isn't running. The first deploy (manual in slice 4a, automated in slice 4b) lands a binary that `systemd` will then start.
 
-The Caddyfile is a placeholder until slice 4 deploys the Go service. To inspect or edit on the host:
+## Manual first deploy (slice 4a bootstrap)
+
+Slice 4b adds an automated GitHub Actions → S3 → SSM deploy pipeline. Until then, the first binary lands by hand. This procedure also doubles as the long-term break-glass when the pipeline is unavailable.
+
+From the operator laptop (with `tailscale` connected and the host visible in `tailscale status`):
 
 ```bash
-aws ssm start-session --target <instance-id> --region us-east-1
-sudo cat /etc/caddy/Caddyfile
-sudo systemctl reload caddy   # after any edit
+# 1. Cross-compile a static linux/arm64 binary
+cd ~/projects/filings-watcher/service
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o /tmp/filings-server ./cmd/filings-server
+
+# 2. Ship it to the host
+tailscale file cp /tmp/filings-server filings-watcher-host:
+# or: scp via tailscale ssh
+#   scp /tmp/filings-server filings-watcher-host:/tmp/filings-server
+
+# 3. Install it, swap the symlink, start the service
+tailscale ssh ec2-user@filings-watcher-host <<'REMOTE_EOF'
+set -euo pipefail
+sudo install -d -o filings -g filings -m 0755 /opt/filings-watcher/releases/manual-bootstrap
+sudo install -o filings -g filings -m 0755 /tmp/filings-server /opt/filings-watcher/releases/manual-bootstrap/filings-server
+sudo ln -sfn /opt/filings-watcher/releases/manual-bootstrap /opt/filings-watcher/current
+sudo systemctl start filings-server
+sudo systemctl status filings-server --no-pager | head -15
+REMOTE_EOF
 ```
+
+Verify from anywhere:
+
+```bash
+curl -sS https://staging.filingsradar.com/health   # {"status":"ok"}
+```
+
+If `/health` returns the JSON status, the runtime layer is wired correctly end-to-end (Caddy → Go service → systemd → SQLite stub file).
 
 ## If something breaks
 
@@ -99,6 +126,8 @@ sudo systemctl reload caddy   # after any edit
 - **Can't reach the host from your tailnet:** check `tailscale status` on the host (via SSM) — it should show the device as online.
 - **Cert not issued / browser warning:** Caddy retries ACME on a backoff. SSM in and check `journalctl -u caddy`. Common causes: DNS not propagated yet (wait, or `dig +trace`), port 80 blocked upstream, ACME rate limit hit (5 duplicate certs / week per domain — try `staging2.filingsradar.com` to recover).
 - **CAA record blocking issuance:** if you change the issuance CA from Let's Encrypt, update `aws_route53_record.caa` to match before applying.
+- **`/` returns 502 Bad Gateway:** Caddy is up but the Go service isn't. Check `systemctl status filings-server` and `journalctl -u filings-server` via SSM. Most common cause before slice 4b: no binary has been deployed (manual bootstrap above hasn't run).
+- **`filings-server` won't start:** check the env (`FILINGS_DB_PATH` must point at an existing file), check that `/opt/filings-watcher/current` is a valid symlink to a directory containing `filings-server`, check the binary architecture matches the host (`file /opt/filings-watcher/current/filings-server` should say `aarch64`).
 - **Lost both SSM and Tailscale:** there is no public ingress fallback for shell access. Recovery is `terraform taint aws_instance.host && terraform apply` (replaces the instance, then re-bootstrap). The break-glass story is deferred per [ADR 0014](../docs/decisions/0014-operator-access-via-mesh-vpn.md).
 
 ## Tearing down

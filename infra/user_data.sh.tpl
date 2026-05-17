@@ -162,4 +162,4 @@ UNIT_EOF
 systemctl daemon-reload
 systemctl enable --now caddy
 
-echo "$(date -Iseconds) slice-4a provisioning complete" > /var/log/filings-provision-complete
+echo "$(date -Iseconds) provisioning complete" > /var/log/filings-provision-complete

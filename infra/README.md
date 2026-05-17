@@ -6,8 +6,6 @@ See [ADR 0014](../docs/decisions/0014-operator-access-via-mesh-vpn.md) for the o
 
 ## What this provisions
 
-**Phase 4 slices 1 + 2 + 3 + 4a** (current):
-
 - One EC2 host (`t4g.small`, ARM, Amazon Linux 2023) in `us-east-1a`
 - Elastic IP attached to the host (public address survives instance replacement)
 - Security group: public ingress on 80/tcp + 443/tcp for Caddy; operator access via Tailscale and AWS SSM Session Manager
@@ -15,7 +13,7 @@ See [ADR 0014](../docs/decisions/0014-operator-access-via-mesh-vpn.md) for the o
 - Route53 A record `staging.filingsradar.com` → the EIP, plus a CAA record locking TLS issuance to Let's Encrypt
 - First-boot provisioning via `user_data.sh.tpl`: security patches, 2 GB swap, automatic updates, journald retention, SSH hardening, `filings` application user, `/opt/filings-watcher/` directory tree, empty SQLite DB at `/var/lib/filings-watcher/filings.db`, `filings-server.service` systemd unit installed and enabled, Tailscale daemon installed (operator joins post-provision), Caddy installed and configured to reverse-proxy `staging.filingsradar.com` to `127.0.0.1:8080`
 
-Subsequent slices will add: S3 artifact bucket and GitHub OIDC role (slice 4b), Go service deploy automation (slice 4b), orchestrator (slice 5), systemd timer (slice 6), CloudWatch alarms (slice 7).
+Application code (Go service binary, Python orchestrator) is delivered separately by the deploy pipeline, not by Terraform.
 
 ## Prerequisites
 
@@ -83,11 +81,11 @@ dig staging.filingsradar.com A +short        # should return the EIP
 curl -I https://staging.filingsradar.com/    # valid Let's Encrypt cert
 ```
 
-`/` will currently return `502 Bad Gateway` from Caddy because no Go service binary has been deployed yet. The Caddy + TLS layer is working; the upstream isn't running. The first deploy (manual in slice 4a, automated in slice 4b) lands a binary that `systemd` will then start.
+`/` returns `502 Bad Gateway` from Caddy until a Go service binary has been deployed. The Caddy + TLS layer is working; the upstream isn't running yet.
 
-## Manual first deploy (slice 4a bootstrap)
+## Manual deploy (bootstrap and break-glass)
 
-Slice 4b adds an automated GitHub Actions → S3 → SSM deploy pipeline. Until then, the first binary lands by hand. This procedure also doubles as the long-term break-glass when the pipeline is unavailable.
+The standard deploy path is automated via GitHub Actions, S3, and SSM. The procedure below is the bootstrap used to land the first binary on a fresh host, and the break-glass path when the automated pipeline is unavailable.
 
 From the operator laptop (with `tailscale` connected and the host visible in `tailscale status`):
 
@@ -126,7 +124,7 @@ If `/health` returns the JSON status, the runtime layer is wired correctly end-t
 - **Can't reach the host from your tailnet:** check `tailscale status` on the host (via SSM) — it should show the device as online.
 - **Cert not issued / browser warning:** Caddy retries ACME on a backoff. SSM in and check `journalctl -u caddy`. Common causes: DNS not propagated yet (wait, or `dig +trace`), port 80 blocked upstream, ACME rate limit hit (5 duplicate certs / week per domain — try `staging2.filingsradar.com` to recover).
 - **CAA record blocking issuance:** if you change the issuance CA from Let's Encrypt, update `aws_route53_record.caa` to match before applying.
-- **`/` returns 502 Bad Gateway:** Caddy is up but the Go service isn't. Check `systemctl status filings-server` and `journalctl -u filings-server` via SSM. Most common cause before slice 4b: no binary has been deployed (manual bootstrap above hasn't run).
+- **`/` returns 502 Bad Gateway:** Caddy is up but the Go service isn't. Check `systemctl status filings-server` and `journalctl -u filings-server` via SSM. Most common cause on a fresh host: no binary has been deployed yet (run the manual deploy procedure above).
 - **`filings-server` won't start:** check the env (`FILINGS_DB_PATH` must point at an existing file), check that `/opt/filings-watcher/current` is a valid symlink to a directory containing `filings-server`, check the binary architecture matches the host (`file /opt/filings-watcher/current/filings-server` should say `aarch64`).
 - **Lost both SSM and Tailscale:** there is no public ingress fallback for shell access. Recovery is `terraform taint aws_instance.host && terraform apply` (replaces the instance, then re-bootstrap). The break-glass story is deferred per [ADR 0014](../docs/decisions/0014-operator-access-via-mesh-vpn.md).
 

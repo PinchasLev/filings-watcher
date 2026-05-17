@@ -1,0 +1,115 @@
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit SHA to deploy (leave blank to use the current branch HEAD)"
+        required: false
+        default: ""
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  HOST_NAME_TAG: filings-watcher-host
+  SSM_DOCUMENT: filings-deploy
+
+jobs:
+  deploy:
+    name: Deploy release to production host
+    runs-on: ubuntu-latest
+    environment: aws-deploy
+
+    steps:
+      - name: Resolve SHA
+        id: resolve
+        run: |
+          SHA="${{ inputs.sha }}"
+          if [ -z "$SHA" ]; then
+            SHA="${{ github.sha }}"
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Deploying SHA: $SHA"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/filings-watcher-github-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Send deploy command via SSM
+        id: send
+        run: |
+          CMD_ID=$(aws ssm send-command \
+            --document-name "${SSM_DOCUMENT}" \
+            --parameters "sha=${{ steps.resolve.outputs.sha }}" \
+            --targets "Key=tag:Name,Values=${HOST_NAME_TAG}" \
+            --query 'Command.CommandId' \
+            --output text)
+          echo "cmd_id=$CMD_ID" >> "$GITHUB_OUTPUT"
+          echo "SSM command id: $CMD_ID"
+
+      - name: Wait for command to complete
+        run: |
+          # Poll loop: aws ssm wait command-executed requires --instance-id;
+          # our deploy role doesn't have ec2:DescribeInstances, so we poll
+          # via list-command-invocations which works with our scoped perms.
+          for attempt in $(seq 1 60); do
+            STATUS=$(aws ssm list-command-invocations \
+              --command-id "${{ steps.send.outputs.cmd_id }}" \
+              --details \
+              --query 'CommandInvocations[0].Status' \
+              --output text)
+            case "$STATUS" in
+              Success)
+                echo "Deploy succeeded."
+                exit 0
+                ;;
+              Failed|Cancelled|TimedOut)
+                echo "Deploy ended with status: $STATUS"
+                exit 1
+                ;;
+              Pending|InProgress|Delayed)
+                echo "[$attempt/60] status=$STATUS — waiting..."
+                sleep 5
+                ;;
+              *)
+                echo "Unexpected status: $STATUS"
+                exit 1
+                ;;
+            esac
+          done
+          echo "Timed out waiting for deploy to complete."
+          exit 1
+
+      - name: Print SSM command output
+        if: always()
+        run: |
+          aws ssm list-command-invocations \
+            --command-id "${{ steps.send.outputs.cmd_id }}" \
+            --details \
+            --query 'CommandInvocations[0].{Status:Status,Output:CommandPlugins[0].Output}' \
+            --output json
+
+      - name: Smoke test the public surface
+        if: success()
+        run: |
+          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" https://staging.filingsradar.com/health)
+          if [ "$STATUS" != "200" ]; then
+            echo "Health check returned HTTP $STATUS (expected 200)"
+            exit 1
+          fi
+          echo "Health check passed: 200 OK"
+
+      - name: Workflow summary
+        if: always()
+        run: |
+          {
+            echo "### Deploy summary"
+            echo ""
+            echo "- SHA: \`${{ steps.resolve.outputs.sha }}\`"
+            echo "- SSM command id: \`${{ steps.send.outputs.cmd_id }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

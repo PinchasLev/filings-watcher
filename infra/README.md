@@ -87,36 +87,47 @@ curl -I https://staging.filingsradar.com/    # valid Let's Encrypt cert
 
 The standard deploy path is automated via GitHub Actions, S3, and SSM. The procedure below is the bootstrap used to land the first binary on a fresh host, and the break-glass path when the automated pipeline is unavailable.
 
-From the operator laptop (with `tailscale` connected and the host visible in `tailscale status`):
+### From the operator laptop
 
 ```bash
-# 1. Cross-compile a static linux/arm64 binary
+# Cross-compile a static linux/arm64 binary
 cd ~/projects/filings-watcher/service
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o /tmp/filings-server ./cmd/filings-server
 
-# 2. Ship it to the host
+# Send it to the host via taildrop. Files land in /var/lib/tailscale/files/<sender>/,
+# which is root-owned on the receiving host.
 tailscale file cp /tmp/filings-server filings-watcher-host:
-# or: scp via tailscale ssh
-#   scp /tmp/filings-server filings-watcher-host:/tmp/filings-server
+```
 
-# 3. Install it, swap the symlink, start the service
-tailscale ssh ec2-user@filings-watcher-host <<'REMOTE_EOF'
-set -euo pipefail
+### On the host
+
+Open a session — either `aws ssm start-session --target <instance-id> --region us-east-1` or `tailscale ssh ec2-user@filings-watcher-host` — then run:
+
+```bash
+# Retrieve the file from the taildrop inbox into /tmp/. `--conflict=overwrite`
+# replaces any prior file with the same name from previous deploys.
+sudo tailscale file get --conflict=overwrite /tmp/
+
+# Sanity check the binary architecture (taildrop dir is root-only, so this needs sudo too)
+sudo file /tmp/filings-server
+# Expect: ELF 64-bit LSB executable, ARM aarch64, statically linked
+
+# Install, swap the symlink, start
 sudo install -d -o filings -g filings -m 0755 /opt/filings-watcher/releases/manual-bootstrap
 sudo install -o filings -g filings -m 0755 /tmp/filings-server /opt/filings-watcher/releases/manual-bootstrap/filings-server
 sudo ln -sfn /opt/filings-watcher/releases/manual-bootstrap /opt/filings-watcher/current
 sudo systemctl start filings-server
 sudo systemctl status filings-server --no-pager | head -15
-REMOTE_EOF
 ```
 
-Verify from anywhere:
+### Verify (from anywhere)
 
 ```bash
-curl -sS https://staging.filingsradar.com/health   # {"status":"ok"}
+curl -sS https://staging.filingsradar.com/health
+# Expect: {"status":"ok"}
 ```
 
-If `/health` returns the JSON status, the runtime layer is wired correctly end-to-end (Caddy → Go service → systemd → SQLite stub file).
+If `/health` returns the JSON status, the runtime layer is wired correctly end-to-end (Caddy → Go service → systemd → SQLite).
 
 ## If something breaks
 

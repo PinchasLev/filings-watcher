@@ -48,6 +48,52 @@ install -d -o ${app_user} -g ${app_user} -m 0755 /opt/filings-watcher/releases
 install -d -o ${app_user} -g ${app_user} -m 0755 /opt/filings-watcher/bin
 install -d -o ${app_user} -g ${app_user} -m 0755 /var/lib/filings-watcher
 
+# --- empty SQLite DB so filings-server.service can start before the
+#     orchestrator creates the schema. SQLite treats a 0-byte file as a
+#     fresh DB; the service's /health endpoint doesn't touch tables.
+install -o ${app_user} -g ${app_user} -m 0644 /dev/null /var/lib/filings-watcher/filings.db
+
+# --- filings-server systemd unit. The binary lives at
+#     /opt/filings-watcher/current/filings-server, where `current` is a
+#     symlink pointing at the active release directory under releases/.
+cat > /etc/systemd/system/filings-server.service <<'UNIT_EOF'
+[Unit]
+Description=filings-watcher Go HTTP service
+Documentation=https://github.com/PinchasLev/filings-watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${app_user}
+Group=${app_user}
+ExecStart=/opt/filings-watcher/current/filings-server
+Restart=on-failure
+RestartSec=5s
+
+Environment=FILINGS_DB_PATH=/var/lib/filings-watcher/filings.db
+Environment=LISTEN_ADDR=127.0.0.1:8080
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/filings-watcher
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=filings-server
+
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+UNIT_EOF
+
+systemctl daemon-reload
+# Enable for future reboots; do NOT start now — the binary doesn't exist
+# until the first deploy lands a release.
+systemctl enable filings-server.service
+
 # --- Tailscale daemon (operator runs `tailscale up --ssh` post-provision via SSM) ---
 curl -fsSL https://pkgs.tailscale.com/stable/amazon-linux/2023/tailscale.repo \
   -o /etc/yum.repos.d/tailscale.repo
@@ -84,7 +130,7 @@ staging.filingsradar.com {
         Referrer-Policy "strict-origin-when-cross-origin"
         Permissions-Policy "geolocation=(), microphone=(), camera=()"
     }
-    respond "filings-watcher staging" 200
+    reverse_proxy 127.0.0.1:8080
 }
 CADDYFILE_EOF
 chown caddy:caddy /etc/caddy/Caddyfile
@@ -116,4 +162,4 @@ UNIT_EOF
 systemctl daemon-reload
 systemctl enable --now caddy
 
-echo "$(date -Iseconds) slice-3 provisioning complete" > /var/log/filings-provision-complete
+echo "$(date -Iseconds) provisioning complete" > /var/log/filings-provision-complete

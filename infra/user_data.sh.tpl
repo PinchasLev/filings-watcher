@@ -54,9 +54,23 @@ curl -fsSL https://pkgs.tailscale.com/stable/amazon-linux/2023/tailscale.repo \
 dnf install -y tailscale
 systemctl enable --now tailscaled
 
-# --- Caddy (TLS-terminating reverse proxy with Let's Encrypt auto-renewal) ---
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/setup.rpm.sh' | bash
-dnf install -y caddy
+# --- Caddy (TLS-terminating web server with Let's Encrypt auto-renewal) ---
+# Caddy's official RPM packaging covers Fedora via COPR and Debian/Ubuntu via
+# Cloudsmith; neither cleanly covers Amazon Linux 2023 on aarch64. We install
+# the official static binary and a hand-rolled systemd unit instead. Upgrade
+# by bumping CADDY_VERSION and re-applying.
+CADDY_VERSION=2.11.3
+curl -fsSL -o /tmp/caddy.tar.gz \
+  "https://github.com/caddyserver/caddy/releases/download/v$${CADDY_VERSION}/caddy_$${CADDY_VERSION}_linux_arm64.tar.gz"
+tar -xzf /tmp/caddy.tar.gz -C /usr/local/bin caddy
+chmod 0755 /usr/local/bin/caddy
+rm -f /tmp/caddy.tar.gz
+
+if ! id caddy >/dev/null 2>&1; then
+  useradd --system --create-home --home-dir /var/lib/caddy --shell /usr/sbin/nologin caddy
+fi
+install -d -o caddy -g caddy -m 0755 /etc/caddy
+install -d -o caddy -g caddy -m 0700 /var/lib/caddy
 
 cat > /etc/caddy/Caddyfile <<'CADDYFILE_EOF'
 {
@@ -73,7 +87,33 @@ staging.filingsradar.com {
     respond "filings-watcher staging" 200
 }
 CADDYFILE_EOF
+chown caddy:caddy /etc/caddy/Caddyfile
+chmod 0644 /etc/caddy/Caddyfile
 
+cat > /etc/systemd/system/caddy.service <<'UNIT_EOF'
+[Unit]
+Description=Caddy
+Documentation=https://caddyserver.com/docs/
+After=network.target network-online.target
+Requires=network-online.target
+
+[Service]
+Type=notify
+User=caddy
+Group=caddy
+ExecStart=/usr/local/bin/caddy run --environ --config /etc/caddy/Caddyfile
+ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --force
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+PrivateTmp=true
+ProtectSystem=full
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+UNIT_EOF
+
+systemctl daemon-reload
 systemctl enable --now caddy
 
 echo "$(date -Iseconds) slice-3 provisioning complete" > /var/log/filings-provision-complete

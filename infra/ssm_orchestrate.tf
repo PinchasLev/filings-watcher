@@ -20,7 +20,7 @@ resource "aws_ssm_document" "orchestrate_once" {
         description    = "Stock ticker symbol, e.g. AAPL"
         allowedPattern = "^[A-Z]{1,5}(\\.[A-Z])?$"
       }
-      filing_index = {
+      filingIndex = {
         type           = "String"
         description    = "Zero-based index of the recent filing to classify (0 = most recent)"
         default        = "0"
@@ -34,7 +34,7 @@ resource "aws_ssm_document" "orchestrate_once" {
         runCommand = [
           "set -euo pipefail",
           "TICKER='{{ticker}}'",
-          "FILING_INDEX='{{filing_index}}'",
+          "FILING_INDEX='{{filingIndex}}'",
           "RELEASE_DIR=/opt/filings-watcher/current",
           "if [ ! -d $RELEASE_DIR/orchestrator ]; then",
           "  echo \"orchestrator not present in current release; deploy a SHA whose tarball includes orchestrator/\" >&2",

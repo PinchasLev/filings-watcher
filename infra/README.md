@@ -129,7 +129,7 @@ A separate SSM document — `filings-orchestrate-once` — invokes a single clas
 ```bash
 aws ssm send-command \
   --document-name filings-orchestrate-once \
-  --parameters "ticker=AAPL,filing_index=0" \
+  --parameters "ticker=AAPL,filingIndex=0" \
   --targets "Key=tag:Name,Values=filings-watcher-host" \
   --region us-east-1
 ```

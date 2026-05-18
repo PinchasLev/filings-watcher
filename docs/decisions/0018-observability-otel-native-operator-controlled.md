@@ -22,6 +22,7 @@ Concretely:
 - **Storage backends are swappable via Collector exporters.** Choosing CloudWatch, Grafana Cloud, Honeycomb, ClickHouse, Loki/Mimir/Tempo, or a self-hosted stack is a Collector configuration change, not an application change.
 - **Enrichment, redaction, sampling, and resource detection live in the Collector pipeline**, configured by the operator. Vendor-side enrichment (when a backend is chosen) supplements but does not replace the operator-controlled pipeline.
 - **Telemetry can drive action, not just observation.** The pipeline supports feedback loops where observed signals influence behavior — whether that behavior is *inside* the application (adaptive rate limiting, dynamic shedding, circuit breaking), in an *adjacent* process (a controller that adjusts runtime parameters in response to observed load or latency), or in an *external* consumer (an alerting system that takes action, an agentic AI that triages and remediates, an automated rollback path triggered by post-deploy error rates). The Collector fans streams to action-taking consumers alongside long-term storage; observability does not stop at the dashboard.
+- **Action consumers read telemetry locally, not by querying the backend.** Off-host storage is for dashboards, archival, and human-facing analysis. On-cluster decisions read the same data the Collector is *also* sending to storage, not from storage. Telemetry is fanned at the Collector — one source, multiple downstream consumers — so a control loop never round-trips through the backend to receive its own inputs. This keeps action paths low-latency, low-cost, and resilient to backend outages or rate limits.
 - **Instrumentation is cost-aware and thoughtful, not exhaustive.** Signals get added when they inform a decision or detect a concrete failure mode. Cardinality is bounded — no per-request-ID labels, no unbounded user-identifier attributes on metrics, no debug-verbosity logging in production paths. Sampling rates and retention windows are set deliberately. The cost of the observability pipeline itself is monitored as a first-class concern, the same way AWS spend is.
 - **Observability data remains accessible to derivative tools.** Logs, metrics, and traces are exposed in standard formats (OTLP, OpenMetrics, structured-JSON logs) through interfaces the operator controls — direct OTLP consumers, file exports, or backend query APIs that are not gated by a vendor's billing model. This preserves the ability to route telemetry into ML and AI analysis tools, custom anomaly detectors, archival pipelines, and agentic systems that reason about the running system's behavior.
 
@@ -60,6 +61,14 @@ Observability cost scales with cardinality, retention, and verbosity. A single h
 The Collector is the right enforcement point. Cardinality reduction, attribute dropping, span sampling, and per-signal ingest caps belong in the operator-controlled pipeline, not in application code. This keeps cost discipline portable across backends and reversible without changing instrumented call sites.
 
 Each new signal carries a lightweight justification: what decision does it inform, or what failure does it detect? Signals without an answer do not ship.
+
+### Why action consumers must not round-trip through storage
+
+If on-cluster decisions had to query the storage backend to read their inputs, every action loop would inherit the backend's latency, the backend's availability, and the backend's query costs. A circuit breaker deciding whether to trip on p99 latency cannot afford a 200 ms HTTP round-trip. An automated rollback path triggered by post-deploy error rates must not be unavailable when the observability backend itself is degraded. An agentic system triaging an incident should not be paying per query to fetch the same data the application produced moments ago.
+
+The Collector's multi-output fan-out is the architectural answer. One source — telemetry leaving the application — splits into multiple downstream consumers. Storage gets a copy for dashboards and historical analysis. Local consumers (control loops, sidecar agents, in-cluster automation) get the same stream, fresh, with no round-trip and no dependency on the backend being available, cheap, or fast enough for the action loop's timing budget.
+
+This is the property that makes off-host storage compatible with on-cluster decisioning: the *storage* layer is off-host; the *signal* layer is wherever any consumer needs it to be.
 
 ### Why derivative-tool accessibility is structural, not incidental
 

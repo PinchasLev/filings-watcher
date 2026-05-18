@@ -83,6 +83,20 @@ curl -I https://staging.filingsradar.com/    # valid Let's Encrypt cert
 
 `/` returns `502 Bad Gateway` from Caddy until a Go service binary has been deployed. The Caddy + TLS layer is working; the upstream isn't running yet.
 
+## Automated deploys (push + click)
+
+Once per repository / AWS account pair, the following GitHub-side configuration must exist before the workflows can run:
+
+1. **Repository variable** `AWS_ACCOUNT_ID` set to the target AWS account number (Settings → Secrets and variables → Actions → Variables).
+2. **GitHub Environment** named `aws-deploy` (Settings → Environments). Configure it with required reviewers (at minimum the operator) so each deploy needs explicit human approval before the OIDC role can be assumed. Optionally restrict deployment branches to `main`.
+
+After that one-time setup:
+
+- Pushes to `main` trigger the `publish-artifact` job in CI. After lint and test jobs pass, the binary is built, tarred, and uploaded to `s3://filingsradar-artifacts/releases/<sha>/release.tar.gz` via the OIDC-scoped build role.
+- Deploys are operator-triggered: GitHub UI → Actions → "deploy" workflow → "Run workflow" → optional `sha` input (blank = current branch HEAD). The environment gate prompts the configured reviewers; after approval, the workflow invokes the `filings-deploy` SSM document, waits for completion, and smoke-tests `https://staging.filingsradar.com/health`.
+
+Rollback is the same workflow with an older SHA in the `sha` input.
+
 ## Manual deploy (bootstrap and break-glass)
 
 The standard deploy path is automated via GitHub Actions, S3, and SSM. The procedure below is the bootstrap used to land the first binary on a fresh host, and the break-glass path when the automated pipeline is unavailable.

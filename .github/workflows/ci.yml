@@ -158,3 +158,60 @@ jobs:
 
       - name: Validate
         run: terraform validate
+
+  publish-artifact:
+    name: Publish release tarball to S3
+    needs: [scan-secrets, lint-docs, lint-python, lint-go, lint-infra]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: us-east-1
+      ARTIFACT_BUCKET: filingsradar-artifacts
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: service/go.mod
+          cache: true
+          cache-dependency-path: service/go.sum
+
+      - name: Build arm64 binary
+        working-directory: service
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+            go build -trimpath -ldflags="-s -w" \
+            -o /tmp/filings-server ./cmd/filings-server
+          file /tmp/filings-server
+
+      - name: Package release tarball
+        run: |
+          tar -czf /tmp/release.tar.gz -C /tmp filings-server
+          ls -l /tmp/release.tar.gz
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/filings-watcher-github-build
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload release to S3
+        run: |
+          aws s3 cp /tmp/release.tar.gz \
+            "s3://${ARTIFACT_BUCKET}/releases/${{ github.sha }}/release.tar.gz"
+
+      - name: Workflow summary
+        run: |
+          {
+            echo "### Release published"
+            echo ""
+            echo "- SHA: \`${{ github.sha }}\`"
+            echo "- Object: \`s3://${ARTIFACT_BUCKET}/releases/${{ github.sha }}/release.tar.gz\`"
+            echo ""
+            echo "Deploy this build by running the **Deploy** workflow with \`sha=${{ github.sha }}\`."
+          } >> "$GITHUB_STEP_SUMMARY"

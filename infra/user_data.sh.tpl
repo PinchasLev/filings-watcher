@@ -42,16 +42,57 @@ if ! id ${app_user} >/dev/null 2>&1; then
   useradd --system --create-home --shell /bin/bash ${app_user}
 fi
 
+# --- data volume: attach, format-if-blank, mount at /data ---
+# Dedicated EBS volume holding SQLite + Caddy ACME state across instance
+# replacements (see ADR 0019). AWS attaches at /dev/sdh; on Nitro this
+# surfaces as /dev/nvme*n1, with the numeric suffix non-deterministic.
+# The reliable identifier is the EBS volume serial number.
+
+DATA_VOLUME_ID='${data_volume_id}'
+DATA_VOLUME_ID_NO_DASHES="$${DATA_VOLUME_ID//-/}"
+DATA_DEVICE_LINK="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$${DATA_VOLUME_ID_NO_DASHES}"
+
+# Wait up to 60s for the volume attachment to complete and the by-id symlink to appear.
+for attempt in $(seq 1 30); do
+  if [ -b "$DATA_DEVICE_LINK" ]; then break; fi
+  sleep 2
+done
+if [ ! -b "$DATA_DEVICE_LINK" ]; then
+  echo "data volume device $DATA_DEVICE_LINK did not appear after 60s" >&2
+  exit 1
+fi
+DATA_DEVICE=$(readlink -f "$DATA_DEVICE_LINK")
+
+# Format only if no filesystem present — on a re-attached volume, this is
+# the critical guard against destroying production data.
+if ! blkid "$DATA_DEVICE" >/dev/null 2>&1; then
+  mkfs.ext4 -L filings-data "$DATA_DEVICE"
+fi
+
+mkdir -p /data
+DATA_UUID=$(blkid -s UUID -o value "$DATA_DEVICE")
+if ! grep -q "UUID=$DATA_UUID" /etc/fstab; then
+  echo "UUID=$DATA_UUID /data ext4 defaults,nofail 0 2" >> /etc/fstab
+fi
+mountpoint -q /data || mount /data
+
 # --- application directories ---
+# /opt tree holds release artifacts (rebuilt by the deploy pipeline) and
+# stays on the root volume. /var/lib/filings-watcher holds the SQLite DB
+# and is symlinked onto the data volume so it survives instance replacement.
 install -d -o ${app_user} -g ${app_user} -m 0755 /opt/filings-watcher
 install -d -o ${app_user} -g ${app_user} -m 0755 /opt/filings-watcher/releases
 install -d -o ${app_user} -g ${app_user} -m 0755 /opt/filings-watcher/bin
-install -d -o ${app_user} -g ${app_user} -m 0755 /var/lib/filings-watcher
+install -d -o ${app_user} -g ${app_user} -m 0755 /data/filings-watcher
+ln -sfn /data/filings-watcher /var/lib/filings-watcher
 
 # --- empty SQLite DB so filings-server.service can start before the
-#     orchestrator creates the schema. SQLite treats a 0-byte file as a
-#     fresh DB; the service's /health endpoint doesn't touch tables.
-install -o ${app_user} -g ${app_user} -m 0644 /dev/null /var/lib/filings-watcher/filings.db
+#     orchestrator creates the schema. Conditional: leave an existing DB
+#     alone (re-attached data volume scenario). SQLite treats a 0-byte
+#     file as a fresh DB; the service's /health endpoint doesn't touch tables.
+if [ ! -e /var/lib/filings-watcher/filings.db ]; then
+  install -o ${app_user} -g ${app_user} -m 0644 /dev/null /var/lib/filings-watcher/filings.db
+fi
 
 # --- filings-server systemd unit. The binary lives at
 #     /opt/filings-watcher/current/filings-server, where `current` is a
@@ -113,10 +154,13 @@ chmod 0755 /usr/local/bin/caddy
 rm -f /tmp/caddy.tar.gz
 
 if ! id caddy >/dev/null 2>&1; then
-  useradd --system --create-home --home-dir /var/lib/caddy --shell /usr/sbin/nologin caddy
+  useradd --system --no-create-home --home-dir /var/lib/caddy --shell /usr/sbin/nologin caddy
 fi
 install -d -o caddy -g caddy -m 0755 /etc/caddy
-install -d -o caddy -g caddy -m 0700 /var/lib/caddy
+# Caddy ACME state lives on the data volume so issued certs and the account
+# key survive instance replacement (preserves Let's Encrypt rate-limit headroom).
+install -d -o caddy -g caddy -m 0700 /data/caddy
+ln -sfn /data/caddy /var/lib/caddy
 
 cat > /etc/caddy/Caddyfile <<'CADDYFILE_EOF'
 {

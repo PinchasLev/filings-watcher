@@ -28,8 +28,9 @@ resource "aws_instance" "host" {
 
   user_data_replace_on_change = true
   user_data = templatefile("${path.module}/user_data.sh.tpl", {
-    app_user   = var.app_user
-    acme_email = var.acme_email
+    app_user       = var.app_user
+    acme_email     = var.acme_email
+    data_volume_id = aws_ebs_volume.data.id
   })
 
   root_block_device {

@@ -22,6 +22,12 @@ variable "root_volume_gb" {
   default     = 20
 }
 
+variable "data_volume_gb" {
+  description = "Dedicated data EBS volume size in GB. Holds SQLite DB and Caddy ACME state; survives instance replacement. See ADR 0019."
+  type        = number
+  default     = 10
+}
+
 variable "app_user" {
   description = "OS user that owns /opt/filings-watcher and runs the application processes."
   type        = string

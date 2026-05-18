@@ -9,9 +9,14 @@ See [ADR 0014](../docs/decisions/0014-operator-access-via-mesh-vpn.md) for the o
 - One EC2 host (`t4g.small`, ARM, Amazon Linux 2023) in `us-east-1a`
 - Elastic IP attached to the host (public address survives instance replacement)
 - Security group: public ingress on 80/tcp + 443/tcp for Caddy; operator access via Tailscale and AWS SSM Session Manager
-- IAM role on the instance with `AmazonSSMManagedInstanceCore`
+- IAM role on the instance with `AmazonSSMManagedInstanceCore` plus `s3:GetObject` on the artifact bucket
 - Route53 A record `staging.filingsradar.com` → the EIP, plus a CAA record locking TLS issuance to Let's Encrypt
-- First-boot provisioning via `user_data.sh.tpl`: security patches, 2 GB swap, automatic updates, journald retention, SSH hardening, `filings` application user, `/opt/filings-watcher/` directory tree, empty SQLite DB at `/var/lib/filings-watcher/filings.db`, `filings-server.service` systemd unit installed and enabled, Tailscale daemon installed (operator joins post-provision), Caddy installed and configured to reverse-proxy `staging.filingsradar.com` to `127.0.0.1:8080`
+- Dedicated EBS data volume (`filings-watcher-data`, 10 GB gp3, encrypted) attached to the host, mounted at `/data`. Application state — SQLite DB and Caddy ACME state — lives on this volume so it survives instance replacement. See [ADR 0019](../docs/decisions/0019-data-persistence-across-instance-replacement.md).
+- AWS Data Lifecycle Manager policy taking daily snapshots of the data volume at 06:00 UTC with 7-day retention
+- S3 bucket `filingsradar-artifacts` (versioned, encrypted, public access blocked, 90-day current / 30-day noncurrent lifecycle) holding release tarballs
+- GitHub OIDC provider plus two IAM roles for GitHub Actions: build (write `releases/*` on push to main) and deploy (invoke the `filings-deploy` SSM document, gated by the `aws-deploy` GitHub environment)
+- SSM document `filings-deploy` encapsulating the host-side deploy procedure (S3 pull, tar extract, symlink swap, systemctl restart, health check)
+- First-boot provisioning via `user_data.sh.tpl`: security patches, 2 GB swap, automatic updates, journald retention, SSH hardening, `filings` application user, `/opt/filings-watcher/` release directory tree, data-volume mount + filesystem bootstrap, `/var/lib/filings-watcher` and `/var/lib/caddy` symlinked into `/data`, empty SQLite DB at `/var/lib/filings-watcher/filings.db` (only when starting from a blank data volume), `filings-server.service` systemd unit installed and enabled, Tailscale daemon installed (operator joins post-provision), Caddy installed and configured to reverse-proxy `staging.filingsradar.com` to `127.0.0.1:8080`
 
 Application code (Go service binary, Python orchestrator) is delivered separately by the deploy pipeline, not by Terraform.
 
@@ -153,13 +158,44 @@ If `/health` returns the JSON status, the runtime layer is wired correctly end-t
 - **`filings-server` won't start:** check the env (`FILINGS_DB_PATH` must point at an existing file), check that `/opt/filings-watcher/current` is a valid symlink to a directory containing `filings-server`, check the binary architecture matches the host (`file /opt/filings-watcher/current/filings-server` should say `aarch64`).
 - **Lost both SSM and Tailscale:** there is no public ingress fallback for shell access. Recovery is `terraform taint aws_instance.host && terraform apply` (replaces the instance, then re-bootstrap). The break-glass story is deferred per [ADR 0014](../docs/decisions/0014-operator-access-via-mesh-vpn.md).
 
+## Recovering from a corrupted or accidentally-deleted file
+
+The data volume is snapshotted daily; recovery uses an AWS snapshot restore. From the operator laptop:
+
+```bash
+# 1. Find the most recent good snapshot
+aws ec2 describe-snapshots \
+  --owner-ids self \
+  --filters "Name=tag:Name,Values=filings-watcher-data" \
+  --query 'Snapshots[*].[SnapshotId,StartTime,State]' \
+  --output table
+
+# 2. Create a new volume from the chosen snapshot (in the same AZ as the host)
+aws ec2 create-volume \
+  --snapshot-id snap-xxxxxxxx \
+  --availability-zone us-east-1a \
+  --volume-type gp3 \
+  --encrypted \
+  --tag-specifications 'ResourceType=volume,Tags=[{Key=Name,Value=filings-watcher-data-restore}]'
+
+# 3. Stop the service, detach the current volume, attach the restored one
+#    (do this via SSM session on the host; commands omitted here for brevity)
+#    Then update infra/data_volume.tf with the new volume ID and run `terraform apply`.
+```
+
+A full procedure (with the host-side mount swap) is documented when first exercised in anger.
+
 ## Tearing down
 
 ```bash
 terraform destroy
 ```
 
-Releases the EIP, terminates the instance, removes the security group and IAM role. **No data backups are made** — anything on the EBS volume is lost. Remove the host from the tailnet manually via the Tailscale admin console (it'll show as offline after the instance is gone).
+Releases the EIP, terminates the instance, removes the security group and IAM role.
+
+**The data volume is preserved by default.** `aws_ebs_volume.data` has `lifecycle { prevent_destroy = true }` to guard against accidental loss. Removing the data volume requires a deliberate two-step operator action: remove the lifecycle block from `data_volume.tf`, then `terraform destroy` (or `terraform destroy -target=aws_ebs_volume.data`). Snapshots are retained per the DLM policy regardless.
+
+Remove the host from the tailnet manually via the Tailscale admin console (it'll show as offline after the instance is gone).
 
 ## State management
 
@@ -173,12 +209,15 @@ Migration to S3 + DynamoDB remote state is deferred until a second engineer join
 |---|---|
 | `t4g.small` (730 hrs/month) | ~$12.27 |
 | 20 GB gp3 root volume | ~$1.60 |
+| 10 GB gp3 data volume | ~$0.80 |
+| EBS snapshots (7-day rolling, ~10 GB) | ~$0.50 |
 | Elastic IP (attached) | $0 |
 | Elastic IP (detached, e.g., during instance replacement) | ~$3.65/mo if held |
 | Data transfer out (first 100 GB/month free) | $0 at v0 traffic |
 | Tailscale (free tier: 3 users, 100 devices) | $0 |
 | Route53 hosted zone (already provisioned) | ~$0.50 |
 | Let's Encrypt certificates | $0 |
-| **Total (steady state)** | **~$14.50/month** |
+| S3 artifact storage (rolling releases, well under 1 GB) | ~$0.05 |
+| **Total (steady state)** | **~$15.75/month** |
 
 This sits inside the $20/month budget alarm.

@@ -35,6 +35,26 @@ resource "aws_iam_role_policy" "host_artifacts_read" {
   policy = data.aws_iam_policy_document.host_artifacts_read.json
 }
 
+# SSM Parameter Store read for third-party API credentials (Anthropic,
+# LangSmith). Operator places values out-of-band per ADR 0020.
+data "aws_iam_policy_document" "host_secrets_read" {
+  statement {
+    actions = [
+      "ssm:GetParameter",
+      "ssm:GetParameters",
+    ]
+    resources = [
+      "arn:aws:ssm:${var.aws_region}:*:parameter/filings-watcher/*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "host_secrets_read" {
+  name   = "filings-watcher-host-secrets-read"
+  role   = aws_iam_role.host.id
+  policy = data.aws_iam_policy_document.host_secrets_read.json
+}
+
 resource "aws_iam_instance_profile" "host" {
   name = "filings-watcher-host-profile"
   role = aws_iam_role.host.name

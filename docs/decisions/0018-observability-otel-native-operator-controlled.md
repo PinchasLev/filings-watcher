@@ -7,7 +7,7 @@
 
 [ADR 0013](0013-operational-observability-for-v0.md) scopes operational observability for v0 narrowly: structured logs to stdout (captured by `journald`), one CloudWatch alarm on the unit's failed state, and operator endpoints (`/ops/runs`, `/ops/status`) for tick-level outcomes. That ADR explicitly defers continuous metrics, time-series storage, and dashboarding to v1.
 
-That deferral leaves a forward-looking question unanswered: when continuous observability is needed, *what shape* does it take? The choices made now — which SDKs the application code uses, which agent runs on the host, where data is shipped — determine which doors remain open later. Vendor-specific instrumentation (Datadog's agent, CloudWatch's proprietary log format, AWS X-Ray's SDK) is cheap to adopt and expensive to leave; vendor-neutral instrumentation is moderately more work up front and preserves choice.
+That deferral leaves a forward-looking question unanswered: when continuous observability is needed, *what shape* does it take? The choices made now — which SDKs the application code uses, which agent runs on the host, where data is shipped — determine which doors remain open later. Vendor-specific instrumentation (Datadog's agent, CloudWatch's proprietary log format, AWS X-Ray's SDK) is cheap to adopt and expensive to leave: every instrumented call site becomes a re-write when the vendor decision is reversed. Vendor-neutral instrumentation is moderately more work up front and pays back the first time the backend changes — or the first time the data needs to flow somewhere the original vendor didn't anticipate.
 
 The substrate is single-host today, with v1 commitments to remain single-host before any multi-host work. The observability surface should support both the current scale and future trajectories without rework.
 
@@ -23,6 +23,7 @@ Concretely:
 - **Enrichment, redaction, sampling, and resource detection live in the Collector pipeline**, configured by the operator. Vendor-side enrichment (when a backend is chosen) supplements but does not replace the operator-controlled pipeline.
 - **Metrics-as-control-input is a supported future capability.** The Collector pipeline must be able to fan a metric stream to both long-term storage and an in-system consumer (a sidecar query target, an OTLP receiver inside the application, or a sibling process) so that observed metrics can feed back into runtime behavior (adaptive rate limiting, dynamic shedding, circuit breaking) when warranted.
 - **Instrumentation is cost-aware and thoughtful, not exhaustive.** Signals get added when they inform a decision or detect a concrete failure mode. Cardinality is bounded — no per-request-ID labels, no unbounded user-identifier attributes on metrics, no debug-verbosity logging in production paths. Sampling rates and retention windows are set deliberately. The cost of the observability pipeline itself is monitored as a first-class concern, the same way AWS spend is.
+- **Observability data remains accessible to derivative tools.** Logs, metrics, and traces are exposed in standard formats (OTLP, OpenMetrics, structured-JSON logs) through interfaces the operator controls — direct OTLP consumers, file exports, or backend query APIs that are not gated by a vendor's billing model. This preserves the ability to route telemetry into ML and AI analysis tools, custom anomaly detectors, archival pipelines, and agentic systems that reason about the running system's behavior.
 
 ADR 0013's v0 surface (one CloudWatch alarm, journald-captured stdout logs) remains valid as the *starting point*. This ADR sets the *trajectory*: any observability surface added after v0 conforms to the OTel-native, operator-controlled commitment.
 
@@ -57,6 +58,12 @@ Observability cost scales with cardinality, retention, and verbosity. A single h
 The Collector is the right enforcement point. Cardinality reduction, attribute dropping, span sampling, and per-signal ingest caps belong in the operator-controlled pipeline, not in application code. This keeps cost discipline portable across backends and reversible without changing instrumented call sites.
 
 Each new signal carries a lightweight justification: what decision does it inform, or what failure does it detect? Signals without an answer do not ship.
+
+### Why derivative-tool accessibility is structural, not incidental
+
+Telemetry is not just for human-facing dashboards anymore. It increasingly feeds anomaly detection, AI-assisted triage, pattern discovery in logs and traces, and agentic systems that observe service behavior to make or recommend decisions. Vendor-locked observability stacks frequently gate that access: proprietary storage formats, API rate limits on extraction, billing models that charge for re-reading your own data, server-side sampling that drops information before it reaches any consumer.
+
+The operator-controlled Collector pattern keeps the data accessible by construction. A new derivative consumer — an ML pipeline, an AI-driven analyzer, a future tool that doesn't yet exist — is added as another OTLP consumer or another Collector exporter, without restructuring the pipeline or renegotiating with a vendor. The cost of recovering this access after committing to a vendor that gates it is the same cost as the vendor-neutrality decision itself: a full re-instrumentation or expensive data-extraction tooling.
 
 ### Why this ADR is not "just use the CloudWatch agent"
 

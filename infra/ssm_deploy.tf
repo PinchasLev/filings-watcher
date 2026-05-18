@@ -36,6 +36,18 @@ resource "aws_ssm_document" "deploy" {
           "tar -xzf $TARBALL -C $RELEASES_DIR/$SHA",
           "chown -R filings:filings $RELEASES_DIR/$SHA",
           "rm -f $TARBALL",
+          # Resolve Python dependencies and apply pending DB migrations
+          # before the new code takes effect. Secrets are fetched from
+          # Parameter Store (see ADR 0020) and exported only for the
+          # duration of the subshell that runs the orchestrator commands.
+          "if [ -d $RELEASES_DIR/$SHA/orchestrator ]; then",
+          "  sudo -u filings -H bash -c \"cd $RELEASES_DIR/$SHA/orchestrator && /home/filings/.local/bin/uv sync --locked --no-dev\"",
+          "  ANTHROPIC_API_KEY=$(aws ssm get-parameter --name /filings-watcher/anthropic-api-key --with-decryption --query Parameter.Value --output text --region ${var.aws_region})",
+          "  LANGSMITH_API_KEY=$(aws ssm get-parameter --name /filings-watcher/langsmith-api-key --with-decryption --query Parameter.Value --output text --region ${var.aws_region})",
+          "  export ANTHROPIC_API_KEY LANGSMITH_API_KEY",
+          "  sudo -u filings -H --preserve-env=ANTHROPIC_API_KEY,LANGSMITH_API_KEY bash -c \"cd $RELEASES_DIR/$SHA/orchestrator && FILINGS_DB_PATH=/var/lib/filings-watcher/filings.db /home/filings/.local/bin/uv run --no-sync migrate-db\"",
+          "  unset ANTHROPIC_API_KEY LANGSMITH_API_KEY",
+          "fi",
           "ln -sfn $RELEASES_DIR/$SHA /opt/filings-watcher/current",
           "systemctl restart filings-server",
           "sleep 2",

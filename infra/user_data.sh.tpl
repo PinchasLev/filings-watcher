@@ -42,6 +42,14 @@ if ! id ${app_user} >/dev/null 2>&1; then
   useradd --system --create-home --shell /bin/bash ${app_user}
 fi
 
+# --- uv (Python package + toolchain manager) installed for the app user.
+#     Python 3.13 is downloaded by uv on first `uv sync` rather than via dnf,
+#     keeping toolchain version under uv's control per ADR 0004.
+APP_USER_HOME=$(getent passwd ${app_user} | cut -d: -f6)
+if [ ! -x "$APP_USER_HOME/.local/bin/uv" ]; then
+  sudo -u ${app_user} -H bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+fi
+
 # --- data volume: attach, format-if-blank, mount at /data ---
 # Dedicated EBS volume holding SQLite + Caddy ACME state across instance
 # replacements (see ADR 0019). AWS attaches at /dev/sdh; on Nitro this

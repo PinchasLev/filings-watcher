@@ -9,14 +9,14 @@ See [ADR 0014](../docs/decisions/0014-operator-access-via-mesh-vpn.md) for the o
 - One EC2 host (`t4g.small`, ARM, Amazon Linux 2023) in `us-east-1a`
 - Elastic IP attached to the host (public address survives instance replacement)
 - Security group: public ingress on 80/tcp + 443/tcp for Caddy; operator access via Tailscale and AWS SSM Session Manager
-- IAM role on the instance with `AmazonSSMManagedInstanceCore` plus `s3:GetObject` on the artifact bucket
+- IAM role on the instance with `AmazonSSMManagedInstanceCore`, `s3:GetObject` on the artifact bucket, and `ssm:GetParameter*` on `/filings-watcher/*` (third-party API credentials)
 - Route53 A record `staging.filingsradar.com` → the EIP, plus a CAA record locking TLS issuance to Let's Encrypt
 - Dedicated EBS data volume (`filings-watcher-data`, 10 GB gp3, encrypted) attached to the host, mounted at `/data`. Application state — SQLite DB and Caddy ACME state — lives on this volume so it survives instance replacement. See [ADR 0019](../docs/decisions/0019-data-persistence-across-instance-replacement.md).
 - AWS Data Lifecycle Manager policy taking daily snapshots of the data volume at 06:00 UTC with 7-day retention
 - S3 bucket `filingsradar-artifacts` (versioned, encrypted, public access blocked, 90-day current / 30-day noncurrent lifecycle) holding release tarballs
 - GitHub OIDC provider plus two IAM roles for GitHub Actions: build (write `releases/*` on push to main) and deploy (invoke the `filings-deploy` SSM document, gated by the `aws-deploy` GitHub environment)
 - SSM document `filings-deploy` encapsulating the host-side deploy procedure (S3 pull, tar extract, symlink swap, systemctl restart, health check)
-- First-boot provisioning via `user_data.sh.tpl`: security patches, 2 GB swap, automatic updates, journald retention, SSH hardening, `filings` application user, `/opt/filings-watcher/` release directory tree, data-volume mount + filesystem bootstrap, `/var/lib/filings-watcher` and `/var/lib/caddy` symlinked into `/data`, empty SQLite DB at `/var/lib/filings-watcher/filings.db` (only when starting from a blank data volume), `filings-server.service` systemd unit installed and enabled, Tailscale daemon installed (operator joins post-provision), Caddy installed and configured to reverse-proxy `staging.filingsradar.com` to `127.0.0.1:8080`
+- First-boot provisioning via `user_data.sh.tpl`: security patches, 2 GB swap, automatic updates, journald retention, SSH hardening, `filings` application user, `uv` (Python package and toolchain manager) installed for the app user, `/opt/filings-watcher/` release directory tree, data-volume mount + filesystem bootstrap, `/var/lib/filings-watcher` and `/var/lib/caddy` symlinked into `/data`, empty SQLite DB at `/var/lib/filings-watcher/filings.db` (only when starting from a blank data volume), `filings-server.service` systemd unit installed and enabled, Tailscale daemon installed (operator joins post-provision), Caddy installed and configured to reverse-proxy `staging.filingsradar.com` to `127.0.0.1:8080`
 
 Application code (Go service binary, Python orchestrator) is delivered separately by the deploy pipeline, not by Terraform.
 
@@ -88,6 +88,26 @@ curl -I https://staging.filingsradar.com/    # valid Let's Encrypt cert
 
 `/` returns `502 Bad Gateway` from Caddy until a Go service binary has been deployed. The Caddy + TLS layer is working; the upstream isn't running yet.
 
+## One-time AWS configuration
+
+Two values must be seeded out-of-band into AWS Systems Manager Parameter Store before the orchestrator can run. The operator places these once per AWS account; the host fetches them at deploy time via the IAM-scoped read policy (see [ADR 0020](../docs/decisions/0020-secrets-and-migration-rollback.md) for the rationale).
+
+```bash
+aws ssm put-parameter \
+  --name /filings-watcher/anthropic-api-key \
+  --value "<your-anthropic-api-key>" \
+  --type SecureString \
+  --region us-east-1
+
+aws ssm put-parameter \
+  --name /filings-watcher/langsmith-api-key \
+  --value "<your-langsmith-api-key>" \
+  --type SecureString \
+  --region us-east-1
+```
+
+Rotation: re-run `put-parameter` with `--overwrite`. The next deploy or orchestrator invocation picks up the new value; no host-side change required.
+
 ## Automated deploys (push + click)
 
 Once per repository / AWS account pair, the following GitHub-side configuration must exist before the workflows can run:
@@ -101,6 +121,20 @@ After that one-time setup:
 - Deploys are operator-triggered: GitHub UI → Actions → "deploy" workflow → "Run workflow" → optional `sha` input (blank = current branch HEAD). The environment gate prompts the configured reviewers; after approval, the workflow invokes the `filings-deploy` SSM document, waits for completion, and smoke-tests `https://staging.filingsradar.com/health`.
 
 Rollback is the same workflow with an older SHA in the `sha` input.
+
+## Running the orchestrator manually
+
+A separate SSM document — `filings-orchestrate-once` — invokes a single classification pass for one filing. Use it to produce the first real classifications before a scheduled cadence is in place, or to verify the pipeline against a specific ticker on demand.
+
+```bash
+aws ssm send-command \
+  --document-name filings-orchestrate-once \
+  --parameters "ticker=AAPL,filing_index=0" \
+  --targets "Key=tag:Name,Values=filings-watcher-host" \
+  --region us-east-1
+```
+
+The document fetches the API keys from Parameter Store at invocation time, runs `classify-filing` against the requested ticker and filing index (0 = most recent), and persists the classification to the SQLite DB on the data volume. Inspect the result via `https://staging.filingsradar.com/filings` once the pass completes.
 
 ## Manual deploy (bootstrap and break-glass)
 

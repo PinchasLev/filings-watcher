@@ -189,10 +189,30 @@ jobs:
             -o /tmp/filings-server ./cmd/filings-server
           file /tmp/filings-server
 
+      - name: Stage orchestrator tree for packaging
+        run: |
+          mkdir -p /tmp/release/orchestrator
+          # Copy only what the host needs at runtime — source, pyproject,
+          # lockfile, and SQL migrations. Tests, caches, and editor files
+          # stay out of the tarball.
+          rsync -a \
+            --include='pyproject.toml' \
+            --include='uv.lock' \
+            --include='README.md' \
+            --include='src/' \
+            --include='src/**' \
+            --include='db/' \
+            --include='db/migrations/' \
+            --include='db/migrations/**' \
+            --exclude='*' \
+            orchestrator/ /tmp/release/orchestrator/
+          mv /tmp/filings-server /tmp/release/filings-server
+
       - name: Package release tarball
         run: |
-          tar -czf /tmp/release.tar.gz -C /tmp filings-server
+          tar -czf /tmp/release.tar.gz -C /tmp/release .
           ls -l /tmp/release.tar.gz
+          tar -tzf /tmp/release.tar.gz | head -20
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4

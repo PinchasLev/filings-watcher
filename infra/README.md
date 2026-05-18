@@ -90,7 +90,7 @@ curl -I https://staging.filingsradar.com/    # valid Let's Encrypt cert
 
 ## One-time AWS configuration
 
-Two values must be seeded out-of-band into AWS Systems Manager Parameter Store before the orchestrator can run. The operator places these once per AWS account; the host fetches them at deploy time via the IAM-scoped read policy (see [ADR 0020](../docs/decisions/0020-secrets-and-migration-rollback.md) for the rationale).
+Three values must be seeded out-of-band into AWS Systems Manager Parameter Store before the orchestrator can run. The operator places these once per AWS account; the host fetches them at deploy time via the IAM-scoped read policy (see [ADR 0020](../docs/decisions/0020-secrets-and-migration-rollback.md) for the rationale). `EDGAR_USER_AGENT` must include a contact email per [SEC EDGAR access guidelines](https://www.sec.gov/os/accessing-edgar-data).
 
 ```bash
 aws ssm put-parameter \
@@ -102,6 +102,12 @@ aws ssm put-parameter \
 aws ssm put-parameter \
   --name /filings-watcher/langsmith-api-key \
   --value "<your-langsmith-api-key>" \
+  --type SecureString \
+  --region us-east-1
+
+aws ssm put-parameter \
+  --name /filings-watcher/edgar-user-agent \
+  --value "<name> <contact-email>" \
   --type SecureString \
   --region us-east-1
 ```

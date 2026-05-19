@@ -1,6 +1,6 @@
 # 0006. EDGAR ingestion via per-company submissions feed
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR 0021](0021-realtime-8k-ingest-via-daily-index.md)
 - **Date:** 2026-05-13
 
 ## Context

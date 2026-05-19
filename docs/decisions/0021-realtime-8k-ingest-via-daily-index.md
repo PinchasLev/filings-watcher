@@ -39,9 +39,11 @@ CREATE TABLE ingest_cursor (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   last_accession_number TEXT NOT NULL,
   last_filed_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at TEXT NOT NULL
 );
 ```
+
+`updated_at` is supplied by the application on every write (UTC ISO-8601). The schema carries no engine-specific DEFAULT clause, matching the portable-SQL convention established in migration 001 — the same path `classified_at` follows on the `classifications` table.
 
 The cursor is a query-narrowing optimization, not the correctness mechanism. The accession-number unique constraint on the filing table rejects duplicates at insert time — a backfill replay or a re-run of the same tick produces no double-classification. Reclassification under a new taxonomy or model version follows the versioned-classifications scheme of [ADR 0011](0011-classification-history-and-reclassification.md).
 

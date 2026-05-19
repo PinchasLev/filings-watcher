@@ -354,9 +354,7 @@ def test_ingest_cursor_upsert_overwrites_singleton_row() -> None:
             upsert_sql,
             {"a": "0000000000-26-000002", "f": "2026-05-19", "u": "2026-05-19T10:15:00+00:00"},
         )
-        rows = conn.execute(
-            text("SELECT id, last_accession_number FROM ingest_cursor")
-        ).fetchall()
+        rows = conn.execute(text("SELECT id, last_accession_number FROM ingest_cursor")).fetchall()
 
     assert len(rows) == 1
     assert rows[0][0] == 1

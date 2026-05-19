@@ -7,6 +7,12 @@ set -euxo pipefail
 # --- security patches ---
 dnf update -y
 
+# --- operator tools ---
+# sqlite CLI for ad-hoc inspection of /var/lib/filings-watcher/filings.db via
+# Session Manager or SSM run-command. The Python orchestrator uses sqlite3
+# through the stdlib and does not require the CLI; this is purely for operators.
+dnf install -y sqlite
+
 # --- 2 GB swap file ---
 if [ ! -f /swapfile ]; then
   fallocate -l 2G /swapfile

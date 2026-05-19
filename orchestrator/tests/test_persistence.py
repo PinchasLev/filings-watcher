@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import Engine, text
 
 from filings_orchestrator.classify import (
     Classification,
@@ -32,7 +32,7 @@ from filings_orchestrator.persistence.repository import (
 MIGRATIONS_DIR = (Path(__file__).resolve().parent.parent / "db" / "migrations").resolve()
 
 
-def _fresh_db() -> object:
+def _fresh_db() -> Engine:
     engine = open_engine(":memory:")
     apply_migrations(engine, migrations_dir=MIGRATIONS_DIR)
     return engine
@@ -117,15 +117,14 @@ def test_default_migrations_dir_resolves_to_real_directory() -> None:
 def test_apply_migrations_creates_tables_and_records_version() -> None:
     engine = open_engine(":memory:")
     applied = apply_migrations(engine, migrations_dir=MIGRATIONS_DIR)
-    assert [m.version for m in applied] == ["001_initial_schema"]
+    assert [m.version for m in applied] == ["001_initial_schema", "002_ingest_cursor"]
 
     with engine.begin() as conn:
         tables = {
             row[0]
             for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type = 'table'"))
         }
-    # All three expected tables exist.
-    assert {"filings", "classifications", "schema_versions"}.issubset(tables)
+    assert {"filings", "classifications", "ingest_cursor", "schema_versions"}.issubset(tables)
 
 
 def test_apply_migrations_is_idempotent() -> None:
@@ -302,6 +301,64 @@ def test_apply_migrations_then_repository_round_trip(tmp_path: Path) -> None:
     rows = latest_classifications_for_filing(engine, "0000320193-26-000045")
     assert len(rows) == 1
     assert rows[0]["reasoning"] == "Quarterly earnings."
+
+
+def test_ingest_cursor_singleton_constraint_rejects_second_id() -> None:
+    """The ingest_cursor table holds exactly one row (id = 1). Any attempt
+    to insert a different id is rejected by the CHECK constraint."""
+    from sqlalchemy.exc import IntegrityError
+
+    engine = _fresh_db()
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO ingest_cursor (id, last_accession_number, last_filed_at, updated_at) "
+                "VALUES (1, :a, :f, :u)"
+            ),
+            {"a": "0000320193-26-000045", "f": "2026-04-30", "u": "2026-04-30T12:00:00+00:00"},
+        )
+
+    with pytest.raises(IntegrityError):
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO ingest_cursor "
+                    "(id, last_accession_number, last_filed_at, updated_at) "
+                    "VALUES (2, :a, :f, :u)"
+                ),
+                {"a": "0000320193-26-000046", "f": "2026-05-01", "u": "2026-05-01T12:00:00+00:00"},
+            )
+
+
+def test_ingest_cursor_upsert_overwrites_singleton_row() -> None:
+    """Subsequent advances reuse id = 1 via ON CONFLICT DO UPDATE — the
+    cursor never grows beyond one row."""
+    engine = _fresh_db()
+
+    upsert_sql = text(
+        "INSERT INTO ingest_cursor (id, last_accession_number, last_filed_at, updated_at) "
+        "VALUES (1, :a, :f, :u) "
+        "ON CONFLICT (id) DO UPDATE SET "
+        "  last_accession_number = excluded.last_accession_number, "
+        "  last_filed_at         = excluded.last_filed_at, "
+        "  updated_at            = excluded.updated_at"
+    )
+
+    with engine.begin() as conn:
+        conn.execute(
+            upsert_sql,
+            {"a": "0000000000-26-000001", "f": "2026-05-19", "u": "2026-05-19T10:00:00+00:00"},
+        )
+        conn.execute(
+            upsert_sql,
+            {"a": "0000000000-26-000002", "f": "2026-05-19", "u": "2026-05-19T10:15:00+00:00"},
+        )
+        rows = conn.execute(text("SELECT id, last_accession_number FROM ingest_cursor")).fetchall()
+
+    assert len(rows) == 1
+    assert rows[0][0] == 1
+    assert rows[0][1] == "0000000000-26-000002"
 
 
 @pytest.mark.parametrize(

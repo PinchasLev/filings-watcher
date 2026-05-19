@@ -26,7 +26,9 @@ The orchestrator ingests every 8-K from EDGAR's daily index, going forward from 
 
 ### Source feed
 
-Each tick fetches `https://www.sec.gov/Archives/edgar/daily-index/<year>/QTR<n>/form.<date>.idx`, parses the pipe-delimited rows, and filters to `form_type == "8-K"`. The filing body is then fetched per [ADR 0007](0007-edgar-document-fetch-html-parsing.md) (unchanged).
+Each tick fetches `https://www.sec.gov/Archives/edgar/daily-index/<year>/QTR<n>/master.<date>.idx`, parses the pipe-delimited rows (`CIK|Company Name|Form Type|Date Filed|File Name`), and filters to `Form Type == "8-K"`. EDGAR publishes two daily-index variants for each business day; `master.<date>.idx` is the pipe-delimited form, while `form.<date>.idx` is column-aligned. Both carry the same rows; the pipe-delimited variant is structurally robust to format drift.
+
+The daily-index row carries the SGML submission archive path (`*.txt`), not the primary HTML document name that `fetch_filing_document` consumes ([ADR 0007](0007-edgar-document-fetch-html-parsing.md)). To bridge, the orchestrator fetches the per-accession filing-index HTML page (`<accession-no-dashes>/<accession>-index.html`) and reads the primary document filename from its "Document Format Files" table — one additional EDGAR call per new filing, accounted for in the burst-handling budget below.
 
 Cross-day handling: a tick that runs across midnight ET fetches yesterday's index first, then today's.
 
@@ -49,7 +51,7 @@ The cursor is a query-narrowing optimization, not the correctness mechanism. The
 
 ### Burst handling and rate limits
 
-EDGAR: one daily-index fetch per tick plus one body fetch per new filing. A 500-filing burst is 501 requests in a single tick. Throttled at 2 req/sec via the shared limiter from [ADR 0012](0012-ingestion-cadence-periodic-v0-push-v1.md), that's ~250 seconds of EDGAR I/O — under the 12-minute tick timeout from the same ADR.
+EDGAR: one daily-index fetch per tick, one filing-index page fetch per new filing (to discover the primary document name), and one body fetch per new filing. A 500-filing burst is 1,001 requests in a single tick. Throttled at 2 req/sec via the shared limiter from [ADR 0012](0012-ingestion-cadence-periodic-v0-push-v1.md), that's ~500 seconds of EDGAR I/O — under the 12-minute tick timeout from the same ADR.
 
 Anthropic: the bottleneck under burst. A 500-filing tick at ~5K tokens average input each implies ~2.5M tokens, exceeding tier-2 per-minute caps. The orchestrator handles 429 and 5xx with exponential backoff (initial 1s, max 60s, jitter ±20%) up to 5 retries per filing. Filings whose retries exhaust within a tick remain for the next tick; the cursor advances only past filings whose classification persisted. A multi-tick outage produces a backlog that drains naturally as the limiter recovers.
 

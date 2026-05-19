@@ -1,0 +1,12 @@
+Description:           Daily Index of EDGAR Dissemination Feed
+Last Data Received:    May 15, 2026
+Comments:              webmaster@sec.gov
+Anonymous FTP:         ftp://ftp.sec.gov/edgar/
+
+CIK|Company Name|Form Type|Date Filed|File Name
+--------------------------------------------------------------------------------
+1000097|KINGDON CAPITAL MANAGEMENT, L.L.C.|13F-HR|20260515|edgar/data/1000097/0001000097-26-000005.txt
+101295|UNITED GUARDIAN INC|8-K|20260515|edgar/data/101295/0001171843-26-003455.txt
+this is a malformed row without enough pipes
+320193|Apple Inc.|8-K/A|20260515|edgar/data/320193/0000320193-26-000099.txt
+1050446|Strategy Inc|8-K|20260515|edgar/data/1050446/0001193125-26-225361.txt

@@ -161,6 +161,49 @@ def _classification_rows(result: FilingClassification) -> list[dict[str, object]
     return rows
 
 
+def read_ingest_cursor(engine: Engine) -> tuple[str, str] | None:
+    """Return the daily-index ingest cursor as (accession_number, filed_at).
+
+    Returns None when the singleton row has not yet been written — meaning
+    the next tick is the first one and should fetch only the current ET day.
+    """
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT last_accession_number, last_filed_at FROM ingest_cursor WHERE id = 1")
+        ).fetchone()
+    if row is None:
+        return None
+    return str(row[0]), str(row[1])
+
+
+def advance_ingest_cursor(engine: Engine, accession_number: str, filed_at: str) -> None:
+    """Upsert the singleton cursor row to (accession_number, filed_at).
+
+    Called after each filing's classification has been persisted. The
+    per-filing cadence (vs. per-batch) is the resume contract from ADR
+    0021: a crashed tick leaves the cursor at the last good filing.
+    """
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO ingest_cursor
+                       (id, last_accession_number, last_filed_at, updated_at)
+                VALUES (1, :accession, :filed_at, :updated_at)
+                ON CONFLICT (id) DO UPDATE SET
+                    last_accession_number = excluded.last_accession_number,
+                    last_filed_at         = excluded.last_filed_at,
+                    updated_at            = excluded.updated_at
+                """
+            ),
+            {
+                "accession": accession_number,
+                "filed_at": filed_at,
+                "updated_at": datetime.now(UTC).isoformat(),
+            },
+        )
+
+
 def latest_classifications_for_filing(
     engine: Engine, accession_number: str
 ) -> list[dict[str, object]]:

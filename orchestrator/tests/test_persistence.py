@@ -23,8 +23,10 @@ from filings_orchestrator.edgar.document import FilingDocument, ItemSection
 from filings_orchestrator.edgar.models import Filing, FilingItem
 from filings_orchestrator.persistence import apply_migrations, open_engine
 from filings_orchestrator.persistence.repository import (
+    advance_ingest_cursor,
     insert_classifications,
     latest_classifications_for_filing,
+    read_ingest_cursor,
     upsert_filing,
     upsert_filing_document,
 )
@@ -329,6 +331,21 @@ def test_ingest_cursor_singleton_constraint_rejects_second_id() -> None:
                 ),
                 {"a": "0000320193-26-000046", "f": "2026-05-01", "u": "2026-05-01T12:00:00+00:00"},
             )
+
+
+def test_read_ingest_cursor_returns_none_when_empty() -> None:
+    """First-ever tick: no cursor yet."""
+    engine = _fresh_db()
+    assert read_ingest_cursor(engine) is None
+
+
+def test_advance_ingest_cursor_inserts_then_upserts() -> None:
+    engine = _fresh_db()
+    advance_ingest_cursor(engine, "0001171843-26-003455", "20260515")
+    assert read_ingest_cursor(engine) == ("0001171843-26-003455", "20260515")
+
+    advance_ingest_cursor(engine, "0001193125-26-225361", "20260516")
+    assert read_ingest_cursor(engine) == ("0001193125-26-225361", "20260516")
 
 
 def test_ingest_cursor_upsert_overwrites_singleton_row() -> None:

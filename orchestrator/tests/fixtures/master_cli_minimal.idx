@@ -1,0 +1,9 @@
+Description:           Daily Index of EDGAR Dissemination Feed
+Last Data Received:    May 15, 2026
+Comments:              webmaster@sec.gov
+Anonymous FTP:         ftp://ftp.sec.gov/edgar/
+
+CIK|Company Name|Form Type|Date Filed|File Name
+--------------------------------------------------------------------------------
+101295|UNITED GUARDIAN INC|8-K|20260515|edgar/data/101295/0001171843-26-003455.txt
+1000097|KINGDON CAPITAL|13F-HR|20260515|edgar/data/1000097/0001000097-26-000005.txt

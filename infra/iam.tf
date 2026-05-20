@@ -59,3 +59,29 @@ resource "aws_iam_instance_profile" "host" {
   name = "filings-watcher-host-profile"
   role = aws_iam_role.host.name
 }
+
+# OpenTelemetry Collector ships logs (and, in a later PR, metrics) to
+# CloudWatch. Scoped to log groups under /filings-watcher/ so the role
+# cannot read or write into unrelated CloudWatch streams. Log groups are
+# auto-created by the awscloudwatchlogs exporter on first write — no
+# explicit group resource here for v0.
+data "aws_iam_policy_document" "host_otel_cloudwatch_logs" {
+  statement {
+    actions = [
+      "logs:CreateLogGroup",
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+      "logs:DescribeLogStreams",
+    ]
+    resources = [
+      "arn:aws:logs:${var.aws_region}:*:log-group:/filings-watcher/*",
+      "arn:aws:logs:${var.aws_region}:*:log-group:/filings-watcher/*:log-stream:*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "host_otel_cloudwatch_logs" {
+  name   = "filings-watcher-host-otel-cloudwatch-logs"
+  role   = aws_iam_role.host.id
+  policy = data.aws_iam_policy_document.host_otel_cloudwatch_logs.json
+}

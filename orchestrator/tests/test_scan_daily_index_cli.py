@@ -188,6 +188,46 @@ def test_scan_daily_index_idempotent_on_already_seen_filing(
     assert "filing_fetched" not in [e["event"] for e in events]
 
 
+@pytest.mark.parametrize("status", [403, 404])
+def test_scan_daily_index_skips_missing_daily_index(
+    configured_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    status: int,
+) -> None:
+    """EDGAR returns 403 for missing/unpublished daily indexes (non-business
+    days, future dates, today before ~10 PM ET). 404 is the other
+    not-present idiom. Both must skip + continue, not fail the tick."""
+    monkeypatch.setattr(
+        "filings_orchestrator.cli.scan_daily_index.classify_filing",
+        _stub_classify_filing,
+    )
+    fixed_now = datetime(2026, 5, 19, 20, 0, 0, tzinfo=UTC)
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:  # type: ignore[override]
+            return fixed_now if tz is None else fixed_now.astimezone(tz)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("filings_orchestrator.cli.scan_daily_index.datetime", _FixedDateTime)
+
+    with respx.mock(assert_all_called=True) as mock:
+        mock.get(
+            "https://www.sec.gov/Archives/edgar/daily-index/2026/QTR2/master.20260519.idx"
+        ).mock(return_value=httpx.Response(status))
+
+        main()
+
+    events = _read_jsonl(capsys.readouterr().out)
+    event_names = [e["event"] for e in events]
+    assert "tick_failed" not in event_names
+    assert "tick_completed" in event_names
+
+    skipped = next(e for e in events if e["event"] == "tick_skipped_date")
+    assert skipped["date"] == "2026-05-19"
+    assert skipped["status"] == status
+
+
 def test_dates_to_scan_returns_today_when_cursor_unset() -> None:
     today = date(2026, 5, 19)
     assert _dates_to_scan(None, today_et=today) == [today]

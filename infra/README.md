@@ -204,6 +204,61 @@ journalctl -u filings-orchestrate.service -o json --no-pager \
 
 The `MESSAGE | fromjson` step is the key piece: journald wraps each line of the unit's stdout in its own JSON envelope, and the orchestrator's structured event lives in the inner `MESSAGE` string. Parsing it twice gives access to the typed fields.
 
+## OpenTelemetry Collector (foundation, verification-only)
+
+Per [ADR 0018](../docs/decisions/0018-observability-otel-native-operator-controlled.md), the host runs an OpenTelemetry Collector (Contrib distribution) as the first hop for all telemetry. The version is pinned via the `otel_collector_version` Terraform variable so bumps are an SSM rerun, not a code change.
+
+### Install or upgrade
+
+Run the SSM document (idempotent — safe to re-run, and re-runs pick up any new config changes or version bumps):
+
+```bash
+aws ssm send-command \
+  --document-name filings-install-otel-collector \
+  --targets "Key=instanceIds,Values=$(terraform output -raw instance_id)" \
+  --region us-east-1
+```
+
+Track the run:
+
+```bash
+aws ssm list-command-invocations --command-id <CMD-ID> --details --region us-east-1
+```
+
+### Verification (no backend or dashboard required)
+
+The initial install ships with two exporters whose purpose is local verification, not user-facing display:
+
+- **`debug` exporter** — prints every received metric, span, and log to the Collector's stdout, captured by journald.
+- **`prometheus` exporter** — exposes incoming metrics as Prometheus exposition format on `127.0.0.1:8889`.
+
+From the host:
+
+```bash
+# Is the Collector running and healthy?
+sudo systemctl status otelcol-contrib
+
+# Live view of arrivals (will be empty until apps are instrumented)
+sudo journalctl -u otelcol-contrib -f -o cat
+
+# Scrape the local Prometheus endpoint
+curl -s http://127.0.0.1:8889/metrics | head -40
+```
+
+From the operator laptop on the tailnet (via SSH tunnel, since the Prometheus port is bound to localhost only by default):
+
+```bash
+ssh -L 8889:localhost:8889 filings-watcher-host
+# in a second terminal:
+curl -s http://localhost:8889/metrics
+```
+
+Until the orchestrator and Go service are instrumented (subsequent observability PRs), the `/metrics` output will be sparse — only the Collector's own self-telemetry. That's expected: this install is the substrate, not a deliverable surface.
+
+### Where backend exporters and the journald receiver land
+
+Not in this install. The journald receiver (to tail the existing structured logs) and the first backend exporter (CloudWatch initially, swappable later via Collector exporter config change) land in a follow-on SSM doc revision once the verification surface has been kicked.
+
 ## Manual deploy (bootstrap and break-glass)
 
 The standard deploy path is automated via GitHub Actions, S3, and SSM. The procedure below is the bootstrap used to land the first binary on a fresh host, and the break-glass path when the automated pipeline is unavailable.

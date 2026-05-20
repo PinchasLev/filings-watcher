@@ -43,3 +43,13 @@ variable "acme_email" {
     error_message = "acme_email must be a valid email address."
   }
 }
+
+variable "otel_collector_version" {
+  description = "OpenTelemetry Collector Contrib version to install on the host (e.g., \"0.121.0\"). Operator-controlled so version bumps are an SSM rerun, not a code change. See ADR 0018."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+$", var.otel_collector_version))
+    error_message = "otel_collector_version must be a semantic version like \"0.121.0\"."
+  }
+}

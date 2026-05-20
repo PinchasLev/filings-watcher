@@ -5,6 +5,12 @@
 # notifications (cert expiry, renewal failures). Use a real address you read.
 acme_email = "you@example.com"
 
+# Required: OpenTelemetry Collector Contrib version to install on the host.
+# Pin to a specific release from
+# https://github.com/open-telemetry/opentelemetry-collector-releases/releases.
+# Bumping is an SSM rerun, not a Terraform apply.
+otel_collector_version = "0.121.0"
+
 # Optional overrides (defaults shown for reference; uncomment to change):
 # aws_region        = "us-east-1"
 # availability_zone = "us-east-1a"

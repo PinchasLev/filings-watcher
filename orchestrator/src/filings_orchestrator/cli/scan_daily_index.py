@@ -88,11 +88,16 @@ def main() -> None:
             try:
                 index_text = fetch_daily_index(target, client)
             except httpx.HTTPStatusError as exc:
-                if exc.response.status_code == 404:
+                # EDGAR returns 403 (not 404) for missing daily-index files:
+                # non-business days, future dates, and today before the
+                # ~10 PM ET publish batch. Treat both as skip-and-continue
+                # so the timer keeps polling until the index lands.
+                if exc.response.status_code in (403, 404):
                     emit(
                         "tick_skipped_date",
                         date=target.isoformat(),
-                        reason="daily-index not published (likely non-business day)",
+                        status=exc.response.status_code,
+                        reason="daily index missing (EDGAR 403 for unpublished/non-business)",
                     )
                     continue
                 _fail(

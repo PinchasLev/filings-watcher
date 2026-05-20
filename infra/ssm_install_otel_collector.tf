@@ -130,10 +130,17 @@ resource "aws_ssm_document" "install_otel_collector" {
           "chown root:root /etc/otelcol-contrib/config.yaml",
           "chmod 0644 /etc/otelcol-contrib/config.yaml",
           # The journald receiver shells out to journalctl, which requires
-          # systemd-journal group membership to read the journal under
-          # /var/log/journal. The otelcol user created by the RPM doesn't
-          # have it by default. usermod is idempotent — safe to re-run.
-          "usermod -a -G systemd-journal otelcol",
+          # systemd-journal group membership to read /var/log/journal. The
+          # RPM-shipped service unit runs the Collector as an unprivileged
+          # user without that group. Add it via a systemd drop-in override
+          # (rather than usermod) so the change survives package upgrades
+          # and does not depend on the RPM's specific user name.
+          "install -d -o root -g root -m 0755 /etc/systemd/system/otelcol-contrib.service.d",
+          "cat > /etc/systemd/system/otelcol-contrib.service.d/journal-access.conf <<'OVERRIDE_EOF'",
+          "[Service]",
+          "SupplementaryGroups=systemd-journal",
+          "OVERRIDE_EOF",
+          "chmod 0644 /etc/systemd/system/otelcol-contrib.service.d/journal-access.conf",
           "systemctl daemon-reload",
           "systemctl enable otelcol-contrib.service",
           "systemctl restart otelcol-contrib.service",

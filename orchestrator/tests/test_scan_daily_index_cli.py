@@ -1,0 +1,213 @@
+"""End-to-end tests for the scan-daily-index CLI.
+
+Live HTTP (EDGAR) is intercepted by respx. The Anthropic classifier is
+monkeypatched at its module-level entry point so the test is fully
+hermetic. The DB is a tmp_path SQLite file with migrations applied.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, date, datetime
+from pathlib import Path
+
+import httpx
+import pytest
+import respx
+from sqlalchemy import text
+
+from filings_orchestrator.classify.schema import (
+    Classification,
+    FilingClassification,
+)
+from filings_orchestrator.classify.taxonomy import EventType
+from filings_orchestrator.cli.scan_daily_index import _dates_to_scan, main
+from filings_orchestrator.persistence import apply_migrations, open_engine
+from filings_orchestrator.persistence.repository import read_ingest_cursor
+
+MIGRATIONS_DIR = (Path(__file__).resolve().parent.parent / "db" / "migrations").resolve()
+FIXTURES = Path(__file__).parent / "fixtures"
+
+_MASTER_IDX_BODY = (FIXTURES / "master_cli_minimal.idx").read_text()
+_FILING_INDEX_HTML = (FIXTURES / "filing_index_8k.html").read_text()
+
+_FILING_BODY_HTML = """<html><body>
+<p>Item 8.01 Other Events.</p>
+<p>The Company announces a strategic shift.</p>
+</body></html>
+"""
+
+
+@pytest.fixture
+def configured_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Set the env vars `load_config()` requires and point the DB at tmp."""
+    db_path = tmp_path / "filings.db"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "test-langsmith-key")
+    monkeypatch.setenv("LANGSMITH_PROJECT", "filings-watcher-test")
+    monkeypatch.setenv("LANGSMITH_TRACING", "false")
+    monkeypatch.setenv("EDGAR_USER_AGENT", "filings-watcher tester@example.com")
+    monkeypatch.setenv("FILINGS_DB_PATH", str(db_path))
+
+    # Pre-apply migrations so the CLI starts against a ready schema.
+    engine = open_engine(str(db_path))
+    apply_migrations(engine, migrations_dir=MIGRATIONS_DIR)
+    return db_path
+
+
+def _stub_classify_filing(document: object) -> FilingClassification:
+    """Replacement for the real classifier — no Anthropic calls, deterministic output."""
+    from filings_orchestrator.edgar.document import FilingDocument
+
+    assert isinstance(document, FilingDocument)
+    return FilingClassification(
+        accession_number=document.filing.accession_number,
+        cik=document.filing.cik,
+        company_name=document.filing.company_name,
+        filing_date=document.filing.filing_date.isoformat(),
+        items=[],
+        whole_filing=Classification(
+            event_type=EventType.OTHER_MATERIAL,
+            is_material=True,
+            confidence=0.9,
+            reasoning="stub classifier",
+        ),
+        classified_at=datetime.now(UTC),
+        model="haiku-test",
+        classifier_version="haiku-test+prompt-deadbeef",
+        taxonomy_version="v1-test",
+    )
+
+
+def _read_jsonl(captured: str) -> list[dict[str, object]]:
+    """Parse pytest's captured stdout — one JSON object per non-empty line."""
+    return [json.loads(line) for line in captured.splitlines() if line.strip()]
+
+
+def test_scan_daily_index_classifies_new_8k_and_advances_cursor(
+    configured_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        "filings_orchestrator.cli.scan_daily_index.classify_filing",
+        _stub_classify_filing,
+    )
+    # Pin the "today_et" the CLI sees so the test is date-stable.
+    fixed_now = datetime(2026, 5, 15, 16, 0, 0, tzinfo=UTC)
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:  # type: ignore[override]
+            return fixed_now if tz is None else fixed_now.astimezone(tz)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("filings_orchestrator.cli.scan_daily_index.datetime", _FixedDateTime)
+
+    with respx.mock(assert_all_called=True) as mock:
+        mock.get(
+            "https://www.sec.gov/Archives/edgar/daily-index/2026/QTR2/master.20260515.idx"
+        ).mock(return_value=httpx.Response(200, text=_MASTER_IDX_BODY))
+        mock.get(
+            "https://www.sec.gov/Archives/edgar/data/101295/000117184326003455/"
+            "0001171843-26-003455-index.html"
+        ).mock(return_value=httpx.Response(200, text=_FILING_INDEX_HTML))
+        mock.get(
+            "https://www.sec.gov/Archives/edgar/data/101295/000117184326003455/f8k_051426.htm"
+        ).mock(return_value=httpx.Response(200, text=_FILING_BODY_HTML))
+
+        main()
+
+    out = capsys.readouterr().out
+    events = _read_jsonl(out)
+    event_names = [e["event"] for e in events]
+    assert "tick_started" in event_names
+    assert "filing_fetched" in event_names
+    assert "classification_started" in event_names
+    assert "classification_completed" in event_names
+    assert "cursor_advanced" in event_names
+    assert "tick_completed" in event_names
+    assert "tick_failed" not in event_names
+
+    # The 13F-HR row must not appear — only the 8-K is classified.
+    fetched = next(e for e in events if e["event"] == "filing_fetched")
+    assert fetched["accession_number"] == "0001171843-26-003455"
+    assert fetched["form"] == "8-K"
+
+    # Cursor advanced to the classified filing.
+    engine = open_engine(str(configured_env))
+    assert read_ingest_cursor(engine) == ("0001171843-26-003455", "20260515")
+
+    # The 13F-HR was not persisted.
+    with engine.begin() as conn:
+        rows = conn.execute(text("SELECT accession_number, form FROM filings")).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "0001171843-26-003455"
+
+
+def test_scan_daily_index_idempotent_on_already_seen_filing(
+    configured_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Re-running with the same filing already in the DB classifies nothing
+    new (dedup via accession-number PK, the cursor is a query narrower)."""
+    monkeypatch.setattr(
+        "filings_orchestrator.cli.scan_daily_index.classify_filing",
+        _stub_classify_filing,
+    )
+    fixed_now = datetime(2026, 5, 15, 16, 0, 0, tzinfo=UTC)
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:  # type: ignore[override]
+            return fixed_now if tz is None else fixed_now.astimezone(tz)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("filings_orchestrator.cli.scan_daily_index.datetime", _FixedDateTime)
+
+    def _run() -> str:
+        with respx.mock(assert_all_called=False) as mock:
+            mock.get(
+                "https://www.sec.gov/Archives/edgar/daily-index/2026/QTR2/master.20260515.idx"
+            ).mock(return_value=httpx.Response(200, text=_MASTER_IDX_BODY))
+            mock.get(
+                "https://www.sec.gov/Archives/edgar/data/101295/000117184326003455/"
+                "0001171843-26-003455-index.html"
+            ).mock(return_value=httpx.Response(200, text=_FILING_INDEX_HTML))
+            mock.get(
+                "https://www.sec.gov/Archives/edgar/data/101295/000117184326003455/f8k_051426.htm"
+            ).mock(return_value=httpx.Response(200, text=_FILING_BODY_HTML))
+            main()
+        return capsys.readouterr().out
+
+    _run()
+    second_out = _run()
+    events = _read_jsonl(second_out)
+    completed = next(e for e in events if e["event"] == "tick_completed")
+    # No new filings processed on the second pass.
+    assert completed["new_filings_count"] == 0
+    assert "filing_fetched" not in [e["event"] for e in events]
+
+
+def test_dates_to_scan_returns_today_when_cursor_unset() -> None:
+    today = date(2026, 5, 19)
+    assert _dates_to_scan(None, today_et=today) == [today]
+
+
+def test_dates_to_scan_walks_from_cursor_through_today() -> None:
+    today = date(2026, 5, 19)
+    out = _dates_to_scan("20260515", today_et=today)
+    assert out == [
+        date(2026, 5, 15),
+        date(2026, 5, 16),
+        date(2026, 5, 17),
+        date(2026, 5, 18),
+        date(2026, 5, 19),
+    ]
+
+
+def test_dates_to_scan_clamps_to_today_if_cursor_in_future() -> None:
+    """Clock skew or operator hand-edit could leave the cursor ahead of
+    today. Defensive: just scan today."""
+    today = date(2026, 5, 19)
+    out = _dates_to_scan("20260601", today_et=today)
+    assert out == [today]

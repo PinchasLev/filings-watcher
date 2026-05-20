@@ -125,7 +125,16 @@ def _bind_classifier(model_name: str) -> Any:
 
 
 def _call_classifier(model: Any, system: str, user: str) -> Classification:
-    response = model.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+    # The system prompt + taxonomy descriptions repeat verbatim across
+    # every classification call. Marking the system block as ephemeral
+    # tells Anthropic to cache it server-side; subsequent calls within
+    # the cache window read it back at ~10x lower input-token cost. See
+    # ADR 0022. Cache misses (first call, post-eviction) are billed
+    # normally — the marker is safe to leave on regardless of hit rate.
+    system_blocks: list[str | dict[Any, Any]] = [
+        {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+    ]
+    response = model.invoke([SystemMessage(content=system_blocks), HumanMessage(content=user)])
     tool_calls = getattr(response, "tool_calls", None) or []
     if not tool_calls:
         raise RuntimeError("model did not return a tool call; cannot extract classification")

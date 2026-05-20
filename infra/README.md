@@ -142,6 +142,68 @@ aws ssm send-command \
 
 The document fetches the API keys from Parameter Store at invocation time, runs `classify-filing` against the requested ticker and filing index (0 = most recent), and persists the classification to the SQLite DB on the data volume. Inspect the result via `https://staging.filingsradar.com/filings` once the pass completes.
 
+## Scheduled ingest (daily-index → classify every 15 minutes)
+
+A second SSM document — `filings-install-orchestrate-timer` — installs a systemd timer on the host that fires `scan-daily-index` every 15 minutes (per [ADR 0012](../docs/decisions/0012-ingestion-cadence-periodic-v0-push-v1.md) and [ADR 0021](../docs/decisions/0021-realtime-8k-ingest-via-daily-index.md)). Run it once per host, after the first release has been deployed:
+
+```bash
+aws ssm send-command \
+  --document-name filings-install-orchestrate-timer \
+  --targets "Key=tag:Name,Values=filings-watcher-host" \
+  --region us-east-1
+```
+
+The document installs three artifacts: a wrapper script at `/usr/local/bin/filings-orchestrate-tick` that fetches credentials from Parameter Store and execs the CLI; a `filings-orchestrate.service` oneshot unit (12-minute timeout, lock-protected against overlap); and a `filings-orchestrate.timer` unit that schedules the service every 15 minutes after the previous invocation exits. The install fires one invocation explicitly so the next is scheduled 15 minutes after it completes.
+
+Operator-facing commands once installed:
+
+```bash
+# Status (from a Session Manager shell on the host)
+systemctl status filings-orchestrate.timer
+systemctl list-timers filings-orchestrate.timer
+
+# Run once now (does not affect the timer schedule)
+sudo systemctl start filings-orchestrate.service
+
+# Inspect output of the most recent invocation
+journalctl -u filings-orchestrate.service -n 200 --no-pager
+journalctl -u filings-orchestrate.service -f -o cat       # live tail, plain output
+
+# Pause / resume the schedule
+sudo systemctl stop filings-orchestrate.timer
+sudo systemctl start filings-orchestrate.timer
+```
+
+The unit logs JSON-line structured events per [ADR 0013](../docs/decisions/0013-operational-observability-for-v0.md): `tick_started`, `filing_fetched`, `classification_started`, `classification_completed`, `cursor_advanced`, `rate_limited`, `tick_failed`, `tick_completed`.
+
+### Structured-log views with jq
+
+The events are JSON-line per [ADR 0013](../docs/decisions/0013-operational-observability-for-v0.md), so `jq` can project columns from the journal. A few recipes worth keeping:
+
+```bash
+# Compact event timeline: event name + accession (if any)
+journalctl -u filings-orchestrate.service -o json --no-pager \
+  | jq -r '.MESSAGE | fromjson | "\(.event)\t\(.accession_number // "-")"'
+
+# Just the last invocation's events
+journalctl -u filings-orchestrate.service -o json --no-pager --since "30 minutes ago" \
+  | jq -r '.MESSAGE | fromjson | "\(.ts)  \(.event)  \(.accession_number // "")"'
+
+# Count outcomes across all runs since the last reboot
+journalctl -u filings-orchestrate.service -o json --no-pager -b \
+  | jq -r '.MESSAGE | fromjson | .event' | sort | uniq -c
+
+# Find every rate_limited backoff, with provider and backoff duration
+journalctl -u filings-orchestrate.service -o json --no-pager \
+  | jq 'select(.MESSAGE | fromjson | .event == "rate_limited") | .MESSAGE | fromjson'
+
+# Aggregate per-tick: duration and new-filings-count
+journalctl -u filings-orchestrate.service -o json --no-pager \
+  | jq -r '.MESSAGE | fromjson | select(.event == "tick_completed") | "\(.ts)  duration_ms=\(.duration_ms)  new_filings=\(.new_filings_count)"'
+```
+
+The `MESSAGE | fromjson` step is the key piece: journald wraps each line of the unit's stdout in its own JSON envelope, and the orchestrator's structured event lives in the inner `MESSAGE` string. Parsing it twice gives access to the typed fields.
+
 ## Manual deploy (bootstrap and break-glass)
 
 The standard deploy path is automated via GitHub Actions, S3, and SSM. The procedure below is the bootstrap used to land the first binary on a fresh host, and the break-glass path when the automated pipeline is unavailable.

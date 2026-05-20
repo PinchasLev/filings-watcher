@@ -255,9 +255,41 @@ curl -s http://localhost:8889/metrics
 
 Until the orchestrator and Go service are instrumented (subsequent observability PRs), the `/metrics` output will be sparse — only the Collector's own self-telemetry. That's expected: this install is the substrate, not a deliverable surface.
 
-### Where backend exporters and the journald receiver land
+### Logs to CloudWatch (durable backend)
 
-Not in this install. The journald receiver (to tail the existing structured logs) and the first backend exporter (CloudWatch initially, swappable later via Collector exporter config change) land in a follow-on SSM doc revision once the verification surface has been kicked.
+After the journald receiver and the `awscloudwatchlogs` exporter are wired into the Collector config (re-run the install SSM doc to apply the updated config), the orchestrator's structured events flow to a CloudWatch Logs group at `/filings-watcher/orchestrator`. The exporter auto-creates the group on first write; the host's IAM role is scoped to `/filings-watcher/*` so the Collector cannot write into unrelated streams.
+
+**Stream events live (from operator laptop, no SSH required):**
+
+```bash
+aws logs tail /filings-watcher/orchestrator --follow --region us-east-1
+```
+
+**Insights queries** — because the `json_parser` operator lifts every field of our structured event into the LogRecord's attributes alongside the journald envelope (`_HOSTNAME`, `_SYSTEMD_UNIT`, `_PID`, ...), envelope and app fields are co-queryable at the same flat level:
+
+```text
+fields @timestamp, event, accession_number, duration_ms, _SYSTEMD_UNIT
+| filter event = "tick_completed"
+| sort @timestamp desc
+| limit 50
+```
+
+```text
+fields @timestamp, event, message
+| filter event = "tick_failed"
+| sort @timestamp desc
+```
+
+```text
+stats count() by event
+| sort count desc
+```
+
+CloudWatch console: `Logs > Log groups > /filings-watcher/orchestrator > Search log group`.
+
+### Where traces, metrics, and richer dashboards land
+
+Not in this install. App-side OTel SDK instrumentation (Python orchestrator and Go service) lands in subsequent PRs and starts pushing spans + metrics through the same Collector pipelines. Dashboards (CloudWatch Dashboards or a swappable backend per ADR 0018) come after instrumentation produces signals worth visualizing.
 
 ## Manual deploy (bootstrap and break-glass)
 

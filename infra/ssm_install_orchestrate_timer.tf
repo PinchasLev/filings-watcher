@@ -53,6 +53,16 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "EDGAR_USER_AGENT=$(aws ssm get-parameter --name /filings-watcher/edgar-user-agent --with-decryption --query Parameter.Value --output text --region ${var.aws_region})",
           "export ANTHROPIC_API_KEY LANGSMITH_API_KEY EDGAR_USER_AGENT",
           "export FILINGS_DB_PATH=/var/lib/filings-watcher/filings.db",
+          # OpenTelemetry configuration. The orchestrator's setup_otel()
+          # reads these standard env vars; if OTEL_EXPORTER_OTLP_ENDPOINT
+          # is unset (e.g., during local dev) the SDK stays no-op. The
+          # service.version resource attribute is derived from the
+          # release directory the symlink resolves to.
+          "RELEASE_SHA=$(basename $(readlink -f /opt/filings-watcher/current))",
+          "export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317",
+          "export OTEL_EXPORTER_OTLP_PROTOCOL=grpc",
+          "export OTEL_SERVICE_NAME=filings-orchestrator",
+          "export OTEL_RESOURCE_ATTRIBUTES=service.namespace=filings-watcher,service.version=$RELEASE_SHA",
           "cd /opt/filings-watcher/current/orchestrator",
           "exec /home/filings/.local/bin/uv run --no-sync scan-daily-index",
           "TICK_EOF",

@@ -63,6 +63,15 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "export OTEL_EXPORTER_OTLP_PROTOCOL=grpc",
           "export OTEL_SERVICE_NAME=filings-orchestrator",
           "export OTEL_RESOURCE_ATTRIBUTES=service.namespace=filings-watcher,service.version=$RELEASE_SHA",
+          # Opt into the latest gen_ai.* semantic conventions. Stable as
+          # of mid-2026 but still gated behind this opt-in flag.
+          "export OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental",
+          # Disable Traceloop's prompt/completion content attributes on
+          # spans. 8-K bodies (up to 12k chars per Item, classified
+          # individually) would inflate trace volume without adding
+          # signal we don't already have in LangSmith. Tokens, model
+          # name, latency, and cache hit/miss still ride along.
+          "export TRACELOOP_TRACE_CONTENT=false",
           "cd /opt/filings-watcher/current/orchestrator",
           "exec /home/filings/.local/bin/uv run --no-sync scan-daily-index",
           "TICK_EOF",

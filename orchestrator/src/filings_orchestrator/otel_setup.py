@@ -1,10 +1,12 @@
 """OpenTelemetry SDK initialization for the orchestrator.
 
 Configures the global TracerProvider and MeterProvider with an OTLP gRPC
-exporter pointed at the host-local Collector (see ADR 0018). All
-configuration is read from standard OTel environment variables so
-operators can change endpoints, resource attributes, or service identity
-without touching code.
+exporter pointed at the host-local Collector (see ADR 0018), then applies
+the LangChain instrumentation so library-level spans (per-chain,
+per-LLM-call, per-tool) nest naturally as children of the application's
+own spans. All configuration is read from standard OTel environment
+variables so operators can change endpoints, resource attributes, or
+service identity without touching code.
 
 Environment variables consumed:
 
@@ -15,9 +17,14 @@ Environment variables consumed:
 - ``OTEL_SERVICE_NAME`` — populates ``service.name`` resource attribute.
 - ``OTEL_RESOURCE_ATTRIBUTES`` — comma-separated ``key=value`` pairs
   merged into the resource (e.g., ``service.version=<sha>``).
+- ``TRACELOOP_TRACE_CONTENT`` — when set to ``false``, the LangChain
+  instrumentation does not include prompt and completion content as
+  span attributes. We set it false in the systemd wrapper: 8-K bodies
+  inflate trace volume without adding signal we don't already have via
+  LangSmith's deeper content capture.
 
 The systemd wrapper script that invokes ``scan-daily-index`` sets all
-three (see ``infra/ssm_install_orchestrate_timer.tf``).
+four (see ``infra/ssm_install_orchestrate_timer.tf``).
 
 Idempotent: a second call within the same process is a no-op so
 testing or repeated entry points do not stack span processors. The OTel
@@ -33,6 +40,7 @@ import os
 from opentelemetry import metrics, trace
 from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.langchain import LangchainInstrumentor
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
@@ -48,6 +56,10 @@ def setup_otel() -> None:
     No-op when ``OTEL_EXPORTER_OTLP_ENDPOINT`` is unset (local development,
     tests) — the SDK's default NoOp providers remain in place so ``Tracer``
     and ``Meter`` operations stay cheap and silent.
+
+    The LangChain instrumentation is applied after providers are registered
+    so that library-emitted spans use the configured TracerProvider and
+    nest under whatever span context is active at LangChain call sites.
     """
     global _initialized
     if _initialized:
@@ -66,5 +78,7 @@ def setup_otel() -> None:
         metric_readers=[PeriodicExportingMetricReader(OTLPMetricExporter())],
     )
     metrics.set_meter_provider(meter_provider)
+
+    LangchainInstrumentor().instrument()
 
     _initialized = True

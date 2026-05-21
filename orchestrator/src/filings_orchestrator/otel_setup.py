@@ -20,12 +20,14 @@ The systemd wrapper script that invokes ``scan-daily-index`` sets all
 three (see ``infra/ssm_install_orchestrate_timer.tf``).
 
 Idempotent: a second call within the same process is a no-op so
-testing or repeated entry points do not stack span processors.
+testing or repeated entry points do not stack span processors. The OTel
+SDK's TracerProvider and MeterProvider both default ``shutdown_on_exit=True``,
+so they each register their own ``atexit`` handler at construction time —
+the export queue is drained on process exit without further wiring here.
 """
 
 from __future__ import annotations
 
-import atexit
 import os
 
 from opentelemetry import metrics, trace
@@ -46,11 +48,6 @@ def setup_otel() -> None:
     No-op when ``OTEL_EXPORTER_OTLP_ENDPOINT`` is unset (local development,
     tests) — the SDK's default NoOp providers remain in place so ``Tracer``
     and ``Meter`` operations stay cheap and silent.
-
-    A short-lived process (the typical orchestrator tick is ~seconds to
-    ~minutes) needs its final spans and metrics flushed before exit. We
-    register the shutdown via ``atexit`` so an unhandled ``SystemExit`` or
-    a normal return still drains the export queue.
     """
     global _initialized
     if _initialized:
@@ -70,10 +67,4 @@ def setup_otel() -> None:
     )
     metrics.set_meter_provider(meter_provider)
 
-    atexit.register(_shutdown, tracer_provider, meter_provider)
     _initialized = True
-
-
-def _shutdown(tracer_provider: TracerProvider, meter_provider: MeterProvider) -> None:
-    tracer_provider.shutdown()
-    meter_provider.shutdown()

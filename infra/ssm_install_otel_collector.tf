@@ -88,7 +88,7 @@ resource "aws_ssm_document" "install_otel_collector" {
           "    priority: info",
           "    operators:",
           "      - type: json_parser",
-          "        parse_from: body",
+          "        parse_from: body.MESSAGE",
           "        parse_to: attributes",
           "        on_error: send_quiet",
           "",

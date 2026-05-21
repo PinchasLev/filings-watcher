@@ -20,6 +20,13 @@ dependencies = [
     "opentelemetry-sdk>=1.30.0",
     "python-dotenv>=1.2.2",
     "sqlalchemy>=2.0.49",
+    # Transitive constraint: opentelemetry-instrumentation-langchain 0.60.0
+    # calls wrapt.wrap_function_wrapper with module=... keyword. Wrapt 2.x
+    # renamed that parameter to target, so the call raises TypeError at
+    # instrument() time. Traceloop's main branch has the fix (PR #4082,
+    # switched to positional args) but no release ships it yet. Pin wrapt
+    # to the 1.x line until that release lands, then drop this constraint.
+    "wrapt<2.0",
 ]
 
 [project.scripts]

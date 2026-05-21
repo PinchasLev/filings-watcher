@@ -6,9 +6,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -29,11 +32,10 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() {
-		// Best-effort flush. http.ListenAndServe does not return on
-		// SIGTERM today, so this defer fires only on graceful exit paths.
-		// The BatchSpanProcessor and PeriodicReader bound steady-state
-		// span/metric loss; the small remainder is acceptable for v0.
-		// Graceful HTTP shutdown is tracked as a small follow-up.
+		// Drain the OTel export queues before the process exits. The
+		// graceful shutdown path below cancels the server first, so this
+		// defer runs after in-flight requests have ended and before
+		// telemetry from those requests is lost.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := shutdown(ctx); err != nil {
@@ -63,9 +65,42 @@ func main() {
 	// duration). The span name shown here is the surface name, not the
 	// per-request name — the contrib package fills the route in.
 	handler := otelhttp.NewHandler(server.New(s), "filings-server")
-	logger.Info("server starting", "addr", cfg.ListenAddr, "db_path", cfg.DBPath)
-	if err := http.ListenAndServe(cfg.ListenAddr, handler); err != nil {
-		logger.Error("server exited with error", "error", err)
-		os.Exit(1)
+
+	// Graceful shutdown. systemd sends SIGTERM on stop/restart and waits
+	// TimeoutStopSec (default 90s) before SIGKILL. We listen for SIGTERM
+	// and SIGINT, give the server up to 10 seconds to finish in-flight
+	// requests, then return to main — letting the deferred OTel shutdown
+	// drain the export queue cleanly.
+	srv := &http.Server{
+		Addr:    cfg.ListenAddr,
+		Handler: handler,
+	}
+
+	sigCtx, stopNotifying := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopNotifying()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		logger.Info("server starting", "addr", cfg.ListenAddr, "db_path", cfg.DBPath)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+			return
+		}
+		serverErr <- nil
+	}()
+
+	select {
+	case err := <-serverErr:
+		if err != nil {
+			logger.Error("server exited with error", "error", err)
+			os.Exit(1)
+		}
+	case <-sigCtx.Done():
+		logger.Info("shutdown signal received; draining in-flight requests")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			logger.Error("server shutdown error", "error", err)
+		}
 	}
 }

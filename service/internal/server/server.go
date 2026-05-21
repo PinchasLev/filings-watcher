@@ -17,6 +17,8 @@ import (
 type storer interface {
 	LatestClassifications(ctx context.Context, limit, offset int) ([]store.Classification, int, error)
 	FilingByAccession(ctx context.Context, accession string) (*store.FilingDetail, error)
+	MaterialClassifications(ctx context.Context, eventType string, limit, offset int) ([]store.Classification, int, error)
+	EventTypeCounts(ctx context.Context) ([]store.EventTypeCount, error)
 }
 
 // New returns an http.Handler with all routes registered.
@@ -25,5 +27,6 @@ func New(s storer) http.Handler {
 	mux.HandleFunc("GET /health", handleHealth)
 	mux.HandleFunc("GET /filings", handleListFilings(s))
 	mux.HandleFunc("GET /filings/{accession}", handleFilingDetail(s))
+	mux.HandleFunc("GET /", handleHome(s))
 	return mux
 }

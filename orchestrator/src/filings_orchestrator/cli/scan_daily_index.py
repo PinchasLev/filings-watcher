@@ -24,6 +24,7 @@ from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 import httpx
+from opentelemetry import trace
 from sqlalchemy import Engine, bindparam, text
 
 from filings_orchestrator.classify import classify_filing
@@ -38,6 +39,7 @@ from filings_orchestrator.edgar.daily_index import (
     resolve_filing,
 )
 from filings_orchestrator.log_events import emit
+from filings_orchestrator.otel_setup import setup_otel
 from filings_orchestrator.persistence import open_engine
 from filings_orchestrator.persistence.repository import (
     advance_ingest_cursor,
@@ -56,6 +58,8 @@ _EASTERN = ZoneInfo("America/New_York")
 
 
 def main() -> None:
+    setup_otel()
+
     try:
         config = load_config()
     except MissingConfigError as e:
@@ -67,74 +71,79 @@ def main() -> None:
     os.environ["LANGSMITH_PROJECT"] = config.langsmith_project
     os.environ["LANGSMITH_TRACING"] = "true" if config.langsmith_tracing else "false"
 
-    tick_started_at = datetime.now(UTC)
-    emit("tick_started", started_at=tick_started_at.isoformat())
+    tracer = trace.get_tracer("filings_orchestrator")
+    with tracer.start_as_current_span("tick") as span:
+        tick_started_at = datetime.now(UTC)
+        emit("tick_started", started_at=tick_started_at.isoformat())
 
-    engine = open_engine(config.filings_db_path)
-    cursor = read_ingest_cursor(engine)
-    cursor_acc = cursor[0] if cursor else None
-    cursor_filed = cursor[1] if cursor else None
+        engine = open_engine(config.filings_db_path)
+        cursor = read_ingest_cursor(engine)
+        cursor_acc = cursor[0] if cursor else None
+        cursor_filed = cursor[1] if cursor else None
 
-    target_dates = _dates_to_scan(cursor_filed, today_et=datetime.now(_EASTERN).date())
+        target_dates = _dates_to_scan(cursor_filed, today_et=datetime.now(_EASTERN).date())
 
-    new_filings_count = 0
-    errors_count = 0
+        new_filings_count = 0
+        errors_count = 0
 
-    with EdgarClient(
-        user_agent=config.edgar_user_agent,
-        rate_limit_per_second=_EDGAR_RATE_LIMIT_PER_SEC,
-    ) as client:
-        for target in target_dates:
-            try:
-                index_text = fetch_daily_index(target, client)
-            except httpx.HTTPStatusError as exc:
-                # EDGAR returns 403 (not 404) for missing daily-index files:
-                # non-business days, future dates, and today before the
-                # ~10 PM ET publish batch. Treat both as skip-and-continue
-                # so the timer keeps polling until the index lands.
-                if exc.response.status_code in (403, 404):
-                    emit(
-                        "tick_skipped_date",
-                        date=target.isoformat(),
-                        status=exc.response.status_code,
-                        reason="daily index missing (EDGAR 403 for unpublished/non-business)",
-                    )
-                    continue
-                _fail(
-                    tick_started_at,
-                    error_class=type(exc).__name__,
-                    message=f"HTTP {exc.response.status_code} fetching {target.isoformat()}",
-                )
-                return
-
-            entries = filter_form(parse_daily_index(index_text), "8-K")
-            new_entries = _filter_new_entries(engine, entries)
-
-            for entry in new_entries:
+        with EdgarClient(
+            user_agent=config.edgar_user_agent,
+            rate_limit_per_second=_EDGAR_RATE_LIMIT_PER_SEC,
+        ) as client:
+            for target in target_dates:
                 try:
-                    _process_one(client, engine, entry)
-                    new_filings_count += 1
-                except Exception as exc:
-                    errors_count += 1
+                    index_text = fetch_daily_index(target, client)
+                except httpx.HTTPStatusError as exc:
+                    # EDGAR returns 403 (not 404) for missing daily-index files:
+                    # non-business days, future dates, and today before the
+                    # ~10 PM ET publish batch. Treat both as skip-and-continue
+                    # so the timer keeps polling until the index lands.
+                    if exc.response.status_code in (403, 404):
+                        emit(
+                            "tick_skipped_date",
+                            date=target.isoformat(),
+                            status=exc.response.status_code,
+                            reason="daily index missing (EDGAR 403 for unpublished/non-business)",
+                        )
+                        continue
                     _fail(
                         tick_started_at,
                         error_class=type(exc).__name__,
-                        message=str(exc),
-                        accession_number=entry.accession_number,
-                        new_filings_count=new_filings_count,
-                        errors_count=errors_count,
+                        message=f"HTTP {exc.response.status_code} fetching {target.isoformat()}",
                     )
                     return
 
-    duration_ms = int((datetime.now(UTC) - tick_started_at).total_seconds() * 1000)
-    emit(
-        "tick_completed",
-        duration_ms=duration_ms,
-        new_filings_count=new_filings_count,
-        errors_count=errors_count,
-        dates_scanned=[d.isoformat() for d in target_dates],
-        cursor_after=(cursor_acc, cursor_filed) if cursor else None,
-    )
+                entries = filter_form(parse_daily_index(index_text), "8-K")
+                new_entries = _filter_new_entries(engine, entries)
+
+                for entry in new_entries:
+                    try:
+                        _process_one(client, engine, entry)
+                        new_filings_count += 1
+                    except Exception as exc:
+                        errors_count += 1
+                        _fail(
+                            tick_started_at,
+                            error_class=type(exc).__name__,
+                            message=str(exc),
+                            accession_number=entry.accession_number,
+                            new_filings_count=new_filings_count,
+                            errors_count=errors_count,
+                        )
+                        return
+
+        duration_ms = int((datetime.now(UTC) - tick_started_at).total_seconds() * 1000)
+        span.set_attribute("dates_scanned", [d.isoformat() for d in target_dates])
+        span.set_attribute("new_filings_count", new_filings_count)
+        span.set_attribute("errors_count", errors_count)
+        emit(
+            "tick_completed",
+            duration_ms=duration_ms,
+            new_filings_count=new_filings_count,
+            errors_count=errors_count,
+            dates_scanned=[d.isoformat() for d in target_dates],
+            cursor_after=(cursor_acc, cursor_filed) if cursor else None,
+        )
 
 
 def _process_one(client: EdgarClient, engine: Engine, entry: DailyIndexEntry) -> None:

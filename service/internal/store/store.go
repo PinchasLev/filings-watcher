@@ -55,6 +55,15 @@ type FilingDetail struct {
 // ErrNotFound is returned when a query targets a specific record that doesn't exist.
 var ErrNotFound = errors.New("not found")
 
+// EventTypeCount pairs an event_type taxonomy value with the number of
+// material classifications that currently carry it. Returned by
+// EventTypeCounts in descending count order so consumers can render
+// the most-common categories first without re-sorting.
+type EventTypeCount struct {
+	EventType string `json:"event_type"`
+	Count     int    `json:"count"`
+}
+
 // Store is the public read-only interface this package provides. The
 // concrete implementation is intentionally unexported so consumers cannot
 // declare or pass the struct type directly — dependency injection is
@@ -62,6 +71,8 @@ var ErrNotFound = errors.New("not found")
 type Store interface {
 	LatestClassifications(ctx context.Context, limit, offset int) ([]Classification, int, error)
 	FilingByAccession(ctx context.Context, accession string) (*FilingDetail, error)
+	MaterialClassifications(ctx context.Context, eventType string, limit, offset int) ([]Classification, int, error)
+	EventTypeCounts(ctx context.Context) ([]EventTypeCount, error)
 	Close() error
 }
 
@@ -168,6 +179,127 @@ func (s *store) LatestClassifications(ctx context.Context, limit, offset int) ([
 		return nil, 0, fmt.Errorf("iterate rows: %w", err)
 	}
 	return out, total, nil
+}
+
+// MaterialClassifications returns latest-per-(accession, item, classifier)
+// classifications restricted to is_material = true, ordered by
+// filing_date DESC (the user-facing freshness signal) with classified_at
+// DESC as the tiebreaker for items sharing a filing_date. An empty
+// eventType means "no event-type filter" (return material events
+// across all taxonomy categories).
+func (s *store) MaterialClassifications(ctx context.Context, eventType string, limit, offset int) ([]Classification, int, error) {
+	const baseQuery = `
+		WITH ranked AS (
+			SELECT
+				c.id, c.accession_number, c.item_number, c.item_title,
+				c.event_type, c.event_domain, c.is_material, c.confidence,
+				c.reasoning, c.classifier_version, c.taxonomy_version,
+				c.classified_at,
+				ROW_NUMBER() OVER (
+					PARTITION BY c.accession_number, COALESCE(c.item_number, ''), c.classifier_version
+					ORDER BY c.classified_at DESC
+				) AS rn
+			FROM classifications c
+		),
+		latest AS (
+			SELECT * FROM ranked WHERE rn = 1
+		)
+		SELECT
+			l.id, l.accession_number, l.item_number, l.item_title,
+			l.event_type, l.event_domain, l.is_material, l.confidence,
+			l.reasoning, l.classifier_version, l.taxonomy_version, l.classified_at,
+			f.company_name, f.ticker, f.filing_date
+		FROM latest l
+		JOIN filings f ON f.accession_number = l.accession_number
+		WHERE l.is_material = 1
+		  AND (? = '' OR l.event_type = ?)
+		ORDER BY f.filing_date DESC, l.classified_at DESC
+		LIMIT ? OFFSET ?
+	`
+	const countQuery = `
+		WITH ranked AS (
+			SELECT is_material, event_type,
+				ROW_NUMBER() OVER (
+					PARTITION BY accession_number, COALESCE(item_number, ''), classifier_version
+					ORDER BY classified_at DESC
+				) AS rn
+			FROM classifications
+		)
+		SELECT COUNT(*) FROM ranked
+		WHERE rn = 1 AND is_material = 1 AND (? = '' OR event_type = ?)
+	`
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, countQuery, eventType, eventType).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count material: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, baseQuery, eventType, eventType, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query material: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]Classification, 0, limit)
+	for rows.Next() {
+		var c Classification
+		var isMaterial int64
+		if err := rows.Scan(
+			&c.ID, &c.AccessionNumber, &c.ItemNumber, &c.ItemTitle,
+			&c.EventType, &c.EventDomain, &isMaterial, &c.Confidence,
+			&c.Reasoning, &c.ClassifierVersion, &c.TaxonomyVersion, &c.ClassifiedAt,
+			&c.CompanyName, &c.Ticker, &c.FilingDate,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan row: %w", err)
+		}
+		c.IsMaterial = isMaterial != 0
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate rows: %w", err)
+	}
+	return out, total, nil
+}
+
+// EventTypeCounts returns the distribution of latest-per-item material
+// classifications across event_type taxonomy values, ordered by count
+// DESC. Consumed by the home page's filter nav to render chip badges.
+// Non-material classifications are excluded so the chip counts match
+// what the default home page view shows.
+func (s *store) EventTypeCounts(ctx context.Context) ([]EventTypeCount, error) {
+	const query = `
+		WITH ranked AS (
+			SELECT event_type, is_material,
+				ROW_NUMBER() OVER (
+					PARTITION BY accession_number, COALESCE(item_number, ''), classifier_version
+					ORDER BY classified_at DESC
+				) AS rn
+			FROM classifications
+		)
+		SELECT event_type, COUNT(*) AS cnt
+		FROM ranked
+		WHERE rn = 1 AND is_material = 1
+		GROUP BY event_type
+		ORDER BY cnt DESC, event_type
+	`
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("query event type counts: %w", err)
+	}
+	defer rows.Close()
+
+	var out []EventTypeCount
+	for rows.Next() {
+		var e EventTypeCount
+		if err := rows.Scan(&e.EventType, &e.Count); err != nil {
+			return nil, fmt.Errorf("scan event type count: %w", err)
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate event type counts: %w", err)
+	}
+	return out, nil
 }
 
 // FilingByAccession returns one filing plus every classification ever

@@ -1,0 +1,38 @@
+{{- /* Home page: latest material classifications, filterable by event_type. */ -}}
+{{define "title"}}filings-watcher — recent material 8-K events{{end}}
+{{define "content"}}
+<nav class="filter-nav" aria-label="Filter by event type">
+  <a href="/" {{if eq .ActiveEventType ""}}class="active"{{end}}>
+    All material <span class="count">{{.TotalMaterial}}</span>
+  </a>
+  {{range .EventTypeCounts}}
+    <a href="/?event={{.EventType}}" {{if eq $.ActiveEventType .EventType}}class="active"{{end}}>
+      {{eventLabel .EventType}} <span class="count">{{.Count}}</span>
+    </a>
+  {{end}}
+</nav>
+
+{{if .Filings}}
+  <section>
+    {{range .Filings}}
+      <article class="filing-card">
+        <h3>
+          {{.CompanyName}}
+          {{if .Ticker}} <small>({{ derefStr .Ticker }})</small>{{end}}
+        </h3>
+        <div class="filing-meta">
+          <span class="badge">{{eventLabel .EventType}}</span>
+          {{if .IsMaterial}}<span class="badge material">material</span>{{end}}
+          <span>confidence {{printf "%.2f" .Confidence}}</span>
+          <span>filed {{.FilingDate}}</span>
+          {{if .ItemNumber}}<span>Item {{ derefStr .ItemNumber }}</span>{{end}}
+        </div>
+        <p class="reasoning">{{.Reasoning}}</p>
+        <small><a href="{{edgarURL .AccessionNumber}}" rel="noopener" target="_blank">View raw filing on EDGAR &rarr;</a></small>
+      </article>
+    {{end}}
+  </section>
+{{else}}
+  <p>No classifications match the current filter. The orchestrator runs every 15 minutes; new filings land after EDGAR's nightly publish around 10 PM ET.</p>
+{{end}}
+{{end}}

@@ -24,13 +24,22 @@ import (
 // produce in tests. If this grows past ~50 lines, replace with mockery v3
 // (gitignored generation) per the repo's testing discipline.
 type fakeStore struct {
-	listResult       []store.Classification
-	listTotal        int
-	listErr          error
-	filingResult     *store.FilingDetail
-	filingErr        error
-	listCalledWith   struct{ limit, offset int }
-	filingCalledWith string
+	listResult           []store.Classification
+	listTotal            int
+	listErr              error
+	filingResult         *store.FilingDetail
+	filingErr            error
+	materialResult       []store.Classification
+	materialTotal        int
+	materialErr          error
+	eventTypeCountResult []store.EventTypeCount
+	eventTypeCountErr    error
+	listCalledWith       struct{ limit, offset int }
+	filingCalledWith     string
+	materialCalledWith   struct {
+		eventType     string
+		limit, offset int
+	}
 }
 
 func (f *fakeStore) LatestClassifications(
@@ -46,6 +55,21 @@ func (f *fakeStore) FilingByAccession(
 ) (*store.FilingDetail, error) {
 	f.filingCalledWith = accession
 	return f.filingResult, f.filingErr
+}
+
+func (f *fakeStore) MaterialClassifications(
+	_ context.Context, eventType string, limit, offset int,
+) ([]store.Classification, int, error) {
+	f.materialCalledWith.eventType = eventType
+	f.materialCalledWith.limit = limit
+	f.materialCalledWith.offset = offset
+	return f.materialResult, f.materialTotal, f.materialErr
+}
+
+func (f *fakeStore) EventTypeCounts(
+	_ context.Context,
+) ([]store.EventTypeCount, error) {
+	return f.eventTypeCountResult, f.eventTypeCountErr
 }
 
 // migrationsDir locates the shared SQL migrations directory.

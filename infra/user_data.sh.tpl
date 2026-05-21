@@ -129,6 +129,15 @@ RestartSec=5s
 Environment=FILINGS_DB_PATH=/var/lib/filings-watcher/filings.db
 Environment=LISTEN_ADDR=127.0.0.1:8080
 
+# OpenTelemetry. Same vocabulary as the orchestrator wrapper; the
+# host-local Collector receives OTLP on 127.0.0.1:4317. service.version
+# is omitted intentionally — the Go service rarely changes and a
+# dynamic-SHA wrapper is overkill for it.
+Environment=OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317
+Environment=OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+Environment=OTEL_SERVICE_NAME=filings-server
+Environment=OTEL_RESOURCE_ATTRIBUTES=service.namespace=filings-watcher
+
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full

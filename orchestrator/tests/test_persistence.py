@@ -119,14 +119,24 @@ def test_default_migrations_dir_resolves_to_real_directory() -> None:
 def test_apply_migrations_creates_tables_and_records_version() -> None:
     engine = open_engine(":memory:")
     applied = apply_migrations(engine, migrations_dir=MIGRATIONS_DIR)
-    assert [m.version for m in applied] == ["001_initial_schema", "002_ingest_cursor"]
+    assert [m.version for m in applied] == [
+        "001_initial_schema",
+        "002_ingest_cursor",
+        "003_cik_tickers",
+    ]
 
     with engine.begin() as conn:
         tables = {
             row[0]
             for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type = 'table'"))
         }
-    assert {"filings", "classifications", "ingest_cursor", "schema_versions"}.issubset(tables)
+    assert {
+        "filings",
+        "classifications",
+        "ingest_cursor",
+        "cik_tickers",
+        "schema_versions",
+    }.issubset(tables)
 
 
 def test_apply_migrations_is_idempotent() -> None:

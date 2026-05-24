@@ -161,6 +161,74 @@ def _classification_rows(result: FilingClassification) -> list[dict[str, object]
     return rows
 
 
+def upsert_cik_tickers(engine: Engine, mappings: list[tuple[str, str, str]]) -> int:
+    """Upsert the SEC CIK→ticker mapping into cik_tickers.
+
+    `mappings` is a list of (cik, ticker, company_name) tuples where cik
+    is the zero-padded 10-digit form. SEC publishes CIK as an integer;
+    the scan-tickers CLI is responsible for the zero-pad before calling
+    this. Returns the number of rows touched (insert + update combined).
+
+    See ADR 0025: cik is the stable join key; ticker is mutable.
+    """
+    if not mappings:
+        return 0
+    now = datetime.now(UTC).isoformat()
+    sql = text(
+        """
+        INSERT INTO cik_tickers (cik, ticker, company_name, updated_at)
+        VALUES (:cik, :ticker, :company_name, :updated_at)
+        ON CONFLICT (cik) DO UPDATE SET
+            ticker       = excluded.ticker,
+            company_name = excluded.company_name,
+            updated_at   = excluded.updated_at
+        """
+    )
+    with engine.begin() as conn:
+        for cik, ticker, name in mappings:
+            conn.execute(
+                sql,
+                {"cik": cik, "ticker": ticker, "company_name": name, "updated_at": now},
+            )
+    return len(mappings)
+
+
+def lookup_ticker_by_cik(engine: Engine, cik: str) -> str | None:
+    """Return the current ticker for the given (zero-padded) CIK, or None.
+
+    None means either (a) we have not yet ingested SEC's mapping, or
+    (b) the CIK has no public ticker — common for private subsidiaries,
+    trusts, and other registrants that don't trade.
+    """
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT ticker FROM cik_tickers WHERE cik = :cik"),
+            {"cik": cik},
+        ).fetchone()
+    return str(row[0]) if row else None
+
+
+def backfill_filings_tickers(engine: Engine) -> int:
+    """Populate filings.ticker for rows where it is NULL via a join on cik.
+
+    Run by scan-tickers after a fresh ingest of cik_tickers so existing
+    filings retroactively gain their ticker. Idempotent: only touches
+    rows whose ticker is currently NULL, so re-running is safe.
+    Returns the number of rows updated.
+    """
+    sql = text(
+        """
+        UPDATE filings
+           SET ticker = (SELECT ticker FROM cik_tickers WHERE cik = filings.cik)
+         WHERE ticker IS NULL
+           AND EXISTS (SELECT 1 FROM cik_tickers WHERE cik = filings.cik)
+        """
+    )
+    with engine.begin() as conn:
+        result = conn.execute(sql)
+    return int(result.rowcount or 0)
+
+
 def read_ingest_cursor(engine: Engine) -> tuple[str, str] | None:
     """Return the daily-index ingest cursor as (accession_number, filed_at).
 

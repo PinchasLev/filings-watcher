@@ -20,7 +20,11 @@ from datetime import UTC, datetime
 
 import httpx
 
-from filings_orchestrator.config import MissingConfigError, load_config
+from filings_orchestrator.config import (
+    MissingConfigError,
+    get_config_str,
+    require_env,
+)
 from filings_orchestrator.log_events import emit
 from filings_orchestrator.persistence import open_engine
 from filings_orchestrator.persistence.repository import (
@@ -35,13 +39,22 @@ def main() -> None:
     started_at = datetime.now(UTC)
     emit("scan_tickers_started", started_at=started_at.isoformat())
 
+    # scan-tickers only needs the EDGAR User-Agent and the DB path; it does
+    # NOT classify anything, so the Anthropic / LangSmith credentials that
+    # load_config() would require are out of scope here. Loading only the
+    # required values keeps this CLI runnable from a deploy hook or operator
+    # shell without staging unrelated secrets.
     try:
-        config = load_config()
+        edgar_ua = require_env("EDGAR_USER_AGENT")
     except MissingConfigError as e:
         emit("scan_tickers_failed", error_class="MissingConfigError", message=str(e))
         sys.exit(2)
+    db_path = get_config_str(
+        "FILINGS_DB_PATH",
+        default="/var/lib/filings-watcher/filings.db",
+    )
 
-    headers = {"User-Agent": config.edgar_user_agent}
+    headers = {"User-Agent": edgar_ua}
     try:
         response = httpx.get(_SEC_TICKERS_URL, headers=headers, timeout=30.0)
         response.raise_for_status()
@@ -57,7 +70,7 @@ def main() -> None:
     payload = response.json()
     mappings = _normalize_payload(payload)
 
-    engine = open_engine(config.filings_db_path)
+    engine = open_engine(db_path)
     written = upsert_cik_tickers(engine, mappings)
     backfilled = backfill_filings_tickers(engine)
 

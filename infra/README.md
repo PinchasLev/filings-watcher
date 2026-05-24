@@ -10,13 +10,13 @@ See [ADR 0014](../docs/decisions/0014-operator-access-via-mesh-vpn.md) for the o
 - Elastic IP attached to the host (public address survives instance replacement)
 - Security group: public ingress on 80/tcp + 443/tcp for Caddy; operator access via Tailscale and AWS SSM Session Manager
 - IAM role on the instance with `AmazonSSMManagedInstanceCore`, `s3:GetObject` on the artifact bucket, and `ssm:GetParameter*` on `/filings-watcher/*` (third-party API credentials)
-- Route53 A record `staging.filingsradar.com` → the EIP, plus a CAA record locking TLS issuance to Let's Encrypt
+- Route53 A records: `filingsradar.com` (apex, canonical), `www.filingsradar.com` (301 → apex), `staging.filingsradar.com` (reserved for future multi-host staging; currently 301 → apex) — all pointing at the EIP, plus a CAA record locking TLS issuance to Let's Encrypt. See ADR 0024.
 - Dedicated EBS data volume (`filings-watcher-data`, 10 GB gp3, encrypted) attached to the host, mounted at `/data`. Application state — SQLite DB and Caddy ACME state — lives on this volume so it survives instance replacement. See [ADR 0019](../docs/decisions/0019-data-persistence-across-instance-replacement.md).
 - AWS Data Lifecycle Manager policy taking daily snapshots of the data volume at 06:00 UTC with 7-day retention
 - S3 bucket `filingsradar-artifacts` (versioned, encrypted, public access blocked, 90-day current / 30-day noncurrent lifecycle) holding release tarballs
 - GitHub OIDC provider plus two IAM roles for GitHub Actions: build (write `releases/*` on push to main) and deploy (invoke the `filings-deploy` SSM document, gated by the `aws-deploy` GitHub environment)
 - SSM document `filings-deploy` encapsulating the host-side deploy procedure (S3 pull, tar extract, symlink swap, systemctl restart, health check)
-- First-boot provisioning via `user_data.sh.tpl`: security patches, 2 GB swap, automatic updates, journald retention, SSH hardening, `filings` application user, `uv` (Python package and toolchain manager) installed for the app user, `/opt/filings-watcher/` release directory tree, data-volume mount + filesystem bootstrap, `/var/lib/filings-watcher` and `/var/lib/caddy` symlinked into `/data`, empty SQLite DB at `/var/lib/filings-watcher/filings.db` (only when starting from a blank data volume), `filings-server.service` systemd unit installed and enabled, Tailscale daemon installed (operator joins post-provision), Caddy installed and configured to reverse-proxy `staging.filingsradar.com` to `127.0.0.1:8080`
+- First-boot provisioning via `user_data.sh.tpl`: security patches, 2 GB swap, automatic updates, journald retention, SSH hardening, `filings` application user, `uv` (Python package and toolchain manager) installed for the app user, `/opt/filings-watcher/` release directory tree, data-volume mount + filesystem bootstrap, `/var/lib/filings-watcher` and `/var/lib/caddy` symlinked into `/data`, empty SQLite DB at `/var/lib/filings-watcher/filings.db` (only when starting from a blank data volume), `filings-server.service` systemd unit installed and enabled, Tailscale daemon installed (operator joins post-provision), Caddy installed and configured to reverse-proxy `filingsradar.com` to `127.0.0.1:8080` (with `www` and `staging` 301-redirecting to apex)
 
 Application code (Go service binary, Python orchestrator) is delivered separately by the deploy pipeline, not by Terraform.
 
@@ -82,8 +82,10 @@ The host's MagicDNS name is whatever the OS reported during `tailscale up` (defa
 After apply finishes and the instance has been up for ~2 minutes (cloud-init + Caddy's first ACME request):
 
 ```bash
-dig staging.filingsradar.com A +short        # should return the EIP
-curl -I https://staging.filingsradar.com/    # valid Let's Encrypt cert
+dig filingsradar.com A +short                # should return the EIP
+curl -I https://filingsradar.com/            # valid Let's Encrypt cert
+curl -I https://www.filingsradar.com/        # expect 301 → apex
+curl -I https://staging.filingsradar.com/    # expect 301 → apex (reserved subdomain)
 ```
 
 `/` returns `502 Bad Gateway` from Caddy until a Go service binary has been deployed. The Caddy + TLS layer is working; the upstream isn't running yet.
@@ -124,7 +126,7 @@ Once per repository / AWS account pair, the following GitHub-side configuration 
 After that one-time setup:
 
 - Pushes to `main` trigger the `publish-artifact` job in CI. After lint and test jobs pass, the binary is built, tarred, and uploaded to `s3://filingsradar-artifacts/releases/<sha>/release.tar.gz` via the OIDC-scoped build role.
-- Deploys are operator-triggered: GitHub UI → Actions → "deploy" workflow → "Run workflow" → optional `sha` input (blank = current branch HEAD). The environment gate prompts the configured reviewers; after approval, the workflow invokes the `filings-deploy` SSM document, waits for completion, and smoke-tests `https://staging.filingsradar.com/health`.
+- Deploys are operator-triggered: GitHub UI → Actions → "deploy" workflow → "Run workflow" → optional `sha` input (blank = current branch HEAD). The environment gate prompts the configured reviewers; after approval, the workflow invokes the `filings-deploy` SSM document, waits for completion, and smoke-tests `https://filingsradar.com/health`.
 
 Rollback is the same workflow with an older SHA in the `sha` input.
 
@@ -140,7 +142,7 @@ aws ssm send-command \
   --region us-east-1
 ```
 
-The document fetches the API keys from Parameter Store at invocation time, runs `classify-filing` against the requested ticker and filing index (0 = most recent), and persists the classification to the SQLite DB on the data volume. Inspect the result via `https://staging.filingsradar.com/filings` once the pass completes.
+The document fetches the API keys from Parameter Store at invocation time, runs `classify-filing` against the requested ticker and filing index (0 = most recent), and persists the classification to the SQLite DB on the data volume. Inspect the result via `https://filingsradar.com/filings` once the pass completes.
 
 ## Scheduled ingest (daily-index → classify every 15 minutes)
 
@@ -331,7 +333,7 @@ sudo systemctl status filings-server --no-pager | head -15
 ### Verify (from anywhere)
 
 ```bash
-curl -sS https://staging.filingsradar.com/health
+curl -sS https://filingsradar.com/health
 # Expect: {"status":"ok"}
 ```
 

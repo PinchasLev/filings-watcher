@@ -31,7 +31,26 @@ resource "aws_ssm_document" "deploy" {
           "SHA='{{sha}}'",
           "RELEASES_DIR=/opt/filings-watcher/releases",
           "TARBALL=/tmp/release-$SHA.tar.gz",
-          "aws s3 cp s3://${aws_s3_bucket.artifacts.bucket}/releases/$SHA/release.tar.gz $TARBALL",
+          # Poll for the release tarball with a bounded retry. The CI
+          # 'Publish release tarball to S3' job can race with a manually-
+          # triggered deploy: if deploy is invoked before the publish
+          # completes, aws s3 cp returns 403 (S3's response for HeadObject
+          # against a non-existent key when the caller has GetObject but
+          # not ListBucket). The loop polls every 10 seconds for up to 3
+          # minutes; typical CI publish completes within 60-90 seconds.
+          "TARBALL_S3_URL=\"s3://${aws_s3_bucket.artifacts.bucket}/releases/$SHA/release.tar.gz\"",
+          "for attempt in $(seq 1 18); do",
+          "  if aws s3 cp $TARBALL_S3_URL $TARBALL >/dev/null 2>&1; then",
+          "    echo \"fetched release tarball on attempt $attempt\"",
+          "    break",
+          "  fi",
+          "  echo \"[$attempt/18] tarball not yet at $TARBALL_S3_URL — waiting 10s...\"",
+          "  sleep 10",
+          "done",
+          "if [ ! -f $TARBALL ]; then",
+          "  echo \"tarball $TARBALL_S3_URL not available after 3 minutes; check CI 'Publish release tarball to S3' job status for SHA $SHA\" >&2",
+          "  exit 1",
+          "fi",
           "mkdir -p $RELEASES_DIR/$SHA",
           "tar -xzf $TARBALL -C $RELEASES_DIR/$SHA",
           "chown -R filings:filings $RELEASES_DIR/$SHA",

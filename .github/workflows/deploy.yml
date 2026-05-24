@@ -97,7 +97,7 @@ jobs:
       - name: Smoke test the public surface
         if: success()
         run: |
-          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" https://staging.filingsradar.com/health)
+          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" https://filingsradar.com/health)
           if [ "$STATUS" != "200" ]; then
             echo "Health check returned HTTP $STATUS (expected 200)"
             exit 1

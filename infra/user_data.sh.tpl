@@ -127,7 +127,13 @@ Restart=on-failure
 RestartSec=5s
 
 Environment=FILINGS_DB_PATH=/var/lib/filings-watcher/filings.db
-Environment=LISTEN_ADDR=127.0.0.1:8080
+# Bind on all interfaces (not just loopback) so operators on the
+# tailnet can reach the service directly at http://filings-watcher-host:8080/.
+# Inbound access is gated by the EC2 security group, which restricts
+# to the Tailscale subnet per ADR 0014 — defence in depth via the SG,
+# not via a loopback bind. Future public exposure of selected routes
+# goes through Caddy on 443 with TLS.
+Environment=LISTEN_ADDR=:8080
 
 # OpenTelemetry. Same vocabulary as the orchestrator wrapper; the
 # host-local Collector receives OTLP on 127.0.0.1:4317. service.version

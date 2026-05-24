@@ -1,0 +1,56 @@
+{{- /* Detail page for a single filing: header + all classifications. */ -}}
+{{define "title"}}{{.Filing.CompanyName}} — {{.Filing.Form}} {{.Filing.FilingDate}}{{end}}
+{{define "content"}}
+<nav class="detail-back" aria-label="Breadcrumb">
+  <a href="/">&larr; Back to all filings</a>
+</nav>
+
+<article class="filing-detail">
+  <h2>
+    {{.Filing.CompanyName}}
+    {{if .Filing.Ticker}} <small>({{ derefStr .Filing.Ticker }})</small>{{end}}
+  </h2>
+  <div class="filing-meta">
+    <span class="badge">Form {{.Filing.Form}}</span>
+    <span>filed {{.Filing.FilingDate}}</span>
+    {{if .Filing.ReportDate}}<span>period {{ derefStr .Filing.ReportDate }}</span>{{end}}
+    <span>CIK {{.Filing.CIK}}</span>
+    <span>Accession {{.Filing.AccessionNumber}}</span>
+  </div>
+  <p>
+    <a href="{{edgarURL .Filing.AccessionNumber}}" rel="noopener" target="_blank">View raw filing on EDGAR &rarr;</a>
+  </p>
+</article>
+
+{{if .Classifications}}
+<section class="classifications">
+  <h3>Classifications</h3>
+  <p class="intro">
+    All AI-generated classifications for this filing, including non-material ones, across every classifier version. The most recent classification per Item appears first.
+  </p>
+  {{range .Classifications}}
+    <article class="filing-card">
+      {{if .ItemNumber}}
+        <h4>Item {{ derefStr .ItemNumber }}{{if .ItemTitle}}: {{ derefStr .ItemTitle }}{{end}}</h4>
+      {{else}}
+        <h4>Whole filing (no Items extractable)</h4>
+      {{end}}
+      <div class="filing-meta">
+        <span class="badge">{{eventLabel .EventType}}</span>
+        {{if .IsMaterial}}
+          <span class="badge material">material</span>
+        {{else}}
+          <span class="badge">non-material</span>
+        {{end}}
+        <span>confidence {{printf "%.0f" (mul .Confidence 100.0)}}%</span>
+        <span>classified {{.ClassifiedAt}}</span>
+      </div>
+      <p class="reasoning">{{.Reasoning}}</p>
+      <small class="version-info">{{.ClassifierVersion}} · {{.TaxonomyVersion}}</small>
+    </article>
+  {{end}}
+</section>
+{{else}}
+<p>No classifications have been recorded for this filing yet.</p>
+{{end}}
+{{end}}

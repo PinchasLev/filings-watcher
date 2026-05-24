@@ -21,7 +21,7 @@
     {{range .Filings}}
       <article class="filing-card">
         <h3>
-          {{.CompanyName}}
+          <a href="/filings/{{.AccessionNumber}}">{{.CompanyName}}</a>
           {{if .Ticker}} <small>({{ derefStr .Ticker }})</small>{{end}}
         </h3>
         <div class="filing-meta">

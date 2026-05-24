@@ -30,16 +30,21 @@ const homePageLimit = 50
 //go:embed templates/*.html.tmpl
 var templateFS embed.FS
 
-// homeTemplate is parsed once at process start. Template funcs handle
-// taxonomy-value pretty-printing, optional-string dereferencing, the
-// EDGAR URL construction, and confidence-percentage math so the
-// templates stay declarative.
-var homeTemplate = template.Must(template.New("layout.html.tmpl").Funcs(template.FuncMap{
+// templateFuncs are shared across all page templates so the templates
+// themselves stay declarative: taxonomy-value pretty-printing, optional-
+// string dereferencing, the EDGAR URL construction, and confidence-
+// percentage math.
+var templateFuncs = template.FuncMap{
 	"eventLabel": eventLabel,
 	"derefStr":   derefStr,
 	"edgarURL":   edgarFilingURL,
 	"mul":        func(a, b float64) float64 { return a * b },
-}).ParseFS(templateFS, "templates/layout.html.tmpl", "templates/home.html.tmpl"))
+}
+
+// homeTemplate is parsed once at process start.
+var homeTemplate = template.Must(template.New("layout.html.tmpl").Funcs(templateFuncs).ParseFS(
+	templateFS, "templates/layout.html.tmpl", "templates/home.html.tmpl",
+))
 
 type homePageData struct {
 	ActiveEventType string

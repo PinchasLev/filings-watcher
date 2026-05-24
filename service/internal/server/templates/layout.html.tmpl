@@ -4,7 +4,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{block "title" .}}filings-watcher{{end}}</title>
+<title>{{block "title" .}}Filings Radar{{end}}</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
 <style>
   :root { --pico-typography-spacing-vertical: 1rem; }
@@ -24,6 +24,22 @@
     border-color: var(--pico-primary);
   }
   .filter-nav a .count { opacity: 0.7; margin-left: 0.25rem; }
+  .intro {
+    font-size: 0.95rem;
+    color: var(--pico-muted-color);
+    margin-bottom: 1.5rem;
+  }
+  .pagination {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--pico-muted-border-color);
+    font-size: 0.9rem;
+  }
+  .pagination a { text-decoration: none; }
+  .pagination .disabled { color: var(--pico-muted-color); pointer-events: none; }
   .filing-card {
     margin-bottom: 1.5rem;
     padding-bottom: 1.5rem;
@@ -61,13 +77,13 @@
 <main class="container">
   <header>
     <hgroup>
-      <h1>filings-watcher</h1>
+      <h1>Filings Radar</h1>
       <p>SEC 8-K filings, classified by Claude with reasoning. Updated nightly from EDGAR's daily index (~10 PM ET).</p>
     </hgroup>
   </header>
   {{block "content" .}}{{end}}
   <footer>
-    <a href="https://github.com/PinchasLev/filings-watcher">github.com/PinchasLev/filings-watcher</a>
+    Open source on GitHub: <a href="https://github.com/PinchasLev/filings-watcher">github.com/PinchasLev/filings-watcher</a>
   </footer>
 </main>
 </body>

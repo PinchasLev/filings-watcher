@@ -44,6 +44,7 @@ from filings_orchestrator.persistence import open_engine
 from filings_orchestrator.persistence.repository import (
     advance_ingest_cursor,
     insert_classifications,
+    lookup_ticker_by_cik,
     read_ingest_cursor,
     upsert_filing_document,
 )
@@ -157,6 +158,13 @@ def _process_one(client: EdgarClient, engine: Engine, entry: DailyIndexEntry) ->
         company_name=entry.company_name,
     )
     filing = resolve_filing(entry, client)
+    # Populate the ticker from the local CIK→ticker mirror before persisting.
+    # Returns the filing unchanged if cik_tickers has no entry — common for
+    # private subsidiaries, trusts, or fresh installs before scan-tickers
+    # has been run. See ADR 0025.
+    ticker = lookup_ticker_by_cik(engine, filing.cik)
+    if ticker is not None:
+        filing = filing.model_copy(update={"ticker": ticker})
     document = fetch_filing_document(filing, client)
     upsert_filing_document(engine, document)
 

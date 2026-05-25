@@ -16,12 +16,13 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from sqlalchemy import Engine, text
+from sqlalchemy import Connection, Engine, text
 
 from filings_orchestrator.classify import (
     Classification,
     EventType,
     FilingClassification,
+    FilingEvents,
     domain_for,
 )
 from filings_orchestrator.edgar.document import FilingDocument
@@ -291,6 +292,183 @@ def latest_classifications_for_filing(
                   FROM classifications
                  WHERE accession_number = :accession
                  ORDER BY classified_at DESC
+                """
+            ),
+            {"accession": accession_number},
+        )
+        return [dict(row._mapping) for row in result]
+
+
+def create_run(
+    engine: Engine,
+    *,
+    stage: str,
+    config_version: str,
+    taxonomy_version: str,
+    model: str | None = None,
+    source_run_id: int | None = None,
+    status: str = "running",
+    notes: str | None = None,
+) -> int:
+    """Insert a runs-ledger row and return its run_id (ADR 0028).
+
+    A run is one processing pass of a single stage. `run_id` is the monotonic
+    versioning axis: every deliberate (re-)run is a new run, so this always
+    inserts — there is no dedup on `config_version`, because identical
+    configuration may still yield different LLM output. The caller marks
+    completion with `complete_run`.
+    """
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                """
+                INSERT INTO runs (
+                    stage, model, config_version, taxonomy_version,
+                    source_run_id, status, started_at, notes
+                )
+                VALUES (
+                    :stage, :model, :config_version, :taxonomy_version,
+                    :source_run_id, :status, :started_at, :notes
+                )
+                """
+            ),
+            {
+                "stage": stage,
+                "model": model,
+                "config_version": config_version,
+                "taxonomy_version": taxonomy_version,
+                "source_run_id": source_run_id,
+                "status": status,
+                "started_at": datetime.now(UTC).isoformat(),
+                "notes": notes,
+            },
+        )
+    return int(result.lastrowid or 0)
+
+
+def complete_run(engine: Engine, run_id: int, *, status: str = "succeeded") -> None:
+    """Mark a run finished with a terminal status (succeeded / failed / partial)."""
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE runs
+                   SET status = :status, finished_at = :finished_at
+                 WHERE run_id = :run_id
+                """
+            ),
+            {"status": status, "finished_at": datetime.now(UTC).isoformat(), "run_id": run_id},
+        )
+
+
+def insert_events(engine: Engine, filing_events: FilingEvents, *, run_id: int) -> int:
+    """Write a filing's reduce output as event rows under `run_id`, linking each
+    event to the classification rows it collated.
+
+    Idempotent within a run: the UNIQUE (run_id, accession, anchor) index makes
+    re-insertion a no-op (INSERT OR IGNORE), so a resumed run skips finished
+    work. Across runs, every deliberate re-run is a new run_id and is preserved
+    (ADR 0028). Returns the number of event rows newly inserted.
+
+    The event→classification join is resolved by mapping each event's
+    contributing Item numbers to the latest classification row for
+    (accession, item). Until classify runs carry run_ids, resolution is by Item
+    alone; provenance tightens to a source run when that lands.
+    """
+    inserted = 0
+    accession = filing_events.accession_number
+    event_sql = text(
+        """
+        INSERT OR IGNORE INTO events (
+            run_id, accession_number, anchor_item_number,
+            event_type, event_domain, is_material, confidence, summary
+        )
+        VALUES (
+            :run_id, :accession, :anchor, :event_type, :event_domain,
+            :is_material, :confidence, :summary
+        )
+        """
+    )
+    link_sql = text(
+        """
+        INSERT OR IGNORE INTO event_classifications (event_id, classification_id)
+        VALUES (:event_id, :classification_id)
+        """
+    )
+    with engine.begin() as conn:
+        for event in filing_events.events:
+            event_type = EventType(event.event_type)
+            outcome = conn.execute(
+                event_sql,
+                {
+                    "run_id": run_id,
+                    "accession": accession,
+                    "anchor": event.anchor_item_number,
+                    "event_type": event_type.value,
+                    "event_domain": domain_for(event_type).value,
+                    "is_material": 1 if event.is_material else 0,
+                    "confidence": event.confidence,
+                    "summary": event.summary,
+                },
+            )
+            if outcome.rowcount == 0:
+                # Already present in this run (idempotent retry); skip linking.
+                continue
+            inserted += 1
+            event_id = int(outcome.lastrowid or 0)
+            for class_id in _contributing_classification_ids(
+                conn, accession, event.contributing_item_numbers
+            ):
+                conn.execute(link_sql, {"event_id": event_id, "classification_id": class_id})
+    return inserted
+
+
+def _contributing_classification_ids(
+    conn: Connection, accession: str, item_numbers: list[str]
+) -> list[int]:
+    """Resolve Item numbers to the latest classification row id per (accession, item).
+
+    An Item with no classification row is skipped — the event is still written;
+    only that one join link is omitted.
+    """
+    ids: list[int] = []
+    for item in item_numbers:
+        row = conn.execute(
+            text(
+                """
+                SELECT id FROM classifications
+                 WHERE accession_number = :accession AND item_number = :item
+                 ORDER BY classified_at DESC, id DESC
+                 LIMIT 1
+                """
+            ),
+            {"accession": accession, "item": item},
+        ).fetchone()
+        if row is not None:
+            ids.append(int(row[0]))
+    return ids
+
+
+def latest_run_events_for_filing(engine: Engine, accession_number: str) -> list[dict[str, object]]:
+    """Return the events of the filing's latest run, selected wholesale (ADR 0028).
+
+    Current view = the complete output of the run with the greatest run_id that
+    produced events for this filing — never a per-anchor maximum. Selecting by
+    run as a unit ensures an anchor the latest run did not emit cannot surface
+    from an older, larger run.
+    """
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                """
+                SELECT id, run_id, accession_number, anchor_item_number,
+                       event_type, event_domain, is_material, confidence, summary
+                  FROM events
+                 WHERE accession_number = :accession
+                   AND run_id = (
+                       SELECT MAX(run_id) FROM events WHERE accession_number = :accession
+                   )
+                 ORDER BY anchor_item_number
                 """
             ),
             {"accession": accession_number},

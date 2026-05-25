@@ -23,6 +23,7 @@ from filings_orchestrator.classify import (
     EventType,
     FilingClassification,
     FilingEvents,
+    ItemClassification,
     domain_for,
 )
 from filings_orchestrator.edgar.document import FilingDocument
@@ -474,3 +475,106 @@ def latest_run_events_for_filing(engine: Engine, accession_number: str) -> list[
             {"accession": accession_number},
         )
         return [dict(row._mapping) for row in result]
+
+
+def list_classified_accessions(engine: Engine) -> list[str]:
+    """Return every accession number that has at least one classification.
+
+    The set of filings the reduce stage can operate on. Ordered by filing_date
+    so a corpus reduce processes newest-first (the operator-visible order)."""
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                """
+                SELECT DISTINCT c.accession_number
+                  FROM classifications c
+                  JOIN filings f ON f.accession_number = c.accession_number
+                 ORDER BY f.filing_date DESC, c.accession_number
+                """
+            )
+        )
+        return [str(row[0]) for row in result]
+
+
+def load_latest_filing_classification(
+    engine: Engine, accession_number: str
+) -> FilingClassification | None:
+    """Reconstruct a FilingClassification from the stored rows for one filing.
+
+    Reads the filing metadata plus the latest classification per Item (the most
+    recent `classified_at` per `item_number`, whole-filing row included), so the
+    reduce stage consumes the current per-Item judgments. Returns None when the
+    filing is absent or has no classifications yet. This is the map output the
+    reduce stage replays over, decoupled from the live classify path.
+    """
+    with engine.begin() as conn:
+        filing = conn.execute(
+            text("SELECT cik, company_name, filing_date FROM filings WHERE accession_number = :a"),
+            {"a": accession_number},
+        ).fetchone()
+        if filing is None:
+            return None
+        rows = conn.execute(
+            text(
+                """
+                WITH ranked AS (
+                    SELECT item_number, item_title, event_type, is_material,
+                           confidence, reasoning, classifier_version, taxonomy_version,
+                           classified_at,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY COALESCE(item_number, '')
+                               ORDER BY classified_at DESC, id DESC
+                           ) AS rn
+                      FROM classifications
+                     WHERE accession_number = :a
+                )
+                SELECT * FROM ranked WHERE rn = 1
+                """
+            ),
+            {"a": accession_number},
+        ).fetchall()
+
+    if not rows:
+        return None
+
+    items: list[ItemClassification] = []
+    whole_filing: Classification | None = None
+    classifier_version = ""
+    taxonomy_version = ""
+    classified_at = datetime.now(UTC)
+    for row in rows:
+        m = row._mapping
+        classification = Classification(
+            event_type=EventType(m["event_type"]),
+            is_material=bool(m["is_material"]),
+            confidence=float(m["confidence"]),
+            reasoning=str(m["reasoning"]),
+        )
+        if m["item_number"] is None:
+            whole_filing = classification
+        else:
+            items.append(
+                ItemClassification(
+                    item_number=str(m["item_number"]),
+                    item_title=m["item_title"],
+                    classification=classification,
+                )
+            )
+        classifier_version = str(m["classifier_version"])
+        taxonomy_version = str(m["taxonomy_version"])
+        classified_at = datetime.fromisoformat(str(m["classified_at"]))
+
+    return FilingClassification(
+        accession_number=accession_number,
+        cik=str(filing._mapping["cik"]),
+        company_name=str(filing._mapping["company_name"]),
+        filing_date=str(filing._mapping["filing_date"]),
+        items=items,
+        whole_filing=whole_filing,
+        classified_at=classified_at,
+        # The classifications table stores classifier_version (model+prompt hash)
+        # but not the bare model; recover it from the prefix for the wrapper.
+        model=classifier_version.split("+", 1)[0],
+        classifier_version=classifier_version,
+        taxonomy_version=taxonomy_version,
+    )

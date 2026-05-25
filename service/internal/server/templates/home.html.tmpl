@@ -1,6 +1,11 @@
 {{- /* Home page: latest material classifications, filterable by event_type, paginated. */ -}}
 {{define "title"}}Filings Radar — recent material 8-K events{{end}}
 {{define "content"}}
+{{if .TickerNotFound}}
+<p class="notice">
+  No company found for ticker &ldquo;{{.SearchedTicker}}&rdquo;. It may not be an active SEC ticker, or we haven&rsquo;t ingested it yet. Showing the latest filings below.
+</p>
+{{end}}
 <nav class="filter-nav" aria-label="Filter by event type">
   <a href="/" {{if eq .ActiveEventType ""}}class="active"{{end}}>
     All material <span class="count">{{.TotalMaterial}}</span>

@@ -70,6 +70,21 @@
     color: var(--pico-color-amber-800);
   }
   .reasoning { font-size: 0.95rem; line-height: 1.5; }
+  /* Ticker search (in the header, on every page). */
+  .search { display: flex; gap: 0.5rem; margin-top: 1rem; max-width: 26rem; }
+  .search input { margin-bottom: 0; }
+  .search button { width: auto; margin-bottom: 0; white-space: nowrap; }
+  .notice {
+    padding: 0.75rem 1rem;
+    border-radius: 0.4rem;
+    background: var(--pico-color-amber-100);
+    color: var(--pico-color-amber-800);
+    font-size: 0.95rem;
+    margin: 1.5rem 0;
+  }
+  /* Company-view header. */
+  .company-header { margin-bottom: 1rem; }
+  .company-header h2 { margin-bottom: 0.25rem; }
   /* Detail-page-specific elements. */
   .detail-back { margin-bottom: 1rem; font-size: 0.9rem; }
   .filing-detail { margin-bottom: 2rem; }
@@ -84,9 +99,14 @@
 <main class="container">
   <header>
     <hgroup>
-      <h1>Filings Radar</h1>
+      <h1><a href="/" style="text-decoration: none; color: inherit;">Filings Radar</a></h1>
       <p>SEC 8-K filings, classified by Claude with reasoning. Updated nightly from EDGAR's daily index (~10 PM ET).</p>
     </hgroup>
+    <form class="search" method="get" action="/" role="search">
+      <input type="search" name="ticker" placeholder="Search by ticker — e.g. AAPL"
+             aria-label="Search by ticker symbol" autocapitalize="characters" autocomplete="off">
+      <button type="submit">Search</button>
+    </form>
   </header>
   {{block "content" .}}{{end}}
   <footer>

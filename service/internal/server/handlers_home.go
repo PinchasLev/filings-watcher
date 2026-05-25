@@ -7,14 +7,17 @@
 //   - One route (GET /).
 //   - Server-side rendering with stdlib html/template.
 //   - Pico.css via CDN for typography (one <link> in the layout).
-//   - No JavaScript. Filter state is a query parameter; clicks navigate.
-//   - Material classifications only (the non-material toggle, full search,
-//     and the per-filing detail page are tracked as follow-ups).
+//   - No JavaScript. Filter and search state are query parameters; clicks
+//     and form submissions navigate.
+//   - Material classifications only. A ?ticker= search resolves the symbol
+//     to its CIK and redirects to the per-company view (/companies/{cik});
+//     an unresolved symbol re-renders this page with a not-found notice.
 
 package server
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -52,6 +55,12 @@ type homePageData struct {
 	TotalMaterial   int
 	FilteredTotal   int
 	Filings         []store.Classification
+	// Search state. SearchedTicker is the (uppercased) symbol the user
+	// looked up; TickerNotFound is true when that symbol resolved to no
+	// CIK, so the template renders a "no company found" notice above the
+	// normal listing. Both zero when the page wasn't reached via search.
+	SearchedTicker string
+	TickerNotFound bool
 	// Pagination state. RangeStart/RangeEnd are 1-based inclusive bounds
 	// of the slice currently shown ("17-32 of 299"). PrevURL/NextURL are
 	// empty strings when no further page exists in that direction; the
@@ -71,6 +80,27 @@ func handleHome(s storer) http.HandlerFunc {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
+		}
+
+		// Ticker search takes precedence over the listing: resolve the
+		// symbol to its stable CIK and redirect to the canonical company
+		// view. A symbol we can't resolve falls through to render the
+		// listing with a not-found notice rather than a bare error.
+		var searchedTicker string
+		var tickerNotFound bool
+		if raw := strings.TrimSpace(r.URL.Query().Get("ticker")); raw != "" {
+			cik, err := s.LookupCIKByTicker(r.Context(), raw)
+			switch {
+			case err == nil:
+				http.Redirect(w, r, "/companies/"+cik, http.StatusFound)
+				return
+			case errors.Is(err, store.ErrNotFound):
+				searchedTicker = strings.ToUpper(raw)
+				tickerNotFound = true
+			default:
+				http.Error(w, "query failed", http.StatusInternalServerError)
+				return
+			}
 		}
 
 		eventType := strings.TrimSpace(r.URL.Query().Get("event"))
@@ -99,6 +129,8 @@ func handleHome(s storer) http.HandlerFunc {
 			TotalMaterial:   total,
 			FilteredTotal:   filteredTotal,
 			Filings:         filings,
+			SearchedTicker:  searchedTicker,
+			TickerNotFound:  tickerNotFound,
 			RangeStart:      pageRangeStart(offset, len(filings)),
 			RangeEnd:        pageRangeEnd(offset, len(filings)),
 			PrevURL:         pageURL(eventType, offset-homePageLimit, true),

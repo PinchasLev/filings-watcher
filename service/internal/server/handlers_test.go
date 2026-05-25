@@ -34,9 +34,20 @@ type fakeStore struct {
 	materialErr          error
 	eventTypeCountResult []store.EventTypeCount
 	eventTypeCountErr    error
+	lookupCIKResult      string
+	lookupCIKErr         error
+	companyResult        *store.Company
+	companyFilings       []store.Classification
+	companyTotal         int
+	companyErr           error
 	listCalledWith       struct{ limit, offset int }
 	filingCalledWith     string
-	materialCalledWith   struct {
+	lookupCalledWith     string
+	companyCalledWith    struct {
+		cik           string
+		limit, offset int
+	}
+	materialCalledWith struct {
 		eventType     string
 		limit, offset int
 	}
@@ -70,6 +81,22 @@ func (f *fakeStore) EventTypeCounts(
 	_ context.Context,
 ) ([]store.EventTypeCount, error) {
 	return f.eventTypeCountResult, f.eventTypeCountErr
+}
+
+func (f *fakeStore) LookupCIKByTicker(
+	_ context.Context, ticker string,
+) (string, error) {
+	f.lookupCalledWith = ticker
+	return f.lookupCIKResult, f.lookupCIKErr
+}
+
+func (f *fakeStore) CompanyByCIK(
+	_ context.Context, cik string, limit, offset int,
+) (*store.Company, []store.Classification, int, error) {
+	f.companyCalledWith.cik = cik
+	f.companyCalledWith.limit = limit
+	f.companyCalledWith.offset = offset
+	return f.companyResult, f.companyFilings, f.companyTotal, f.companyErr
 }
 
 // migrationsDir locates the shared SQL migrations directory.

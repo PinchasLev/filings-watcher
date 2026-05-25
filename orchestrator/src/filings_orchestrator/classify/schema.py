@@ -130,3 +130,16 @@ class FilingEvents(BaseModel):
 
     accession_number: str
     events: list[ReducedEvent] = Field(default_factory=list)
+
+
+class ReduceOutput(BaseModel):
+    """Tool-call argument the reduce stage returns: a filing's consolidated events.
+
+    The model does not echo the accession number — the caller pairs these events
+    with the filing it reduced. Bound as the `submit_events` tool input schema.
+    """
+
+    events: list[ReducedEvent] = Field(
+        default_factory=list,
+        description="The distinct, consolidated events the filing discloses.",
+    )

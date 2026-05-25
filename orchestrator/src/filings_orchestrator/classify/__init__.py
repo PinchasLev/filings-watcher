@@ -1,6 +1,7 @@
 """8-K filing classification: assign material event types to each Item section."""
 
 from filings_orchestrator.classify.classifier import classify_filing
+from filings_orchestrator.classify.reducer import reduce_filing, reducer_version
 from filings_orchestrator.classify.schema import (
     Classification,
     FilingClassification,
@@ -26,4 +27,6 @@ __all__ = [
     "ReducedEvent",
     "classify_filing",
     "domain_for",
+    "reduce_filing",
+    "reducer_version",
 ]

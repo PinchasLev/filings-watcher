@@ -19,6 +19,8 @@ type storer interface {
 	FilingByAccession(ctx context.Context, accession string) (*store.FilingDetail, error)
 	MaterialClassifications(ctx context.Context, eventType string, limit, offset int) ([]store.Classification, int, error)
 	EventTypeCounts(ctx context.Context) ([]store.EventTypeCount, error)
+	LookupCIKByTicker(ctx context.Context, ticker string) (string, error)
+	CompanyByCIK(ctx context.Context, cik string, limit, offset int) (*store.Company, []store.Classification, int, error)
 }
 
 // New returns an http.Handler with all routes registered.
@@ -27,6 +29,7 @@ func New(s storer) http.Handler {
 	mux.HandleFunc("GET /health", handleHealth)
 	mux.HandleFunc("GET /filings", handleListFilings(s))
 	mux.HandleFunc("GET /filings/{accession}", handleFilingDetail(s))
+	mux.HandleFunc("GET /companies/{cik}", handleCompany(s))
 	mux.HandleFunc("GET /", handleHome(s))
 	return mux
 }

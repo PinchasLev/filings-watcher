@@ -1,0 +1,53 @@
+{{- /* Company view: one company's material classifications, grouped by CIK, paginated. */ -}}
+{{define "title"}}{{.Company.CompanyName}}{{if .Company.Ticker}} ({{.Company.Ticker}}){{end}} — filings{{end}}
+{{define "content"}}
+<nav class="detail-back" aria-label="Breadcrumb">
+  <a href="/">&larr; Back to all filings</a>
+</nav>
+
+<section class="company-header">
+  <h2>
+    {{.Company.CompanyName}}
+    {{if .Company.Ticker}} <small>({{.Company.Ticker}})</small>{{end}}
+  </h2>
+  <div class="filing-meta">
+    <span>CIK {{.Company.CIK}}</span>
+    <span>{{.FilingTotal}} material filing{{if ne .FilingTotal 1}}s{{end}}</span>
+  </div>
+</section>
+
+{{if .Filings}}
+  <section>
+    {{range .Filings}}
+      <article class="filing-card">
+        <h3><a href="/filings/{{.AccessionNumber}}">{{eventLabel .EventType}}</a></h3>
+        <div class="filing-meta">
+          <span>filed {{.FilingDate}}</span>
+          <span>confidence {{printf "%.0f" (mul .Confidence 100.0)}}%</span>
+          {{if .ItemNumber}}<span>Item {{ derefStr .ItemNumber }}</span>{{end}}
+        </div>
+        <p class="reasoning">{{.Reasoning}}</p>
+        <small><a href="{{edgarURL .AccessionNumber}}" rel="noopener" target="_blank">View raw filing on EDGAR &rarr;</a></small>
+      </article>
+    {{end}}
+  </section>
+
+  {{if or .PrevURL .NextURL}}
+    <nav class="pagination" aria-label="Pagination">
+      {{if .PrevURL}}
+        <a href="{{.PrevURL}}">&larr; Newer</a>
+      {{else}}
+        <span class="disabled">&larr; Newer</span>
+      {{end}}
+      <span>{{.RangeStart}}-{{.RangeEnd}} of {{.FilingTotal}}</span>
+      {{if .NextURL}}
+        <a href="{{.NextURL}}">Older &rarr;</a>
+      {{else}}
+        <span class="disabled">Older &rarr;</span>
+      {{end}}
+    </nav>
+  {{end}}
+{{else}}
+  <p>We track this company, but none of its filings have been classified as material yet. New filings land after EDGAR&rsquo;s nightly publish (~10 PM ET).</p>
+{{end}}
+{{end}}

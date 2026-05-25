@@ -4,7 +4,9 @@ from filings_orchestrator.classify.classifier import classify_filing
 from filings_orchestrator.classify.schema import (
     Classification,
     FilingClassification,
+    FilingEvents,
     ItemClassification,
+    ReducedEvent,
 )
 from filings_orchestrator.classify.taxonomy import (
     EVENT_TO_DOMAIN,
@@ -19,7 +21,9 @@ __all__ = [
     "EventDomain",
     "EventType",
     "FilingClassification",
+    "FilingEvents",
     "ItemClassification",
+    "ReducedEvent",
     "classify_filing",
     "domain_for",
 ]

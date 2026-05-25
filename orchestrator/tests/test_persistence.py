@@ -123,6 +123,7 @@ def test_apply_migrations_creates_tables_and_records_version() -> None:
         "001_initial_schema",
         "002_ingest_cursor",
         "003_cik_tickers",
+        "004_runs_and_events",
     ]
 
     with engine.begin() as conn:
@@ -135,6 +136,9 @@ def test_apply_migrations_creates_tables_and_records_version() -> None:
         "classifications",
         "ingest_cursor",
         "cik_tickers",
+        "runs",
+        "events",
+        "event_classifications",
         "schema_versions",
     }.issubset(tables)
 

@@ -53,6 +53,36 @@ type FilingDetail struct {
 	Classifications []Classification `json:"classifications"`
 }
 
+// Event is one filing-level event from the events layer (ADR 0027/0028),
+// denormalized with company_name, ticker, and filing_date for list views.
+// It is the reduce stage's output: a deduplicated event collating one or more
+// per-Item classifications. AnchorItemNumber is the primary substantive Item
+// the event centers on (nil for a whole-filing event); Summary is the
+// consolidated description — the event analog of a classification's Reasoning.
+type Event struct {
+	ID               int64   `json:"id"`
+	RunID            int64   `json:"run_id"`
+	AccessionNumber  string  `json:"accession_number"`
+	AnchorItemNumber *string `json:"anchor_item_number"`
+	EventType        string  `json:"event_type"`
+	EventDomain      string  `json:"event_domain"`
+	IsMaterial       bool    `json:"is_material"`
+	Confidence       float64 `json:"confidence"`
+	Summary          string  `json:"summary"`
+	// Denormalized from filings for list responses.
+	CompanyName string  `json:"company_name"`
+	Ticker      *string `json:"ticker"`
+	FilingDate  string  `json:"filing_date"`
+}
+
+// EventWithItems is an event plus the per-Item classifications it collated,
+// resolved through the event_classifications join. It backs the detail page's
+// drill-down: each event expands to the raw Items it consolidated.
+type EventWithItems struct {
+	Event
+	Items []Classification `json:"items"`
+}
+
 // ErrNotFound is returned when a query targets a specific record that doesn't exist.
 var ErrNotFound = errors.New("not found")
 
@@ -88,6 +118,12 @@ type Store interface {
 	EventTypeCounts(ctx context.Context) ([]EventTypeCount, error)
 	LookupCIKByTicker(ctx context.Context, ticker string) (string, error)
 	CompanyByCIK(ctx context.Context, cik string, limit, offset int) (*Company, []Classification, int, error)
+	// Events layer (ADR 0027/0028). Each filing's current view is the wholesale
+	// output of its single greatest run_id — never a per-anchor maximum.
+	MaterialEvents(ctx context.Context, eventType string, limit, offset int) ([]Event, int, error)
+	CompanyEvents(ctx context.Context, cik string, limit, offset int) (*Company, []Event, int, error)
+	MaterialEventTypeCounts(ctx context.Context) ([]EventTypeCount, error)
+	EventsByAccession(ctx context.Context, accession string) ([]EventWithItems, error)
 	Close() error
 }
 
@@ -525,4 +561,272 @@ func (s *store) resolveCompanyIdentity(ctx context.Context, cik string) (*Compan
 		c.Ticker = ticker.String
 	}
 	return &c, nil
+}
+
+// latestRunEventsCTE is the shared "current view" predicate for the events
+// layer: each filing's events come wholesale from its single greatest run_id,
+// never a per-anchor maximum (ADR 0028). Joining `events` to `latest_run` on
+// both accession AND run_id drops any event an older, larger run emitted that
+// the latest run did not — the orphan guard.
+const latestRunEventsCTE = `
+	WITH latest_run AS (
+		SELECT accession_number, MAX(run_id) AS run_id
+		FROM events
+		GROUP BY accession_number
+	)
+`
+
+// scanEvents reads Event rows in the column order the list queries below
+// project. Shared by MaterialEvents and CompanyEvents.
+func scanEvents(rows *sql.Rows) ([]Event, error) {
+	var out []Event
+	for rows.Next() {
+		var e Event
+		var isMaterial int64
+		if err := rows.Scan(
+			&e.ID, &e.RunID, &e.AccessionNumber, &e.AnchorItemNumber,
+			&e.EventType, &e.EventDomain, &isMaterial, &e.Confidence, &e.Summary,
+			&e.CompanyName, &e.Ticker, &e.FilingDate,
+		); err != nil {
+			return nil, fmt.Errorf("scan event: %w", err)
+		}
+		e.IsMaterial = isMaterial != 0
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate events: %w", err)
+	}
+	return out, nil
+}
+
+// MaterialEvents returns the latest-run material events across all filings,
+// newest filing first — the events-layer analog of MaterialClassifications and
+// the read backing the home list. An empty eventType means "no event-type
+// filter". Returns the page plus the total material-event count for pagination.
+func (s *store) MaterialEvents(ctx context.Context, eventType string, limit, offset int) ([]Event, int, error) {
+	const baseQuery = latestRunEventsCTE + `
+		SELECT
+			e.id, e.run_id, e.accession_number, e.anchor_item_number,
+			e.event_type, e.event_domain, e.is_material, e.confidence, e.summary,
+			f.company_name, f.ticker, f.filing_date
+		FROM events e
+		JOIN latest_run lr
+			ON lr.accession_number = e.accession_number AND lr.run_id = e.run_id
+		JOIN filings f ON f.accession_number = e.accession_number
+		WHERE e.is_material = 1
+		  AND (? = '' OR e.event_type = ?)
+		ORDER BY f.filing_date DESC, e.accession_number, e.id
+		LIMIT ? OFFSET ?
+	`
+	const countQuery = latestRunEventsCTE + `
+		SELECT COUNT(*)
+		FROM events e
+		JOIN latest_run lr
+			ON lr.accession_number = e.accession_number AND lr.run_id = e.run_id
+		WHERE e.is_material = 1 AND (? = '' OR e.event_type = ?)
+	`
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, countQuery, eventType, eventType).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count material events: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, baseQuery, eventType, eventType, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query material events: %w", err)
+	}
+	defer rows.Close()
+
+	out, err := scanEvents(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return out, total, nil
+}
+
+// CompanyEvents returns a company's latest-run material events, newest filing
+// first — the per-company view's events-layer read. Identity resolution
+// (cik_tickers, falling back to as-filed) is shared with CompanyByCIK; an
+// unknown CIK yields ErrNotFound.
+func (s *store) CompanyEvents(ctx context.Context, cik string, limit, offset int) (*Company, []Event, int, error) {
+	company, err := s.resolveCompanyIdentity(ctx, cik)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+
+	const baseQuery = latestRunEventsCTE + `
+		SELECT
+			e.id, e.run_id, e.accession_number, e.anchor_item_number,
+			e.event_type, e.event_domain, e.is_material, e.confidence, e.summary,
+			f.company_name, f.ticker, f.filing_date
+		FROM events e
+		JOIN latest_run lr
+			ON lr.accession_number = e.accession_number AND lr.run_id = e.run_id
+		JOIN filings f ON f.accession_number = e.accession_number
+		WHERE e.is_material = 1 AND f.cik = ?
+		ORDER BY f.filing_date DESC, e.accession_number, e.id
+		LIMIT ? OFFSET ?
+	`
+	const countQuery = latestRunEventsCTE + `
+		SELECT COUNT(*)
+		FROM events e
+		JOIN latest_run lr
+			ON lr.accession_number = e.accession_number AND lr.run_id = e.run_id
+		JOIN filings f ON f.accession_number = e.accession_number
+		WHERE e.is_material = 1 AND f.cik = ?
+	`
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, countQuery, cik).Scan(&total); err != nil {
+		return nil, nil, 0, fmt.Errorf("count company events: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, baseQuery, cik, limit, offset)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("query company events: %w", err)
+	}
+	defer rows.Close()
+
+	out, err := scanEvents(rows)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	return company, out, total, nil
+}
+
+// MaterialEventTypeCounts returns the distribution of latest-run material
+// events across event_type values, count DESC — the events-layer analog of
+// EventTypeCounts, so the home page's filter chips match an events-based list.
+func (s *store) MaterialEventTypeCounts(ctx context.Context) ([]EventTypeCount, error) {
+	const query = latestRunEventsCTE + `
+		SELECT e.event_type, COUNT(*) AS cnt
+		FROM events e
+		JOIN latest_run lr
+			ON lr.accession_number = e.accession_number AND lr.run_id = e.run_id
+		WHERE e.is_material = 1
+		GROUP BY e.event_type
+		ORDER BY cnt DESC, e.event_type
+	`
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("query material event type counts: %w", err)
+	}
+	defer rows.Close()
+
+	var out []EventTypeCount
+	for rows.Next() {
+		var e EventTypeCount
+		if err := rows.Scan(&e.EventType, &e.Count); err != nil {
+			return nil, fmt.Errorf("scan event type count: %w", err)
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate event type counts: %w", err)
+	}
+	return out, nil
+}
+
+// EventsByAccession returns one filing's latest-run events, each nested with
+// the per-Item classifications it collated (via event_classifications). The
+// drill-down for the detail page: events are the headline, the contributing
+// Items expand underneath. An event with no linked classifications is returned
+// with an empty Items slice (LEFT JOIN). Order: events by id, Items by item.
+func (s *store) EventsByAccession(ctx context.Context, accession string) ([]EventWithItems, error) {
+	const query = `
+		WITH latest AS (
+			SELECT e.id, e.run_id, e.accession_number, e.anchor_item_number,
+			       e.event_type, e.event_domain, e.is_material, e.confidence, e.summary,
+			       f.company_name, f.ticker, f.filing_date
+			  FROM events e
+			  JOIN filings f ON f.accession_number = e.accession_number
+			 WHERE e.accession_number = ?
+			   AND e.run_id = (SELECT MAX(run_id) FROM events WHERE accession_number = ?)
+		)
+		SELECT
+			le.id, le.run_id, le.accession_number, le.anchor_item_number,
+			le.event_type, le.event_domain, le.is_material, le.confidence, le.summary,
+			le.company_name, le.ticker, le.filing_date,
+			c.id, c.item_number, c.item_title, c.event_type, c.event_domain,
+			c.is_material, c.confidence, c.reasoning, c.classifier_version,
+			c.taxonomy_version, c.classified_at
+		FROM latest le
+		LEFT JOIN event_classifications ec ON ec.event_id = le.id
+		LEFT JOIN classifications c ON c.id = ec.classification_id
+		ORDER BY le.id, c.item_number
+	`
+	rows, err := s.db.QueryContext(ctx, query, accession, accession)
+	if err != nil {
+		return nil, fmt.Errorf("query events by accession: %w", err)
+	}
+	defer rows.Close()
+
+	var order []int64
+	byID := make(map[int64]*EventWithItems)
+	for rows.Next() {
+		var e Event
+		var eMaterial int64
+		// Nullable classification columns: an event with no linked rows yields
+		// a single row with every classification column NULL (LEFT JOIN).
+		var (
+			cID          sql.NullInt64
+			cItemNumber  sql.NullString
+			cItemTitle   sql.NullString
+			cEventType   sql.NullString
+			cEventDomain sql.NullString
+			cMaterial    sql.NullInt64
+			cConfidence  sql.NullFloat64
+			cReasoning   sql.NullString
+			cClassifier  sql.NullString
+			cTaxonomy    sql.NullString
+			cClassified  sql.NullString
+		)
+		if err := rows.Scan(
+			&e.ID, &e.RunID, &e.AccessionNumber, &e.AnchorItemNumber,
+			&e.EventType, &e.EventDomain, &eMaterial, &e.Confidence, &e.Summary,
+			&e.CompanyName, &e.Ticker, &e.FilingDate,
+			&cID, &cItemNumber, &cItemTitle, &cEventType, &cEventDomain,
+			&cMaterial, &cConfidence, &cReasoning, &cClassifier, &cTaxonomy, &cClassified,
+		); err != nil {
+			return nil, fmt.Errorf("scan event with items: %w", err)
+		}
+		e.IsMaterial = eMaterial != 0
+
+		ewi, seen := byID[e.ID]
+		if !seen {
+			ewi = &EventWithItems{Event: e}
+			byID[e.ID] = ewi
+			order = append(order, e.ID)
+		}
+		if cID.Valid {
+			item := Classification{
+				ID:                cID.Int64,
+				AccessionNumber:   e.AccessionNumber,
+				EventType:         cEventType.String,
+				EventDomain:       cEventDomain.String,
+				IsMaterial:        cMaterial.Int64 != 0,
+				Confidence:        cConfidence.Float64,
+				Reasoning:         cReasoning.String,
+				ClassifierVersion: cClassifier.String,
+				TaxonomyVersion:   cTaxonomy.String,
+				ClassifiedAt:      cClassified.String,
+			}
+			if cItemNumber.Valid {
+				item.ItemNumber = &cItemNumber.String
+			}
+			if cItemTitle.Valid {
+				item.ItemTitle = &cItemTitle.String
+			}
+			ewi.Items = append(ewi.Items, item)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate events by accession: %w", err)
+	}
+
+	out := make([]EventWithItems, 0, len(order))
+	for _, id := range order {
+		out = append(out, *byID[id])
+	}
+	return out, nil
 }

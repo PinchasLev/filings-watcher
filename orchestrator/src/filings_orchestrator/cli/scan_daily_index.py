@@ -3,7 +3,8 @@
 Reads the ingest cursor, fetches each EDGAR daily-index file between the
 cursor's date (exclusive) and today (Eastern Time, inclusive), filters
 to 8-Ks not yet present in the local DB, classifies each one with
-Anthropic-side retries, and advances the cursor per filing.
+Anthropic-side retries, reduces the classification into the filing-level
+events layer, and advances the cursor per filing.
 
 Per ADR 0021:
 - Correctness on dedup comes from the accession-number primary key on
@@ -11,6 +12,11 @@ Per ADR 0021:
 - The cursor advances only past filings whose classification persisted.
 - On exhausted retries for any filing, the tick logs `tick_failed` and
   exits non-zero; the next tick re-attempts from the failing filing.
+
+The reduce stage (ADR 0027/0028) runs per filing as its own run. It is
+derived and replayable, so a reduce failure is non-fatal: it is logged and
+counted but does not fail the tick or hold the cursor — the classification
+is already persisted and `reduce-corpus` closes any gap in the events layer.
 
 Run as a one-shot under the systemd timer (per ADR 0012). Output is
 JSON-line structured events to stdout, captured by journald.
@@ -27,7 +33,12 @@ import httpx
 from opentelemetry import trace
 from sqlalchemy import Engine, bindparam, text
 
-from filings_orchestrator.classify import classify_filing
+from filings_orchestrator.classify import (
+    FilingClassification,
+    classify_filing,
+    reduce_filing,
+    reducer_version,
+)
 from filings_orchestrator.classify.retry import with_retries
 from filings_orchestrator.config import MissingConfigError, load_config
 from filings_orchestrator.edgar import EdgarClient, fetch_filing_document
@@ -43,7 +54,10 @@ from filings_orchestrator.otel_setup import setup_otel
 from filings_orchestrator.persistence import open_engine
 from filings_orchestrator.persistence.repository import (
     advance_ingest_cursor,
+    complete_run,
+    create_run,
     insert_classifications,
+    insert_events,
     lookup_ticker_by_cik,
     read_ingest_cursor,
     upsert_filing_document,
@@ -86,6 +100,7 @@ def main() -> None:
 
         new_filings_count = 0
         errors_count = 0
+        reduce_errors_count = 0
 
         with EdgarClient(
             user_agent=config.edgar_user_agent,
@@ -119,7 +134,7 @@ def main() -> None:
 
                 for entry in new_entries:
                     try:
-                        _process_one(client, engine, entry)
+                        reduce_errors_count += _process_one(client, engine, entry)
                         new_filings_count += 1
                     except Exception as exc:
                         errors_count += 1
@@ -137,18 +152,25 @@ def main() -> None:
         span.set_attribute("dates_scanned", [d.isoformat() for d in target_dates])
         span.set_attribute("new_filings_count", new_filings_count)
         span.set_attribute("errors_count", errors_count)
+        span.set_attribute("reduce_errors_count", reduce_errors_count)
         emit(
             "tick_completed",
             duration_ms=duration_ms,
             new_filings_count=new_filings_count,
             errors_count=errors_count,
+            reduce_errors_count=reduce_errors_count,
             dates_scanned=[d.isoformat() for d in target_dates],
             cursor_after=(cursor_acc, cursor_filed) if cursor else None,
         )
 
 
-def _process_one(client: EdgarClient, engine: Engine, entry: DailyIndexEntry) -> None:
-    """Resolve, fetch body, classify-with-retry, persist, advance cursor."""
+def _process_one(client: EdgarClient, engine: Engine, entry: DailyIndexEntry) -> int:
+    """Resolve, fetch body, classify-with-retry, persist, reduce, advance cursor.
+
+    Returns the number of reduce failures for this filing (0 or 1). A classify
+    or fetch failure raises and fails the tick; a reduce failure does not (see
+    `_reduce_one`), so the count is surfaced rather than propagated.
+    """
     emit(
         "filing_fetched",
         accession_number=entry.accession_number,
@@ -192,12 +214,64 @@ def _process_one(client: EdgarClient, engine: Engine, entry: DailyIndexEntry) ->
         taxonomy_version=result.taxonomy_version,
     )
 
+    reduce_errors = _reduce_one(engine, result)
+
     advance_ingest_cursor(engine, entry.accession_number, entry.filed_at)
     emit(
         "cursor_advanced",
         accession_number=entry.accession_number,
         filed_at=entry.filed_at,
     )
+    return reduce_errors
+
+
+def _reduce_one(engine: Engine, classification: FilingClassification) -> int:
+    """Reduce a freshly-classified filing into events as its own run (ADR 0028).
+
+    Best-effort and non-fatal: the classification — the irreplaceable map output
+    — is already persisted and the cursor will advance regardless. Reduce is a
+    derived, replayable stage, so a failure here is logged and counted, not
+    propagated; a later `reduce-corpus` sweep closes the resulting gap in the
+    events layer. Retries cover transient Anthropic errors, as classify does.
+    Returns 1 if the reduce failed, 0 otherwise.
+    """
+    run_id = create_run(
+        engine,
+        stage="reduce",
+        config_version=reducer_version(),
+        taxonomy_version=classification.taxonomy_version,
+    )
+    try:
+        events = with_retries(
+            lambda: reduce_filing(classification),
+            log_context={
+                "accession_number": classification.accession_number,
+                "cik": classification.cik,
+                "stage": "reduce",
+            },
+        )
+        written = insert_events(engine, events, run_id=run_id)
+    except Exception as exc:
+        complete_run(engine, run_id, status="failed")
+        emit(
+            "reduce_failed",
+            accession_number=classification.accession_number,
+            cik=classification.cik,
+            run_id=run_id,
+            error_class=type(exc).__name__,
+            message=str(exc),
+        )
+        return 1
+
+    complete_run(engine, run_id, status="succeeded")
+    emit(
+        "reduce_completed",
+        accession_number=classification.accession_number,
+        cik=classification.cik,
+        run_id=run_id,
+        events=written,
+    )
+    return 0
 
 
 def _dates_to_scan(cursor_filed_at: str | None, today_et: date) -> list[date]:

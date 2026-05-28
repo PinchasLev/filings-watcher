@@ -124,9 +124,18 @@ def test_scan_daily_index_classifies_new_8k_and_advances_cursor(
     assert "filing_fetched" in event_names
     assert "classification_started" in event_names
     assert "classification_completed" in event_names
+    assert "reduce_completed" in event_names
     assert "cursor_advanced" in event_names
     assert "tick_completed" in event_names
     assert "tick_failed" not in event_names
+
+    # The reduce stage ran inline as its own run and wrote the events layer.
+    # The stub yields a whole-filing classification (no Items), so reduce is a
+    # pass-through: one event, no model call — keeping the test hermetic.
+    reduce_done = next(e for e in events if e["event"] == "reduce_completed")
+    assert reduce_done["events"] == 1
+    completed = next(e for e in events if e["event"] == "tick_completed")
+    assert completed["reduce_errors_count"] == 0
 
     # The 13F-HR row must not appear — only the 8-K is classified.
     fetched = next(e for e in events if e["event"] == "filing_fetched")
@@ -142,6 +151,86 @@ def test_scan_daily_index_classifies_new_8k_and_advances_cursor(
         rows = conn.execute(text("SELECT accession_number, form FROM filings")).fetchall()
     assert len(rows) == 1
     assert rows[0][0] == "0001171843-26-003455"
+
+    # An events row exists under a succeeded reduce run for the classified filing.
+    with engine.begin() as conn:
+        event_rows = conn.execute(
+            text("SELECT accession_number FROM events WHERE accession_number = :a"),
+            {"a": "0001171843-26-003455"},
+        ).fetchall()
+        reduce_runs = conn.execute(
+            text("SELECT status FROM runs WHERE stage = 'reduce'")
+        ).fetchall()
+    assert len(event_rows) == 1
+    assert [r[0] for r in reduce_runs] == ["succeeded"]
+
+
+def test_scan_daily_index_reduce_failure_is_non_fatal(
+    configured_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A reduce failure must not fail the tick: the classification is already
+    persisted and reduce is a derived, replayable stage (ADR 0028). The tick
+    completes, the cursor advances, and the failure is logged + counted."""
+    monkeypatch.setattr(
+        "filings_orchestrator.cli.scan_daily_index.classify_filing",
+        _stub_classify_filing,
+    )
+
+    def _boom(_classification: object) -> object:
+        raise ValueError("reduce blew up")
+
+    # Patched at the tick's module boundary; ValueError is non-retryable, so
+    # with_retries propagates it straight into _reduce_one's handler.
+    monkeypatch.setattr("filings_orchestrator.cli.scan_daily_index.reduce_filing", _boom)
+
+    fixed_now = datetime(2026, 5, 15, 16, 0, 0, tzinfo=UTC)
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:  # type: ignore[override]
+            return fixed_now if tz is None else fixed_now.astimezone(tz)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("filings_orchestrator.cli.scan_daily_index.datetime", _FixedDateTime)
+
+    with respx.mock(assert_all_called=True) as mock:
+        mock.get(
+            "https://www.sec.gov/Archives/edgar/daily-index/2026/QTR2/master.20260515.idx"
+        ).mock(return_value=httpx.Response(200, text=_MASTER_IDX_BODY))
+        mock.get(
+            "https://www.sec.gov/Archives/edgar/data/101295/000117184326003455/"
+            "0001171843-26-003455-index.html"
+        ).mock(return_value=httpx.Response(200, text=_FILING_INDEX_HTML))
+        mock.get(
+            "https://www.sec.gov/Archives/edgar/data/101295/000117184326003455/f8k_051426.htm"
+        ).mock(return_value=httpx.Response(200, text=_FILING_BODY_HTML))
+
+        main()
+
+    events = _read_jsonl(capsys.readouterr().out)
+    event_names = [e["event"] for e in events]
+    assert "reduce_failed" in event_names
+    assert "tick_failed" not in event_names
+    assert "cursor_advanced" in event_names
+
+    completed = next(e for e in events if e["event"] == "tick_completed")
+    assert completed["reduce_errors_count"] == 1
+    assert completed["new_filings_count"] == 1
+
+    # Cursor advanced despite the reduce failure; the classification persisted;
+    # the failed reduce run is recorded; no events row was written.
+    engine = open_engine(str(configured_env))
+    assert read_ingest_cursor(engine) == ("0001171843-26-003455", "20260515")
+    with engine.begin() as conn:
+        class_count = conn.execute(text("SELECT COUNT(*) FROM classifications")).scalar()
+        event_count = conn.execute(text("SELECT COUNT(*) FROM events")).scalar()
+        reduce_runs = conn.execute(
+            text("SELECT status FROM runs WHERE stage = 'reduce'")
+        ).fetchall()
+    assert class_count == 1
+    assert event_count == 0
+    assert [r[0] for r in reduce_runs] == ["failed"]
 
 
 def test_scan_daily_index_idempotent_on_already_seen_filing(

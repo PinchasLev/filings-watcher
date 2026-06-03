@@ -92,9 +92,33 @@
   .classifications h3, .events h3 { margin-top: 2rem; }
   .version-info { color: var(--pico-muted-color); font-size: 0.8rem; }
   .filing-card h4 { margin-bottom: 0.4rem; font-size: 1rem; }
-  /* Detail-page event drill-down: each event expands to its source Items. */
-  .event-items { margin-top: 0.5rem; }
-  .event-items summary { cursor: pointer; font-size: 0.85rem; color: var(--pico-muted-color); }
+  /* Detail-page event drill-down: multi-Item events expand to their source Items.
+     Pico styles <summary> as a link-coloured row with a right-side arrow; override
+     so the disclosure reads as a clearly-interactive expander with a left chevron
+     that rotates on open. No JS — the rotation is a CSS transition on [open]. */
+  .event-items { margin-top: 0.75rem; }
+  .event-items > summary {
+    list-style: none;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.9rem;
+    color: var(--pico-color);
+    padding: 0.25rem 0;
+  }
+  .event-items > summary::-webkit-details-marker { display: none; }
+  .event-items > summary::after { content: none; }
+  .event-items > summary::before {
+    content: "▸";
+    display: inline-block;
+    font-size: 0.85em;
+    color: var(--pico-muted-color);
+    transition: transform 0.15s ease;
+  }
+  .event-items[open] > summary::before { transform: rotate(90deg); }
+  .event-items > summary:hover { color: var(--pico-primary); }
+  .event-items > summary:hover::before { color: var(--pico-primary); }
   .item-classification {
     margin-top: 1rem;
     padding-left: 1rem;

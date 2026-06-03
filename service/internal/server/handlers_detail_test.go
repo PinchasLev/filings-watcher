@@ -77,14 +77,25 @@ func TestHandleFilingDetailRendersHTMLWhenBrowserAccept(t *testing.T) {
 		"material",                  // detail page DOES show the badge (unlike home page)
 		"95%",                       // confidence
 		"CFO resignation announced", // event summary
-		"Based on 1 filing Item",    // drill-down disclosure
-		"Item 5.02",                 // nested Item heading
-		"Departure of Directors",    // nested Item title
-		"Item 5.02 reports the CFO", // nested Item reasoning
 		"Back to all filings",       // breadcrumb
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected body to contain %q", want)
+		}
+	}
+	// Single-Item events render the event card alone — no drill-down disclosure.
+	// The reduce stage was a pass-through, so the Item's reasoning is the event
+	// summary; there is nothing new to reveal. (The anchor Item number — "Item
+	// 5.02" — appears as event-card metadata regardless, so it is NOT a
+	// drill-down-only signal; the nested Item title and reasoning are.)
+	for _, unwanted := range []string{
+		"Show the",                  // disclosure wording
+		"source Items",              // disclosure wording
+		"Departure of Directors",    // nested Item title (drill-down only)
+		"Item 5.02 reports the CFO", // nested Item reasoning (drill-down only)
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("expected single-Item event to render without drill-down; body contained %q", unwanted)
 		}
 	}
 }
@@ -172,8 +183,8 @@ func TestHandleFilingDetailDrillDownShowsMaterialAndNonMaterialItems(t *testing.
 	server.New(fake).ServeHTTP(rec, req)
 
 	body := rec.Body.String()
-	if !strings.Contains(body, "Based on 2 filing Items") {
-		t.Errorf("expected the drill-down to disclose both source Items")
+	if !strings.Contains(body, "Show the 2 source Items") {
+		t.Errorf("expected the drill-down disclosure to advertise both source Items")
 	}
 	if !strings.Contains(body, "real material event") {
 		t.Errorf("expected drill-down to show the material Item's reasoning")

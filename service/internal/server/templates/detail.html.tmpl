@@ -41,9 +41,9 @@
         {{if .AnchorItemNumber}}<span>anchor Item {{ derefStr .AnchorItemNumber }}</span>{{end}}
       </div>
       <p class="reasoning">{{.Summary}}</p>
-      {{if .Items}}
+      {{if gt (len .Items) 1}}
       <details class="event-items">
-        <summary>Based on {{len .Items}} filing Item{{if ne (len .Items) 1}}s{{end}}</summary>
+        <summary>Show the {{len .Items}} source Items</summary>
         {{range .Items}}
           <article class="item-classification">
             {{if .ItemNumber}}

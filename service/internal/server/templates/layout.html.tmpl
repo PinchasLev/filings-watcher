@@ -89,9 +89,17 @@
   .detail-back { margin-bottom: 1rem; font-size: 0.9rem; }
   .filing-detail { margin-bottom: 2rem; }
   .filing-detail h2 { margin-bottom: 0.5rem; }
-  .classifications h3 { margin-top: 2rem; }
+  .classifications h3, .events h3 { margin-top: 2rem; }
   .version-info { color: var(--pico-muted-color); font-size: 0.8rem; }
   .filing-card h4 { margin-bottom: 0.4rem; font-size: 1rem; }
+  /* Detail-page event drill-down: each event expands to its source Items. */
+  .event-items { margin-top: 0.5rem; }
+  .event-items summary { cursor: pointer; font-size: 0.85rem; color: var(--pico-muted-color); }
+  .item-classification {
+    margin-top: 1rem;
+    padding-left: 1rem;
+    border-left: 2px solid var(--pico-muted-border-color);
+  }
   footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--pico-muted-border-color); font-size: 0.85rem; color: var(--pico-muted-color); }
 </style>
 </head>

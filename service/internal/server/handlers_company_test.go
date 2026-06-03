@@ -38,8 +38,8 @@ func TestTickerSearchNotFoundRendersNotice(t *testing.T) {
 	fake := &fakeStore{
 		lookupCIKErr:         store.ErrNotFound,
 		eventTypeCountResult: []store.EventTypeCount{{EventType: "ma_activity", Count: 3}},
-		materialResult:       nil,
-		materialTotal:        0,
+		materialEventsResult: nil,
+		materialEventsTotal:  0,
 	}
 
 	rec := httptest.NewRecorder()
@@ -74,24 +74,24 @@ func TestTickerSearchStoreErrorIs500(t *testing.T) {
 
 func TestCompanyPageRenders(t *testing.T) {
 	ticker := "ACME"
-	item := "2.02"
+	anchor := "2.02"
 	fake := &fakeStore{
 		companyResult: &store.Company{
 			CIK:         "0001234567",
 			Ticker:      "ACME",
 			CompanyName: "Acme Corp",
 		},
-		companyFilings: []store.Classification{
+		companyEvents: []store.Event{
 			{
-				AccessionNumber: "0001234567-26-000001",
-				ItemNumber:      &item,
-				EventType:       "earnings_release",
-				IsMaterial:      true,
-				Confidence:      0.91,
-				Reasoning:       "Quarterly results press release furnished as Exhibit 99.1.",
-				CompanyName:     "Acme Corp",
-				Ticker:          &ticker,
-				FilingDate:      "2026-05-20",
+				AccessionNumber:  "0001234567-26-000001",
+				AnchorItemNumber: &anchor,
+				EventType:        "earnings_release",
+				IsMaterial:       true,
+				Confidence:       0.91,
+				Summary:          "Quarterly results press release furnished as Exhibit 99.1.",
+				CompanyName:      "Acme Corp",
+				Ticker:           &ticker,
+				FilingDate:       "2026-05-20",
 			},
 		},
 		companyTotal: 1,
@@ -112,7 +112,7 @@ func TestCompanyPageRenders(t *testing.T) {
 		"Acme Corp",
 		"(ACME)",
 		"CIK 0001234567",
-		"1 material filing",
+		"1 material event",
 		"Earnings release",
 		"0001234567-26-000001-index.htm", // EDGAR link to the filing
 		"/filings/0001234567-26-000001",  // link into the filing detail
@@ -142,8 +142,8 @@ func TestCompanyPageKnownButEmptyRendersTrackedState(t *testing.T) {
 			Ticker:      "ACME",
 			CompanyName: "Acme Corp",
 		},
-		companyFilings: nil,
-		companyTotal:   0,
+		companyEvents: nil,
+		companyTotal:  0,
 	}
 
 	rec := httptest.NewRecorder()

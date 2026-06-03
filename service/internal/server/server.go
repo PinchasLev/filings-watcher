@@ -15,12 +15,17 @@ import (
 // depend on the subset they actually call, and tests can supply a small fake.
 // Idiomatic Go: "accept interfaces, return structs."
 type storer interface {
+	// JSON list endpoint (/filings): raw per-Item classifications.
 	LatestClassifications(ctx context.Context, limit, offset int) ([]store.Classification, int, error)
+	// Filing detail: the filing plus its per-Item classifications (JSON back-compat).
 	FilingByAccession(ctx context.Context, accession string) (*store.FilingDetail, error)
-	MaterialClassifications(ctx context.Context, eventType string, limit, offset int) ([]store.Classification, int, error)
-	EventTypeCounts(ctx context.Context) ([]store.EventTypeCount, error)
 	LookupCIKByTicker(ctx context.Context, ticker string) (string, error)
-	CompanyByCIK(ctx context.Context, cik string, limit, offset int) (*store.Company, []store.Classification, int, error)
+	// Events layer (ADR 0027/0028): the HTML home and per-company lists, their
+	// filter-chip counts, and the detail page's per-event drill-down.
+	MaterialEvents(ctx context.Context, eventType string, limit, offset int) ([]store.Event, int, error)
+	CompanyEvents(ctx context.Context, cik string, limit, offset int) (*store.Company, []store.Event, int, error)
+	MaterialEventTypeCounts(ctx context.Context) ([]store.EventTypeCount, error)
+	EventsByAccession(ctx context.Context, accession string) ([]store.EventWithItems, error)
 }
 
 // New returns an http.Handler with all routes registered.

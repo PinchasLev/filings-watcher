@@ -28,7 +28,7 @@ var companyTemplate = template.Must(template.New("layout.html.tmpl").Funcs(templ
 
 type companyPageData struct {
 	Company     store.Company
-	Filings     []store.Classification
+	Events      []store.Event
 	FilingTotal int
 	// Pagination state, identical in meaning to the home page's.
 	RangeStart int
@@ -42,7 +42,7 @@ func handleCompany(s storer) http.HandlerFunc {
 		cik := r.PathValue("cik")
 		offset := parseOffset(r.URL.Query().Get("offset"))
 
-		company, filings, total, err := s.CompanyByCIK(r.Context(), cik, companyPageLimit, offset)
+		company, events, total, err := s.CompanyEvents(r.Context(), cik, companyPageLimit, offset)
 		if errors.Is(err, store.ErrNotFound) {
 			http.NotFound(w, r)
 			return
@@ -55,10 +55,10 @@ func handleCompany(s storer) http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := companyTemplate.ExecuteTemplate(w, "layout.html.tmpl", companyPageData{
 			Company:     *company,
-			Filings:     filings,
+			Events:      events,
 			FilingTotal: total,
-			RangeStart:  pageRangeStart(offset, len(filings)),
-			RangeEnd:    pageRangeEnd(offset, len(filings)),
+			RangeStart:  pageRangeStart(offset, len(events)),
+			RangeEnd:    pageRangeEnd(offset, len(events)),
 			PrevURL:     companyPageURL(cik, offset-companyPageLimit, true),
 			NextURL:     companyPageURL(cik, offset+companyPageLimit, offset+companyPageLimit < total),
 		}); err != nil {

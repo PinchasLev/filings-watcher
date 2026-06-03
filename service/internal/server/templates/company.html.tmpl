@@ -12,21 +12,21 @@
   </h2>
   <div class="filing-meta">
     <span>CIK {{.Company.CIK}}</span>
-    <span>{{.FilingTotal}} material filing{{if ne .FilingTotal 1}}s{{end}}</span>
+    <span>{{.FilingTotal}} material event{{if ne .FilingTotal 1}}s{{end}}</span>
   </div>
 </section>
 
-{{if .Filings}}
+{{if .Events}}
   <section>
-    {{range .Filings}}
+    {{range .Events}}
       <article class="filing-card">
         <h3><a href="/filings/{{.AccessionNumber}}">{{eventLabel .EventType}}</a></h3>
         <div class="filing-meta">
           <span>filed {{.FilingDate}}</span>
           <span>confidence {{printf "%.0f" (mul .Confidence 100.0)}}%</span>
-          {{if .ItemNumber}}<span>Item {{ derefStr .ItemNumber }}</span>{{end}}
+          {{if .AnchorItemNumber}}<span>Item {{ derefStr .AnchorItemNumber }}</span>{{end}}
         </div>
-        <p class="reasoning">{{.Reasoning}}</p>
+        <p class="reasoning">{{.Summary}}</p>
         <small><a href="{{edgarURL .AccessionNumber}}" rel="noopener" target="_blank">View raw filing on EDGAR &rarr;</a></small>
       </article>
     {{end}}

@@ -21,9 +21,9 @@
   Showing material events only. Routine administrative filings — bylaw amendments, technical fund updates, procedural FD disclosures — are filtered out so the front page stays signal-dense.
 </p>
 
-{{if .Filings}}
+{{if .Events}}
   <section>
-    {{range .Filings}}
+    {{range .Events}}
       <article class="filing-card">
         <h3>
           <a href="/filings/{{.AccessionNumber}}">{{.CompanyName}}</a>
@@ -33,9 +33,9 @@
           <span class="badge">{{eventLabel .EventType}}</span>
           <span>confidence {{printf "%.0f" (mul .Confidence 100.0)}}%</span>
           <span>filed {{.FilingDate}}</span>
-          {{if .ItemNumber}}<span>Item {{ derefStr .ItemNumber }}</span>{{end}}
+          {{if .AnchorItemNumber}}<span>Item {{ derefStr .AnchorItemNumber }}</span>{{end}}
         </div>
-        <p class="reasoning">{{.Reasoning}}</p>
+        <p class="reasoning">{{.Summary}}</p>
         <small><a href="{{edgarURL .AccessionNumber}}" rel="noopener" target="_blank">View raw filing on EDGAR &rarr;</a></small>
       </article>
     {{end}}
@@ -57,6 +57,6 @@
     </nav>
   {{end}}
 {{else}}
-  <p>No classifications match the current filter. The orchestrator runs every 15 minutes; new filings land after EDGAR's nightly publish around 10 PM ET.</p>
+  <p>No events match the current filter. The orchestrator runs every 15 minutes; new filings land after EDGAR's nightly publish around 10 PM ET.</p>
 {{end}}
 {{end}}

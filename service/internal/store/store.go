@@ -47,9 +47,14 @@ type Classification struct {
 	FilingDate  string  `json:"filing_date"`
 }
 
-// FilingDetail bundles a filing with all its classifications across versions.
+// FilingDetail bundles a filing with its latest-run events (each nested with
+// the Items it collated) and, for JSON back-compat, the flat list of all its
+// classifications across versions. The HTML detail page renders Events; the
+// JSON payload carries both. Events is populated by the handler via
+// EventsByAccession — FilingByAccession leaves it nil.
 type FilingDetail struct {
 	Filing          Filing           `json:"filing"`
+	Events          []EventWithItems `json:"events"`
 	Classifications []Classification `json:"classifications"`
 }
 

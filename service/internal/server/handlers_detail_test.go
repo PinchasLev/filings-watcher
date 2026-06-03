@@ -12,6 +12,7 @@ import (
 
 func TestHandleFilingDetailRendersHTMLWhenBrowserAccept(t *testing.T) {
 	ticker := "ACME"
+	anchor := "5.02"
 	item := "5.02"
 	itemTitle := "Departure of Directors or Certain Officers"
 	fake := &fakeStore{
@@ -24,19 +25,31 @@ func TestHandleFilingDetailRendersHTMLWhenBrowserAccept(t *testing.T) {
 				Form:            "8-K",
 				FilingDate:      "2026-05-20",
 			},
-			Classifications: []store.Classification{
-				{
-					ID:                1,
-					AccessionNumber:   "0001234567-26-000001",
-					ItemNumber:        &item,
-					ItemTitle:         &itemTitle,
-					EventType:         "exec_departure",
-					IsMaterial:        true,
-					Confidence:        0.95,
-					Reasoning:         "CFO resignation announced, effective immediately.",
-					ClassifierVersion: "claude-haiku-4-5+prompt-abc",
-					TaxonomyVersion:   "v1",
-					ClassifiedAt:      "2026-05-20T22:00:00Z",
+		},
+		eventsResult: []store.EventWithItems{
+			{
+				Event: store.Event{
+					AccessionNumber:  "0001234567-26-000001",
+					AnchorItemNumber: &anchor,
+					EventType:        "exec_departure",
+					IsMaterial:       true,
+					Confidence:       0.95,
+					Summary:          "CFO resignation announced, effective immediately.",
+				},
+				Items: []store.Classification{
+					{
+						ID:                1,
+						AccessionNumber:   "0001234567-26-000001",
+						ItemNumber:        &item,
+						ItemTitle:         &itemTitle,
+						EventType:         "exec_departure",
+						IsMaterial:        true,
+						Confidence:        0.95,
+						Reasoning:         "Item 5.02 reports the CFO departure.",
+						ClassifierVersion: "claude-haiku-4-5+prompt-abc",
+						TaxonomyVersion:   "v1",
+						ClassifiedAt:      "2026-05-20T22:00:00Z",
+					},
 				},
 			},
 		},
@@ -58,15 +71,17 @@ func TestHandleFilingDetailRendersHTMLWhenBrowserAccept(t *testing.T) {
 		"Acme Corp",
 		"(ACME)",
 		"Form 8-K",
-		"0001234567-26-000001", // accession in meta
-		"0001234567",           // CIK in meta
-		"Item 5.02",
-		"Departure of Directors",
-		"Exec departure", // pretty event label
-		"material",       // detail page DOES show the badge (unlike home page)
-		"95%",            // confidence
-		"CFO resignation announced",
-		"Back to all filings", // breadcrumb
+		"0001234567-26-000001",      // accession in meta
+		"0001234567",                // CIK in meta
+		"Exec departure",            // pretty event label on the event card
+		"material",                  // detail page DOES show the badge (unlike home page)
+		"95%",                       // confidence
+		"CFO resignation announced", // event summary
+		"Based on 1 filing Item",    // drill-down disclosure
+		"Item 5.02",                 // nested Item heading
+		"Departure of Directors",    // nested Item title
+		"Item 5.02 reports the CFO", // nested Item reasoning
+		"Back to all filings",       // breadcrumb
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected body to contain %q", want)
@@ -105,11 +120,13 @@ func TestHandleFilingDetailReturnsJSONWhenNoHTMLAccept(t *testing.T) {
 	}
 }
 
-func TestHandleFilingDetailRendersBothMaterialAndNonMaterial(t *testing.T) {
-	// The detail page is the comprehensive view: should show non-material
-	// classifications too, unlike the home page which filters them out.
+func TestHandleFilingDetailDrillDownShowsMaterialAndNonMaterialItems(t *testing.T) {
+	// The detail page's per-event drill-down is the comprehensive view: an
+	// event expands to ALL the Items it collated, including non-material
+	// companion Items (e.g. a Reg-FD furnishing), each with its own badge.
+	anchor := "5.02"
 	itemMaterial := "5.02"
-	itemNonMaterial := "8.01"
+	itemNonMaterial := "7.01"
 	fake := &fakeStore{
 		filingResult: &store.FilingDetail{
 			Filing: store.Filing{
@@ -118,20 +135,32 @@ func TestHandleFilingDetailRendersBothMaterialAndNonMaterial(t *testing.T) {
 				Form:            "8-K",
 				FilingDate:      "2026-05-20",
 			},
-			Classifications: []store.Classification{
-				{
-					ItemNumber: &itemMaterial,
-					EventType:  "exec_departure",
-					IsMaterial: true,
-					Confidence: 0.9,
-					Reasoning:  "real material event",
+		},
+		eventsResult: []store.EventWithItems{
+			{
+				Event: store.Event{
+					AccessionNumber:  "0001234567-26-000001",
+					AnchorItemNumber: &anchor,
+					EventType:        "exec_departure",
+					IsMaterial:       true,
+					Confidence:       0.9,
+					Summary:          "CFO departure with an accompanying press release.",
 				},
-				{
-					ItemNumber: &itemNonMaterial,
-					EventType:  "other_material",
-					IsMaterial: false,
-					Confidence: 0.7,
-					Reasoning:  "routine administrative disclosure",
+				Items: []store.Classification{
+					{
+						ItemNumber: &itemMaterial,
+						EventType:  "exec_departure",
+						IsMaterial: true,
+						Confidence: 0.9,
+						Reasoning:  "real material event",
+					},
+					{
+						ItemNumber: &itemNonMaterial,
+						EventType:  "other_material",
+						IsMaterial: false,
+						Confidence: 0.7,
+						Reasoning:  "routine administrative disclosure",
+					},
 				},
 			},
 		},
@@ -143,14 +172,17 @@ func TestHandleFilingDetailRendersBothMaterialAndNonMaterial(t *testing.T) {
 	server.New(fake).ServeHTTP(rec, req)
 
 	body := rec.Body.String()
+	if !strings.Contains(body, "Based on 2 filing Items") {
+		t.Errorf("expected the drill-down to disclose both source Items")
+	}
 	if !strings.Contains(body, "real material event") {
-		t.Errorf("expected detail page to show material classification reasoning")
+		t.Errorf("expected drill-down to show the material Item's reasoning")
 	}
 	if !strings.Contains(body, "routine administrative disclosure") {
-		t.Errorf("expected detail page to ALSO show non-material classification reasoning")
+		t.Errorf("expected drill-down to ALSO show the non-material Item's reasoning")
 	}
 	if !strings.Contains(body, "non-material") {
-		t.Errorf("expected explicit 'non-material' badge on non-material rows")
+		t.Errorf("expected explicit 'non-material' badge on the non-material Item")
 	}
 }
 

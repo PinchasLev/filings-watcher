@@ -68,10 +68,21 @@ func handleFilingDetail(s storer) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "query failed")
 			return
 		}
-		// Content negotiation: browsers (Accept: text/html) see the
-		// rendered detail page; programmatic callers get the existing
-		// JSON payload unchanged. Same URL, two formats — no breaking
-		// change to the API surface.
+		// Attach the filing's latest-run events (each nested with the Items it
+		// collated). The HTML page renders these; the JSON payload carries them
+		// alongside the existing classifications field (additive, non-breaking).
+		events, err := s.EventsByAccession(r.Context(), accession)
+		if err != nil {
+			if wantsHTML(r) {
+				http.Error(w, "query failed", http.StatusInternalServerError)
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		detail.Events = events
+		// Content negotiation: browsers (Accept: text/html) see the rendered
+		// detail page; programmatic callers get JSON. Same URL, two formats.
 		if wantsHTML(r) {
 			renderDetailHTML(w, detail)
 			return

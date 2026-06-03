@@ -54,7 +54,7 @@ type homePageData struct {
 	EventTypeCounts []store.EventTypeCount
 	TotalMaterial   int
 	FilteredTotal   int
-	Filings         []store.Classification
+	Events          []store.Event
 	// Search state. SearchedTicker is the (uppercased) symbol the user
 	// looked up; TickerNotFound is true when that symbol resolved to no
 	// CIK, so the template renders a "no company found" notice above the
@@ -106,7 +106,7 @@ func handleHome(s storer) http.HandlerFunc {
 		eventType := strings.TrimSpace(r.URL.Query().Get("event"))
 		offset := parseOffset(r.URL.Query().Get("offset"))
 
-		counts, err := s.EventTypeCounts(r.Context())
+		counts, err := s.MaterialEventTypeCounts(r.Context())
 		if err != nil {
 			http.Error(w, "query failed", http.StatusInternalServerError)
 			return
@@ -116,7 +116,7 @@ func handleHome(s storer) http.HandlerFunc {
 			total += c.Count
 		}
 
-		filings, filteredTotal, err := s.MaterialClassifications(r.Context(), eventType, homePageLimit, offset)
+		events, filteredTotal, err := s.MaterialEvents(r.Context(), eventType, homePageLimit, offset)
 		if err != nil {
 			http.Error(w, "query failed", http.StatusInternalServerError)
 			return
@@ -128,11 +128,11 @@ func handleHome(s storer) http.HandlerFunc {
 			EventTypeCounts: counts,
 			TotalMaterial:   total,
 			FilteredTotal:   filteredTotal,
-			Filings:         filings,
+			Events:          events,
 			SearchedTicker:  searchedTicker,
 			TickerNotFound:  tickerNotFound,
-			RangeStart:      pageRangeStart(offset, len(filings)),
-			RangeEnd:        pageRangeEnd(offset, len(filings)),
+			RangeStart:      pageRangeStart(offset, len(events)),
+			RangeEnd:        pageRangeEnd(offset, len(events)),
 			PrevURL:         pageURL(eventType, offset-homePageLimit, true),
 			NextURL:         pageURL(eventType, offset+homePageLimit, offset+homePageLimit < filteredTotal),
 		}); err != nil {

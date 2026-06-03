@@ -24,26 +24,36 @@ import (
 // produce in tests. If this grows past ~50 lines, replace with mockery v3
 // (gitignored generation) per the repo's testing discipline.
 type fakeStore struct {
-	listResult           []store.Classification
-	listTotal            int
-	listErr              error
-	filingResult         *store.FilingDetail
-	filingErr            error
-	materialResult       []store.Classification
-	materialTotal        int
-	materialErr          error
+	listResult []store.Classification
+	listTotal  int
+	listErr    error
+
+	filingResult *store.FilingDetail
+	filingErr    error
+
+	eventsResult []store.EventWithItems
+	eventsErr    error
+
+	materialEventsResult []store.Event
+	materialEventsTotal  int
+	materialEventsErr    error
+
 	eventTypeCountResult []store.EventTypeCount
 	eventTypeCountErr    error
-	lookupCIKResult      string
-	lookupCIKErr         error
-	companyResult        *store.Company
-	companyFilings       []store.Classification
-	companyTotal         int
-	companyErr           error
-	listCalledWith       struct{ limit, offset int }
-	filingCalledWith     string
-	lookupCalledWith     string
-	companyCalledWith    struct {
+
+	lookupCIKResult string
+	lookupCIKErr    error
+
+	companyResult *store.Company
+	companyEvents []store.Event
+	companyTotal  int
+	companyErr    error
+
+	listCalledWith    struct{ limit, offset int }
+	filingCalledWith  string
+	eventsCalledWith  string
+	lookupCalledWith  string
+	companyCalledWith struct {
 		cik           string
 		limit, offset int
 	}
@@ -68,16 +78,23 @@ func (f *fakeStore) FilingByAccession(
 	return f.filingResult, f.filingErr
 }
 
-func (f *fakeStore) MaterialClassifications(
+func (f *fakeStore) EventsByAccession(
+	_ context.Context, accession string,
+) ([]store.EventWithItems, error) {
+	f.eventsCalledWith = accession
+	return f.eventsResult, f.eventsErr
+}
+
+func (f *fakeStore) MaterialEvents(
 	_ context.Context, eventType string, limit, offset int,
-) ([]store.Classification, int, error) {
+) ([]store.Event, int, error) {
 	f.materialCalledWith.eventType = eventType
 	f.materialCalledWith.limit = limit
 	f.materialCalledWith.offset = offset
-	return f.materialResult, f.materialTotal, f.materialErr
+	return f.materialEventsResult, f.materialEventsTotal, f.materialEventsErr
 }
 
-func (f *fakeStore) EventTypeCounts(
+func (f *fakeStore) MaterialEventTypeCounts(
 	_ context.Context,
 ) ([]store.EventTypeCount, error) {
 	return f.eventTypeCountResult, f.eventTypeCountErr
@@ -90,13 +107,13 @@ func (f *fakeStore) LookupCIKByTicker(
 	return f.lookupCIKResult, f.lookupCIKErr
 }
 
-func (f *fakeStore) CompanyByCIK(
+func (f *fakeStore) CompanyEvents(
 	_ context.Context, cik string, limit, offset int,
-) (*store.Company, []store.Classification, int, error) {
+) (*store.Company, []store.Event, int, error) {
 	f.companyCalledWith.cik = cik
 	f.companyCalledWith.limit = limit
 	f.companyCalledWith.offset = offset
-	return f.companyResult, f.companyFilings, f.companyTotal, f.companyErr
+	return f.companyResult, f.companyEvents, f.companyTotal, f.companyErr
 }
 
 // migrationsDir locates the shared SQL migrations directory.

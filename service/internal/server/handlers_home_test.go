@@ -12,28 +12,28 @@ import (
 
 func TestHandleHomeRendersFilings(t *testing.T) {
 	ticker := "ACME"
-	item := "2.02"
+	anchor := "2.02"
 	fake := &fakeStore{
 		eventTypeCountResult: []store.EventTypeCount{
 			{EventType: "earnings_release", Count: 12},
 			{EventType: "ma_activity", Count: 5},
 		},
-		materialResult: []store.Classification{
+		materialEventsResult: []store.Event{
 			{
-				ID:              1,
-				AccessionNumber: "0001234567-26-000001",
-				ItemNumber:      &item,
-				EventType:       "earnings_release",
-				EventDomain:     "financial",
-				IsMaterial:      true,
-				Confidence:      0.93,
-				Reasoning:       "Quarterly results press release furnished as Exhibit 99.1.",
-				CompanyName:     "Acme Corp",
-				Ticker:          &ticker,
-				FilingDate:      "2026-05-20",
+				ID:               1,
+				AccessionNumber:  "0001234567-26-000001",
+				AnchorItemNumber: &anchor,
+				EventType:        "earnings_release",
+				EventDomain:      "financial",
+				IsMaterial:       true,
+				Confidence:       0.93,
+				Summary:          "Quarterly results press release furnished as Exhibit 99.1.",
+				CompanyName:      "Acme Corp",
+				Ticker:           &ticker,
+				FilingDate:       "2026-05-20",
 			},
 		},
-		materialTotal: 1,
+		materialEventsTotal: 1,
 	}
 
 	rec := httptest.NewRecorder()
@@ -72,8 +72,8 @@ func TestHandleHomeFiltersByEventTypeQueryParam(t *testing.T) {
 		eventTypeCountResult: []store.EventTypeCount{
 			{EventType: "ma_activity", Count: 3},
 		},
-		materialResult: nil,
-		materialTotal:  0,
+		materialEventsResult: nil,
+		materialEventsTotal:  0,
 	}
 
 	rec := httptest.NewRecorder()
@@ -90,7 +90,7 @@ func TestHandleHomeFiltersByEventTypeQueryParam(t *testing.T) {
 	if fake.materialCalledWith.limit != 50 {
 		t.Errorf("expected limit=50 (the home page default), got %d", fake.materialCalledWith.limit)
 	}
-	if !strings.Contains(rec.Body.String(), "No classifications match") {
+	if !strings.Contains(rec.Body.String(), "No events match") {
 		t.Errorf("expected empty-state copy, got: %s", rec.Body.String())
 	}
 }
@@ -99,15 +99,15 @@ func TestHandleHomePaginationLinks(t *testing.T) {
 	// Build 50 filings (one full page) but report a total of 299 so the
 	// handler renders both "Newer" (because offset > 0) and "Older"
 	// (because more results remain).
-	filings := make([]store.Classification, 50)
-	for i := range filings {
-		filings[i] = store.Classification{
+	events := make([]store.Event, 50)
+	for i := range events {
+		events[i] = store.Event{
 			ID:              int64(i),
 			AccessionNumber: "0000000001-26-000001",
 			EventType:       "shareholder_vote_results",
 			IsMaterial:      true,
 			Confidence:      0.95,
-			Reasoning:       "vote result",
+			Summary:         "vote result",
 			CompanyName:     "Co",
 			FilingDate:      "2026-05-20",
 		}
@@ -116,8 +116,8 @@ func TestHandleHomePaginationLinks(t *testing.T) {
 		eventTypeCountResult: []store.EventTypeCount{
 			{EventType: "shareholder_vote_results", Count: 299},
 		},
-		materialResult: filings,
-		materialTotal:  299,
+		materialEventsResult: events,
+		materialEventsTotal:  299,
 	}
 
 	rec := httptest.NewRecorder()
@@ -145,12 +145,12 @@ func TestHandleHomePaginationLinks(t *testing.T) {
 func TestHandleHomePaginationDisabledWhenSinglePage(t *testing.T) {
 	fake := &fakeStore{
 		eventTypeCountResult: []store.EventTypeCount{{EventType: "earnings_release", Count: 5}},
-		materialResult: []store.Classification{{
+		materialEventsResult: []store.Event{{
 			ID: 1, AccessionNumber: "0000000001-26-000001",
 			EventType: "earnings_release", IsMaterial: true, Confidence: 0.9,
-			Reasoning: "ok", CompanyName: "Co", FilingDate: "2026-05-20",
+			Summary: "ok", CompanyName: "Co", FilingDate: "2026-05-20",
 		}},
-		materialTotal: 5,
+		materialEventsTotal: 5,
 	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

@@ -30,7 +30,7 @@ from filings_orchestrator.classify.schema import (
     ReduceOutput,
 )
 from filings_orchestrator.classify.taxonomy import EVENT_TYPE_DESCRIPTIONS, EventType
-from filings_orchestrator.cost import emit_cost
+from filings_orchestrator.cost import emit_llm_call
 
 
 def _build_reduce_system_prompt() -> str:
@@ -118,8 +118,8 @@ def _call_reducer(
         {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
     ]
     response = model.invoke([SystemMessage(content=system_blocks), HumanMessage(content=user)])
-    # Record cost even on a malformed response — the tokens are spent regardless.
-    emit_cost(
+    # Record the call even on a malformed response — the tokens are spent regardless.
+    emit_llm_call(
         model=model_name,
         stage="reduce",
         response=response,

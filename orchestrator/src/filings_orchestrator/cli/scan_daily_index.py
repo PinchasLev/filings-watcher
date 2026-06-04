@@ -41,7 +41,7 @@ from filings_orchestrator.classify import (
 )
 from filings_orchestrator.classify.retry import with_retries
 from filings_orchestrator.config import MissingConfigError, load_config
-from filings_orchestrator.cost import db_cost_sink, set_cost_sink
+from filings_orchestrator.cost import db_llm_call_sink, set_cost_sink
 from filings_orchestrator.edgar import EdgarClient, fetch_filing_document
 from filings_orchestrator.edgar.daily_index import (
     DailyIndexEntry,
@@ -120,9 +120,11 @@ def main() -> None:
                 day_utc=today_utc,
             )
 
-        # Route classify- and reduce-stage cost observations through the DB sink
-        # so they accumulate for the next tick's pre-check (ADR 0029).
-        set_cost_sink(db_cost_sink(engine))
+        # Route classify- and reduce-stage LLM-call observations through the DB
+        # sink so the per-call rows accumulate for the next tick's pre-check
+        # (ADR 0029). Tokens are recorded for engineering analysis; the cost
+        # column drives the cap.
+        set_cost_sink(db_llm_call_sink(engine))
 
         cursor = read_ingest_cursor(engine)
         cursor_acc = cursor[0] if cursor else None

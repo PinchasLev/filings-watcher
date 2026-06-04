@@ -362,7 +362,7 @@ def test_scan_daily_index_exits_with_cost_cap_exceeded_above_cap(
         conn.execute(
             text(
                 """
-                INSERT INTO cost_events (
+                INSERT INTO llm_calls (
                     emitted_at, model, stage, accession_number,
                     input_tokens, output_tokens, estimated_cost_usd
                 ) VALUES (
@@ -410,7 +410,7 @@ def test_scan_daily_index_emits_cost_warning_between_warn_and_cap(
         conn.execute(
             text(
                 """
-                INSERT INTO cost_events (
+                INSERT INTO llm_calls (
                     emitted_at, model, stage, accession_number,
                     input_tokens, output_tokens, estimated_cost_usd
                 ) VALUES (

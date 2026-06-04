@@ -14,7 +14,7 @@ import sys
 
 from filings_orchestrator.classify import classify_filing
 from filings_orchestrator.config import MissingConfigError, load_config
-from filings_orchestrator.cost import db_cost_sink, set_cost_sink
+from filings_orchestrator.cost import db_llm_call_sink, set_cost_sink
 from filings_orchestrator.edgar import EdgarClient, fetch_filing_document, recent_8k_filings
 from filings_orchestrator.persistence import open_engine
 from filings_orchestrator.persistence.repository import (
@@ -73,12 +73,12 @@ def main() -> None:
             )
         document = fetch_filing_document(filings[args.index], client)
 
-    # When --save is requested, record cost into the same surface the unattended
-    # tick reads (ADR 0029); without --save, the on-demand classification is
-    # ephemeral and cost is not recorded.
+    # When --save is requested, record LLM calls into the same surface the
+    # unattended tick reads (ADR 0029); without --save, the on-demand
+    # classification is ephemeral and no per-call rows are written.
     engine = open_engine(config.filings_db_path) if args.save else None
     if engine is not None:
-        set_cost_sink(db_cost_sink(engine))
+        set_cost_sink(db_llm_call_sink(engine))
 
     result = classify_filing(document)
 

@@ -18,15 +18,15 @@ from filings_orchestrator.cost import (
     CACHE_READ_MULTIPLIER,
     CACHE_WRITE_MULTIPLIER,
     PRICING_USD_PER_MILLION_TOKENS,
-    CostObservation,
+    LLMCallObservation,
     clear_cost_sink,
-    db_cost_sink,
-    emit_cost,
+    db_llm_call_sink,
+    emit_llm_call,
     estimate_cost_usd,
     set_cost_sink,
 )
 from filings_orchestrator.persistence import apply_migrations, open_engine
-from filings_orchestrator.persistence.repository import daily_cost_usd
+from filings_orchestrator.persistence.repository import daily_cost_usd, daily_token_usage
 
 MIGRATIONS_DIR = (Path(__file__).resolve().parent.parent / "db" / "migrations").resolve()
 
@@ -109,15 +109,15 @@ def test_estimate_cost_unknown_model_uses_fallback_and_flags() -> None:
     assert cost == pytest.approx(opus["input"] + opus["output"], rel=1e-9)
 
 
-def test_emit_cost_is_noop_without_a_sink() -> None:
-    # No sink installed; emit_cost must not raise and must not record anything.
-    emit_cost(model="haiku", stage="classify", response=_fake_response(100, 50))
+def test_emit_llm_call_is_noop_without_a_sink() -> None:
+    # No sink installed; emit_llm_call must not raise and must not record anything.
+    emit_llm_call(model="haiku", stage="classify", response=_fake_response(100, 50))
 
 
-def test_emit_cost_routes_through_installed_sink() -> None:
-    observations: list[CostObservation] = []
+def test_emit_llm_call_routes_through_installed_sink() -> None:
+    observations: list[LLMCallObservation] = []
     set_cost_sink(observations.append)
-    emit_cost(
+    emit_llm_call(
         model="claude-haiku-4-5-20251001",
         stage="classify",
         response=_fake_response(500, 200, cache_read=100, cache_creation=50),
@@ -136,11 +136,11 @@ def test_emit_cost_routes_through_installed_sink() -> None:
     assert obs.estimated_cost_usd > 0
 
 
-def test_emit_cost_handles_missing_usage_metadata() -> None:
-    observations: list[CostObservation] = []
+def test_emit_llm_call_handles_missing_usage_metadata() -> None:
+    observations: list[LLMCallObservation] = []
     set_cost_sink(observations.append)
     response_no_meta = SimpleNamespace()  # no usage_metadata attribute
-    emit_cost(model="haiku", stage="classify", response=response_no_meta)
+    emit_llm_call(model="haiku", stage="classify", response=response_no_meta)
     # Zero-token observation is preferable to a silently dropped row.
     assert len(observations) == 1
     assert observations[0].input_tokens == 0
@@ -150,8 +150,8 @@ def test_emit_cost_handles_missing_usage_metadata() -> None:
 
 def test_db_sink_persists_row_and_emits_event(capsys: pytest.CaptureFixture[str]) -> None:
     engine = _fresh_engine()
-    set_cost_sink(db_cost_sink(engine))
-    emit_cost(
+    set_cost_sink(db_llm_call_sink(engine))
+    emit_llm_call(
         model="claude-haiku-4-5-20251001",
         stage="classify",
         response=_fake_response(500, 200),
@@ -162,7 +162,7 @@ def test_db_sink_persists_row_and_emits_event(capsys: pytest.CaptureFixture[str]
         rows = conn.execute(
             text(
                 "SELECT model, stage, accession_number, input_tokens, output_tokens, "
-                "estimated_cost_usd FROM cost_events"
+                "estimated_cost_usd FROM llm_calls"
             )
         ).fetchall()
     assert len(rows) == 1
@@ -176,19 +176,19 @@ def test_db_sink_persists_row_and_emits_event(capsys: pytest.CaptureFixture[str]
 
     out = capsys.readouterr().out
     events = [json.loads(line) for line in out.splitlines() if line.strip()]
-    cost_observed = [e for e in events if e["event"] == "cost_observed"]
-    assert len(cost_observed) == 1
-    assert cost_observed[0]["model"] == "claude-haiku-4-5-20251001"
-    assert cost_observed[0]["stage"] == "classify"
-    assert cost_observed[0]["accession_number"] == "0001-26-001"
+    observed = [e for e in events if e["event"] == "llm_call_observed"]
+    assert len(observed) == 1
+    assert observed[0]["model"] == "claude-haiku-4-5-20251001"
+    assert observed[0]["stage"] == "classify"
+    assert observed[0]["accession_number"] == "0001-26-001"
 
 
 def test_db_sink_emits_pricing_unknown_event_for_unknown_model(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     engine = _fresh_engine()
-    set_cost_sink(db_cost_sink(engine))
-    emit_cost(
+    set_cost_sink(db_llm_call_sink(engine))
+    emit_llm_call(
         model="claude-unknown-future-2027",
         stage="classify",
         response=_fake_response(100, 50),
@@ -196,14 +196,14 @@ def test_db_sink_emits_pricing_unknown_event_for_unknown_model(
 
     events = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
     assert any(e["event"] == "cost_pricing_unknown" for e in events)
-    assert any(e["event"] == "cost_observed" for e in events)
+    assert any(e["event"] == "llm_call_observed" for e in events)
 
 
 def test_daily_cost_usd_aggregates_by_utc_day() -> None:
     engine = _fresh_engine()
     insert_sql = text(
         """
-        INSERT INTO cost_events (
+        INSERT INTO llm_calls (
             emitted_at, model, stage, accession_number,
             input_tokens, output_tokens, estimated_cost_usd
         ) VALUES (
@@ -235,3 +235,58 @@ def test_daily_cost_usd_aggregates_by_utc_day() -> None:
     assert daily_cost_usd(engine, "2026-06-04") == pytest.approx(0.50 + 1.25, rel=1e-9)
     assert daily_cost_usd(engine, "2026-06-03") == pytest.approx(9.99, rel=1e-9)
     assert daily_cost_usd(engine, "2026-06-05") == 0.0
+
+
+def test_daily_token_usage_aggregates_each_token_dimension() -> None:
+    """Tokens are the controllable engineering metric (separate from cost);
+    daily_token_usage rolls each dimension up per UTC day so trend analysis
+    is independent of pricing changes."""
+    engine = _fresh_engine()
+    insert_sql = text(
+        """
+        INSERT INTO llm_calls (
+            emitted_at, model, stage, accession_number,
+            input_tokens, output_tokens,
+            cache_read_tokens, cache_creation_tokens,
+            estimated_cost_usd
+        ) VALUES (
+            :emitted_at, :model, 'classify', NULL,
+            :input_tokens, :output_tokens,
+            :cache_read, :cache_creation,
+            0.0
+        )
+        """
+    )
+    with engine.begin() as conn:
+        for emitted_at, inp, out, cr, cc in [
+            ("2026-06-04T08:00:00+00:00", 1000, 200, 800, 100),
+            ("2026-06-04T22:30:00+00:00", 500, 100, 400, 50),
+            ("2026-06-03T23:59:00+00:00", 9999, 999, 999, 999),  # different day, excluded
+        ]:
+            conn.execute(
+                insert_sql,
+                {
+                    "emitted_at": emitted_at,
+                    "model": "claude-haiku-4-5-20251001",
+                    "input_tokens": inp,
+                    "output_tokens": out,
+                    "cache_read": cr,
+                    "cache_creation": cc,
+                },
+            )
+
+    target = daily_token_usage(engine, "2026-06-04")
+    assert target == {
+        "input_tokens": 1500,
+        "output_tokens": 300,
+        "cache_read_tokens": 1200,
+        "cache_creation_tokens": 150,
+    }
+
+    empty = daily_token_usage(engine, "2026-06-05")
+    assert empty == {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+    }

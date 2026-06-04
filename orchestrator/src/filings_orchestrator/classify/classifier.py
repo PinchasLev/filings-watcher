@@ -39,7 +39,7 @@ from filings_orchestrator.classify.taxonomy import (
     TAXONOMY_VERSION,
     EventType,
 )
-from filings_orchestrator.cost import emit_cost
+from filings_orchestrator.cost import emit_llm_call
 from filings_orchestrator.edgar.document import FilingDocument, ItemSection
 
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
@@ -143,9 +143,9 @@ def _call_classifier(
         {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
     ]
     response = model.invoke([SystemMessage(content=system_blocks), HumanMessage(content=user)])
-    # Record the cost regardless of whether the response parses — even a
+    # Record the call regardless of whether the response parses — even a
     # malformed tool-call cost us tokens and counts against the cap (ADR 0029).
-    emit_cost(
+    emit_llm_call(
         model=model_name,
         stage="classify",
         response=response,

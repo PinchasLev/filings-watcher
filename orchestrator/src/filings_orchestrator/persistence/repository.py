@@ -581,23 +581,55 @@ def load_latest_filing_classification(
 
 
 def daily_cost_usd(engine: Engine, day_utc: str) -> float:
-    """Sum estimated_cost_usd for all cost_events whose emitted_at falls on `day_utc`.
+    """Sum estimated_cost_usd for all llm_calls whose emitted_at falls on `day_utc`.
 
     `day_utc` is the UTC calendar day in ISO format (`YYYY-MM-DD`). UTC is the
     fixed boundary so the aggregate is stable across the operator's local
     timezone changes — pre-tick checks against this value are deterministic
-    regardless of when the tick fires. Returns 0.0 when no rows match (a
-    fresh DB, or a day before this table existed).
+    regardless of when the tick fires (ADR 0029). Returns 0.0 when no rows match
+    (a fresh DB, or a day before this table existed).
     """
     with engine.begin() as conn:
         result = conn.execute(
             text(
                 """
                 SELECT COALESCE(SUM(estimated_cost_usd), 0.0)
-                  FROM cost_events
+                  FROM llm_calls
                  WHERE substr(emitted_at, 1, 10) = :day
                 """
             ),
             {"day": day_utc},
         ).scalar_one()
     return float(result)
+
+
+def daily_token_usage(engine: Engine, day_utc: str) -> dict[str, int]:
+    """Aggregate token counts for all llm_calls on `day_utc` (UTC calendar day).
+
+    Returns input / output / cache-read / cache-creation totals. Tokens are
+    the engineering metric we control — prompt size, caching effectiveness,
+    output shape — and the right unit for analyzing trends across pricing
+    changes (which would skew a cost-only view). Cap enforcement reads
+    `daily_cost_usd`; engineering analysis reads this.
+    """
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT
+                    COALESCE(SUM(input_tokens), 0)          AS input_tokens,
+                    COALESCE(SUM(output_tokens), 0)         AS output_tokens,
+                    COALESCE(SUM(cache_read_tokens), 0)     AS cache_read_tokens,
+                    COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens
+                  FROM llm_calls
+                 WHERE substr(emitted_at, 1, 10) = :day
+                """
+            ),
+            {"day": day_utc},
+        ).one()
+    return {
+        "input_tokens": int(row[0]),
+        "output_tokens": int(row[1]),
+        "cache_read_tokens": int(row[2]),
+        "cache_creation_tokens": int(row[3]),
+    }

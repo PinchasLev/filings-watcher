@@ -1,16 +1,28 @@
-"""Module-level cost sink that the classify and reduce call sites route through.
+"""Module-level LLM-call sink that the classify and reduce call sites route through.
 
-The entry-point CLI installs a sink at startup (typically `db_cost_sink(engine)`
+The entry-point CLI installs a sink at startup (typically `db_llm_call_sink(engine)`
 to persist + emit, or `set_cost_sink(None)` to no-op for tests and CLIs without
-persistence). The classifier and reducer call `emit_cost(...)` after every
-`model.invoke()`; emit_cost extracts the token-count breakdown from the
+persistence). The classifier and reducer call `emit_llm_call(...)` after every
+`model.invoke()`; the function extracts the token-count breakdown from the
 response's `usage_metadata`, estimates cost, and hands the observation to the
-installed sink. With no sink installed, emit_cost is a no-op.
+installed sink. With no sink installed, `emit_llm_call` is a no-op.
+
+The recorded surface is LLM-call-shaped, not cost-shaped: tokens are the
+engineering metric we control, cost is a derived value computed from tokens
+and the pricing table. The cap that gates the live tick reads cost; engineering
+analysis reads tokens; both come off the same per-call rows.
 
 Keeping the sink module-level rather than threaded through the LLM call API
 keeps the classifier and reducer unaware of the database, the structured-event
 emitter, and any other observability concern — they only know that a call has
-finished and they hand the response to emit_cost.
+finished and they hand the response to `emit_llm_call`.
+
+Retention note (deferred): the per-call rows persisted by `db_llm_call_sink`
+are telemetry-shaped rather than transactional. Today they live in the same
+SQLite database as filings and classifications for dev-friendly queryability
+and zero extra infra; the long-term shape is either aggregate-in-DB /
+detail-in-logs or a separate telemetry store. See the migration comment in
+`005_llm_calls.sql` and the `telemetry-vs-transactional` memory note.
 """
 
 from __future__ import annotations
@@ -27,13 +39,14 @@ from filings_orchestrator.log_events import emit
 
 
 @dataclass(frozen=True)
-class CostObservation:
-    """One Anthropic call's observed cost, ready for a sink to consume.
+class LLMCallObservation:
+    """One Anthropic call's observed token usage and derived cost.
 
-    Fields mirror the cost_events table columns; `pricing_unknown` is True
-    when the model was absent from the pricing table and the worst-case
-    fallback rate was used. The sink decides whether to log, persist, alarm,
-    or some combination.
+    Fields mirror the llm_calls table columns; tokens are the controllable
+    engineering metric and `estimated_cost_usd` is the derived cap dimension.
+    `pricing_unknown` is True when the model was absent from the pricing table
+    and the worst-case fallback rate was used. The sink decides whether to
+    log, persist, alarm, or some combination.
     """
 
     model: str
@@ -48,7 +61,7 @@ class CostObservation:
     emitted_at: str
 
 
-Sink = Callable[[CostObservation], None]
+Sink = Callable[[LLMCallObservation], None]
 
 # Module-level installed sink. None means "do nothing" — emit_cost short-circuits.
 _active_sink: Sink | None = None
@@ -65,14 +78,14 @@ def clear_cost_sink() -> None:
     set_cost_sink(None)
 
 
-def emit_cost(
+def emit_llm_call(
     *,
     model: str,
     stage: str,
     response: Any,
     accession_number: str | None = None,
 ) -> None:
-    """Record one Anthropic call's cost via the installed sink, or no-op.
+    """Record one Anthropic call's tokens and derived cost via the installed sink.
 
     Reads the `usage_metadata` attribute LangChain attaches to the response.
     A missing or empty metadata block is recorded with zero tokens — better
@@ -96,7 +109,7 @@ def emit_cost(
         cache_creation_tokens=cache_creation,
     )
 
-    observation = CostObservation(
+    observation = LLMCallObservation(
         model=model,
         stage=stage,
         accession_number=accession_number,
@@ -111,18 +124,19 @@ def emit_cost(
     _active_sink(observation)
 
 
-def db_cost_sink(engine: Engine) -> Sink:
+def db_llm_call_sink(engine: Engine) -> Sink:
     """Return a sink that persists each observation and emits a structured event.
 
-    The persisted row is the input to `daily_cost_usd`'s aggregate; the
-    structured `cost_observed` event lands in the same journald stream as
-    tick_started / tick_completed / reduce_failed for OTel correlation.
-    A pricing-unknown observation additionally emits `cost_pricing_unknown`
-    so the operator notices the pricing table is stale.
+    The persisted row is the input to `daily_cost_usd` (cap aggregate) and
+    `daily_token_usage` (engineering aggregate). The structured `llm_call_observed`
+    event lands in the same journald stream as tick_started / tick_completed /
+    reduce_failed for OTel correlation. A pricing-unknown observation
+    additionally emits `cost_pricing_unknown` so the operator notices the
+    pricing table is stale.
     """
     insert_sql = text(
         """
-        INSERT INTO cost_events (
+        INSERT INTO llm_calls (
             emitted_at, model, stage, accession_number,
             input_tokens, output_tokens,
             cache_read_tokens, cache_creation_tokens,
@@ -136,7 +150,7 @@ def db_cost_sink(engine: Engine) -> Sink:
         """
     )
 
-    def _sink(observation: CostObservation) -> None:
+    def _sink(observation: LLMCallObservation) -> None:
         with engine.begin() as conn:
             conn.execute(
                 insert_sql,
@@ -153,7 +167,7 @@ def db_cost_sink(engine: Engine) -> Sink:
                 },
             )
         emit(
-            "cost_observed",
+            "llm_call_observed",
             model=observation.model,
             stage=observation.stage,
             accession_number=observation.accession_number,

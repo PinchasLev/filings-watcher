@@ -39,6 +39,12 @@ class Config:
     langsmith_tracing: bool
     edgar_user_agent: str
     filings_db_path: str
+    # Per-day spend ceiling for Anthropic API usage, USD (ADR 0029).
+    # The tick fails fast with cost_cap_exceeded when today's aggregate
+    # estimated cost is at or above this value; below the warn threshold
+    # but at or above the warn level, a structured cost_warning event fires.
+    anthropic_daily_cost_cap_usd: float
+    anthropic_daily_cost_warn_usd: float
 
 
 _loaded = False
@@ -82,11 +88,31 @@ def get_config_str(name: str, default: str) -> str:
     return os.environ.get(name) or default
 
 
+def get_config_float(name: str, default: float) -> float:
+    """Read a positive float from the environment, falling back to `default`.
+
+    Malformed values raise MissingConfigError so a typo in operator config
+    is loud rather than silently reverting to the default.
+    """
+    _ensure_dotenv_loaded()
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError as e:
+        raise MissingConfigError(f"config {name} must be a number, got {raw!r}") from e
+
+
 def load_config() -> Config:
     """Load the full Config object. Use this at process startup."""
     import os
 
     default_db_path = os.path.expanduser("~/.filings-watcher/v0.db")
+    # Conservative starting cap until the spend-tracking surface has data to
+    # tune against. Operator overrides via env per ADR 0012's tunables rule.
+    default_cost_cap_usd = 5.00
+    default_cost_warn_usd = 4.00
     return Config(
         anthropic_api_key=get_secret("ANTHROPIC_API_KEY"),
         langsmith_api_key=get_secret("LANGSMITH_API_KEY"),
@@ -94,4 +120,10 @@ def load_config() -> Config:
         langsmith_tracing=get_config_bool("LANGSMITH_TRACING", default=True),
         edgar_user_agent=require_env("EDGAR_USER_AGENT"),
         filings_db_path=get_config_str("FILINGS_DB_PATH", default_db_path),
+        anthropic_daily_cost_cap_usd=get_config_float(
+            "ANTHROPIC_DAILY_COST_CAP_USD", default_cost_cap_usd
+        ),
+        anthropic_daily_cost_warn_usd=get_config_float(
+            "ANTHROPIC_DAILY_COST_WARN_USD", default_cost_warn_usd
+        ),
     )

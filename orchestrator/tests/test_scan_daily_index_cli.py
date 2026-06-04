@@ -340,3 +340,108 @@ def test_dates_to_scan_clamps_to_today_if_cursor_in_future() -> None:
     today = date(2026, 5, 19)
     out = _dates_to_scan("20260601", today_et=today)
     assert out == [today]
+
+
+def test_scan_daily_index_exits_with_cost_cap_exceeded_above_cap(
+    configured_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When today's aggregated cost is at or above the configured cap, the tick
+    refuses to do any new LLM-bound work (ADR 0029). The check fires before
+    EDGAR is contacted, so no respx mocks are required."""
+    # Lower the cap so a small seeded value crosses it; the warn level stays
+    # below the cap.
+    monkeypatch.setenv("ANTHROPIC_DAILY_COST_CAP_USD", "0.50")
+    monkeypatch.setenv("ANTHROPIC_DAILY_COST_WARN_USD", "0.25")
+
+    # Seed a cost row dated to "today UTC" that exceeds the cap.
+    today_iso = datetime.now(UTC).strftime("%Y-%m-%dT12:00:00+00:00")
+    engine = open_engine(str(configured_env))
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO cost_events (
+                    emitted_at, model, stage, accession_number,
+                    input_tokens, output_tokens, estimated_cost_usd
+                ) VALUES (
+                    :emitted_at, :model, 'classify', NULL, 0, 0, :cost
+                )
+                """
+            ),
+            {"emitted_at": today_iso, "model": "claude-haiku-4-5-20251001", "cost": 0.75},
+        )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 1
+
+    events = _read_jsonl(capsys.readouterr().out)
+    failure_events = [e for e in events if e["event"] == "tick_failed"]
+    assert len(failure_events) == 1
+    assert failure_events[0]["error_class"] == "cost_cap_exceeded"
+    assert failure_events[0]["cap_usd"] == 0.50
+    assert failure_events[0]["daily_spend_usd"] == 0.75
+    # Crucially, the cap check fires before classification starts — no
+    # filings should have been touched.
+    assert "filing_fetched" not in [e["event"] for e in events]
+
+
+def test_scan_daily_index_emits_cost_warning_between_warn_and_cap(
+    configured_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Between warn and cap, the tick proceeds but emits a structured
+    cost_warning event so the operator sees the approach to the cap."""
+    monkeypatch.setattr(
+        "filings_orchestrator.cli.scan_daily_index.classify_filing",
+        _stub_classify_filing,
+    )
+    monkeypatch.setenv("ANTHROPIC_DAILY_COST_CAP_USD", "1.00")
+    monkeypatch.setenv("ANTHROPIC_DAILY_COST_WARN_USD", "0.50")
+
+    # The CLI's datetime is monkeypatched below to a fixed_now of 2026-05-15;
+    # the seed row must share that UTC day for the pre-tick check to see it.
+    today_iso = "2026-05-15T12:00:00+00:00"
+    engine = open_engine(str(configured_env))
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO cost_events (
+                    emitted_at, model, stage, accession_number,
+                    input_tokens, output_tokens, estimated_cost_usd
+                ) VALUES (
+                    :emitted_at, :model, 'classify', NULL, 0, 0, :cost
+                )
+                """
+            ),
+            {"emitted_at": today_iso, "model": "claude-haiku-4-5-20251001", "cost": 0.75},
+        )
+
+    fixed_now = datetime(2026, 5, 15, 16, 0, 0, tzinfo=UTC)
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:  # type: ignore[override]
+            return fixed_now if tz is None else fixed_now.astimezone(tz)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("filings_orchestrator.cli.scan_daily_index.datetime", _FixedDateTime)
+
+    with respx.mock(assert_all_called=False) as mock:
+        mock.get(
+            "https://www.sec.gov/Archives/edgar/daily-index/2026/QTR2/master.20260515.idx"
+        ).mock(return_value=httpx.Response(404))
+        main()
+
+    events = _read_jsonl(capsys.readouterr().out)
+    warnings = [e for e in events if e["event"] == "cost_warning"]
+    assert len(warnings) == 1
+    assert warnings[0]["warn_usd"] == 0.50
+    assert warnings[0]["cap_usd"] == 1.00
+    assert warnings[0]["daily_spend_usd"] == 0.75
+    # The tick still completed — the warning does not block work.
+    assert "tick_completed" in [e["event"] for e in events]
+    assert "tick_failed" not in [e["event"] for e in events]

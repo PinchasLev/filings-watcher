@@ -578,3 +578,26 @@ def load_latest_filing_classification(
         classifier_version=classifier_version,
         taxonomy_version=taxonomy_version,
     )
+
+
+def daily_cost_usd(engine: Engine, day_utc: str) -> float:
+    """Sum estimated_cost_usd for all cost_events whose emitted_at falls on `day_utc`.
+
+    `day_utc` is the UTC calendar day in ISO format (`YYYY-MM-DD`). UTC is the
+    fixed boundary so the aggregate is stable across the operator's local
+    timezone changes — pre-tick checks against this value are deterministic
+    regardless of when the tick fires. Returns 0.0 when no rows match (a
+    fresh DB, or a day before this table existed).
+    """
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                """
+                SELECT COALESCE(SUM(estimated_cost_usd), 0.0)
+                  FROM cost_events
+                 WHERE substr(emitted_at, 1, 10) = :day
+                """
+            ),
+            {"day": day_utc},
+        ).scalar_one()
+    return float(result)

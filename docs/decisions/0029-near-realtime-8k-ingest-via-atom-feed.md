@@ -19,14 +19,15 @@ A second ingest CLI, `scan-atom-feed`, becomes the primary near-real-time ingest
 
 ### Primary path — Atom polling
 
-- A new entry-point CLI polls `https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&output=atom&count=100` on a 30-second timer. The 30-second value is a starting tunable, declared in runtime configuration per ADR 0012's tunables-in-config rule.
+- A new entry-point CLI polls `https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&output=atom&count=100` on a 30-second timer. The 30-second value is a starting tunable, declared in runtime configuration per ADR 0012's tunables-in-config rule. The timer uses `OnUnitInactiveSec`, not `OnCalendar`, so the next tick fires 30 seconds after the previous tick *completes* — overlap is impossible by construction. `flock -n` on `ExecStart` defends against manual-invocation overlap; `TimeoutStartSec` bounds a stuck tick. These are the same discipline ADR 0012 applies to the existing v0 tick, inherited unchanged.
 - Each entry is parsed and dedup'd against the `filings` accession-number primary key (`INSERT OR IGNORE`, no schema change). New entries flow through the existing per-filing pipeline unchanged: `fetch_filing_document` → `classify_filing` (with retries per ADR 0021) → `reduce_filing` (best-effort per ADR 0027 / ADR 0028) → persist.
 - No cursor is introduced. Idempotency on the accession PK is sufficient; the Atom snapshot is forward-only in practice, and dedup is the durability mechanism.
 
 ### Backstop — daily-index reconciliation
 
-- `scan-daily-index` runs on its own timer at hourly cadence during business hours and once nightly after EDGAR's ~10 PM ET publication. The current 15-minute cadence is retired; the daily-index file does not exist intraday, so high-frequency polling against an absent endpoint serves no purpose.
-- The backstop processes any filing the Atom path missed (parser error, network blip, EDGAR transient, process down). At steady state it processes zero new filings; its value is bounded and proportional to the rarity of misses, which observability data is expected to confirm is low.
+- `scan-daily-index` runs on its own timer as a clustered series of late-evening invocations scheduled via `OnCalendar` — 10:15, 10:30, 10:45, and 11:00 PM ET — to catch EDGAR's once-daily publication regardless of routine slippage within that window. The current 15-minute round-the-clock cadence is retired; the daily-index file does not exist intraday, so high-frequency polling against an absent endpoint serves no purpose. Idempotency on the accession PK makes the redundant runs free: whichever invocation finds the published file ingests, and subsequent invocations dedup-and-exit without processing.
+- If the 11:00 PM ET invocation finds no published file for the current date, it emits a structured `daily_index_publication_missing` event carrying the date and a derived `is_business_day` flag. Weekend dates are expected and the event is informational; business-day misses route to alarm. The event joins `cost_observed` and `tick_failed` on the same observability surface seeded by the spend cap. If publication slips past 11:00 PM ET (rare), the next evening's cluster catches the miss on the following day.
+- The backstop processes any filing the Atom path missed (parser error, network blip, EDGAR transient, process down). At steady state it processes zero new filings; its value is bounded and proportional to the rarity of misses, which the observability events above are expected to confirm is low.
 
 ### Spend cap
 
@@ -66,6 +67,10 @@ Promoting to the watcher + worker pool now solves a problem we do not have, at t
 ADR 0012 originally proposed retiring the v0 timer in a single PR. The Atom path's pull-snapshot semantics create a small but real miss floor: an outage, a parser regression, an EDGAR transient that returns a malformed feed for one poll cycle. None catastrophic; none worth dropping a filing over.
 
 The daily-index file is, by EDGAR's contract, complete for date D as of publication. Polling it once after publication produces a definitive reconciliation: every accession not yet in `filings` is one Atom missed. Idempotency on the accession PK makes the backstop free in the common case — dedup short-circuits before any pipeline work — and decisive in the rare case. The existing code already implements this path correctly; retiring it would be a deletion in service of nothing.
+
+### Why surface backstop slippage rather than add more backstop runs
+
+A "final" run at 11:30 PM or midnight has the same uncertainty as the 11:00 PM run: if it misses, the operator wants another, and the chain has no natural terminus. EDGAR's publication time has no SLA, and any client-side schedule is a guess; building more guesses adds noise and code without bounding the failure mode. Surfacing the condition through observability bounds it differently — the operator distinguishes a single delayed publication (no action; the next evening's cluster reconciles) from a developing pattern (worth investigating) using a signal the system already needs for other reasons. The Atom path's near-real-time coverage makes the backstop's job anomaly detection more than ingest; the right surface for anomalies is observability, not more backstops.
 
 ### Why the spend cap is in scope here
 

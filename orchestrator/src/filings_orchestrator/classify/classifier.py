@@ -39,6 +39,7 @@ from filings_orchestrator.classify.taxonomy import (
     TAXONOMY_VERSION,
     EventType,
 )
+from filings_orchestrator.cost import emit_llm_call
 from filings_orchestrator.edgar.document import FilingDocument, ItemSection
 
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
@@ -124,7 +125,14 @@ def _bind_classifier(model_name: str) -> Any:
     )
 
 
-def _call_classifier(model: Any, system: str, user: str) -> Classification:
+def _call_classifier(
+    model: Any,
+    system: str,
+    user: str,
+    *,
+    model_name: str,
+    accession_number: str | None,
+) -> Classification:
     # The system prompt + taxonomy descriptions repeat verbatim across
     # every classification call. Marking the system block as ephemeral
     # tells Anthropic to cache it server-side; subsequent calls within
@@ -135,6 +143,14 @@ def _call_classifier(model: Any, system: str, user: str) -> Classification:
         {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
     ]
     response = model.invoke([SystemMessage(content=system_blocks), HumanMessage(content=user)])
+    # Record the call regardless of whether the response parses — even a
+    # malformed tool-call cost us tokens and counts against the cap (ADR 0029).
+    emit_llm_call(
+        model=model_name,
+        stage="classify",
+        response=response,
+        accession_number=accession_number,
+    )
     tool_calls = getattr(response, "tool_calls", None) or []
     if not tool_calls:
         raise RuntimeError("model did not return a tool call; cannot extract classification")
@@ -150,8 +166,10 @@ def _classify_node(state: _State) -> _State:
     edges later if classifier latency dominates wall-clock time.
     """
     document = state["document"]
-    model = _bind_classifier(state["model"])
+    model_name = state["model"]
+    model = _bind_classifier(model_name)
     system = _build_system_prompt()
+    accession_number = document.filing.accession_number
 
     substantive_items = [
         item for item in document.items if item.number not in NON_SUBSTANTIVE_ITEMS
@@ -163,7 +181,13 @@ def _classify_node(state: _State) -> _State:
     if substantive_items:
         for item in substantive_items:
             user = _build_user_message(document, item)
-            classification = _call_classifier(model, system, user)
+            classification = _call_classifier(
+                model,
+                system,
+                user,
+                model_name=model_name,
+                accession_number=accession_number,
+            )
             items.append(
                 ItemClassification(
                     item_number=item.number,
@@ -173,7 +197,13 @@ def _classify_node(state: _State) -> _State:
             )
     else:
         user = _build_user_message(document, None)
-        whole_filing = _call_classifier(model, system, user)
+        whole_filing = _call_classifier(
+            model,
+            system,
+            user,
+            model_name=model_name,
+            accession_number=accession_number,
+        )
 
     return {**state, "items": items, "whole_filing": whole_filing}
 

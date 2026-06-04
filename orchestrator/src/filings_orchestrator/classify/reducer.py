@@ -30,6 +30,7 @@ from filings_orchestrator.classify.schema import (
     ReduceOutput,
 )
 from filings_orchestrator.classify.taxonomy import EVENT_TYPE_DESCRIPTIONS, EventType
+from filings_orchestrator.cost import emit_llm_call
 
 
 def _build_reduce_system_prompt() -> str:
@@ -102,7 +103,14 @@ def _bind_reducer(model_name: str) -> Any:
     return model.bind_tools([tool_spec], tool_choice={"type": "tool", "name": "submit_events"})
 
 
-def _call_reducer(model: Any, system: str, user: str) -> ReduceOutput:
+def _call_reducer(
+    model: Any,
+    system: str,
+    user: str,
+    *,
+    model_name: str,
+    accession_number: str,
+) -> ReduceOutput:
     # The reduce system prompt + taxonomy repeats verbatim across calls; mark it
     # ephemeral so Anthropic caches it server-side (ADR 0022), as the classifier
     # does for its own system block.
@@ -110,6 +118,13 @@ def _call_reducer(model: Any, system: str, user: str) -> ReduceOutput:
         {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
     ]
     response = model.invoke([SystemMessage(content=system_blocks), HumanMessage(content=user)])
+    # Record the call even on a malformed response — the tokens are spent regardless.
+    emit_llm_call(
+        model=model_name,
+        stage="reduce",
+        response=response,
+        accession_number=accession_number,
+    )
     tool_calls = getattr(response, "tool_calls", None) or []
     if not tool_calls:
         raise RuntimeError("model did not return a tool call; cannot extract events")
@@ -178,7 +193,13 @@ def reduce_filing(
 
     system = _build_reduce_system_prompt()
     user = _build_reduce_user_message(classification)
-    output = _call_reducer(_bind_reducer(model_name), system, user)
+    output = _call_reducer(
+        _bind_reducer(model_name),
+        system,
+        user,
+        model_name=model_name,
+        accession_number=accession,
+    )
 
     valid_items = {item.item_number for item in items}
     return FilingEvents(

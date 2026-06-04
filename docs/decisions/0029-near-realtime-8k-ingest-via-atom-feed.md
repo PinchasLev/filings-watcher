@@ -26,7 +26,7 @@ A second ingest CLI, `scan-atom-feed`, becomes the primary near-real-time ingest
 ### Backstop — daily-index reconciliation
 
 - `scan-daily-index` runs on its own timer as a clustered series of late-evening invocations scheduled via `OnCalendar` — 10:15, 10:30, 10:45, and 11:00 PM ET — to catch EDGAR's once-daily publication regardless of routine slippage within that window. The current 15-minute round-the-clock cadence is retired; the daily-index file does not exist intraday, so high-frequency polling against an absent endpoint serves no purpose. Idempotency on the accession PK makes the redundant runs free: whichever invocation finds the published file ingests, and subsequent invocations dedup-and-exit without processing.
-- If the 11:00 PM ET invocation finds no published file for the current date, it emits a structured `daily_index_publication_missing` event carrying the date and a derived `is_business_day` flag. Weekend dates are expected and the event is informational; business-day misses route to alarm. The event joins `cost_observed` and `tick_failed` on the same observability surface seeded by the spend cap. If publication slips past 11:00 PM ET (rare), the next evening's cluster catches the miss on the following day.
+- If the 11:00 PM ET invocation finds no published file for the current date, it emits a structured `daily_index_publication_missing` event carrying the date and a derived `is_business_day` flag. Weekend dates are expected and the event is informational; business-day misses route to alarm. The event joins `llm_call_observed` and `tick_failed` on the same observability surface seeded by the spend cap. If publication slips past 11:00 PM ET (rare), the next evening's cluster catches the miss on the following day.
 - When an invocation first detects a newly-published file for the current date, it emits a structured `daily_index_published` event carrying the detection timestamp, the date, the total entry count, and the 8-K subset count. The event is informational rather than alarm-routed; it provides the normal-state baseline against which `daily_index_publication_missing` events become legible as anomalies rather than noise.
 - The backstop processes any filing the Atom path missed (parser error, network blip, EDGAR transient, process down). At steady state it processes zero new filings; its value is bounded and proportional to the rarity of misses, which the observability events above are expected to confirm is low.
 
@@ -34,7 +34,7 @@ A second ingest CLI, `scan-atom-feed`, becomes the primary near-real-time ingest
 
 ADR 0012 names the Anthropic spend cap as a load-bearing commitment for any unattended run. Under the daily-index cadence, a runaway exhausts credit and surfaces as a single nightly failure. Under near-real-time, a runaway exhausts credit and continues to fail every 30 seconds against the cap. The latency reduction makes the cap deploy-gating, not eventual. This ADR scopes a minimum mechanism that ships with the Atom path:
 
-- Each Anthropic call emits a structured `cost_observed` event carrying model name, input and output token counts, and an estimated cost computed against published per-token pricing.
+- Each Anthropic call emits a structured `llm_call_observed` event carrying model name, input and output token counts, and an estimated cost computed against published per-token pricing.
 - A daily aggregate is queryable from the events log.
 - Each tick begins by reading the aggregate against an operator-configured cap. Above the cap, the tick logs `tick_failed` with `error_class=cost_cap_exceeded` and exits non-zero. Above an operator-configured warning threshold, an alarm event fires.
 - The cap and warning threshold are runtime configuration; defaults are set conservatively against the prior month's average daily spend.
@@ -118,7 +118,7 @@ Rejected. ADR 0021 already supersedes ADR 0006 on coverage grounds — a small f
 - **Easier:** The spend cap and its observability surface ship with this work, not deferred to a separate effort.
 - **Harder:** Tick volume rises by roughly 30× (one per 30 seconds rather than one per 15 minutes). Per-tick cost must be near-zero — the Atom poll is one HTTP GET and a small XML parse — and per-tick logging must be quiet enough that `journald` is not flooded.
 - **Harder:** A timer drift or stuck tick is now a freshness incident on a one-minute clock rather than a 15-minute clock. The `OnUnitInactiveSec` + `flock` + `TimeoutStartSec` discipline from ADR 0012 applies unchanged; threshold values may need adjustment.
-- **Accepted commitment:** Anthropic spend cap is deploy-gating for the Atom path. The mechanism — structured `cost_observed` events, daily aggregate, pre-tick threshold check, alarm — ships with this slice.
+- **Accepted commitment:** Anthropic spend cap is deploy-gating for the Atom path. The mechanism — structured `llm_call_observed` events, daily aggregate, pre-tick threshold check, alarm — ships with this slice.
 - **Accepted commitment:** The Atom path shares the EDGAR rate limiter with all other EDGAR fetches. The shared limiter from ADR 0012 enforces well under the 10 req/sec ceiling regardless of poll cadence.
 - **Accepted commitment:** No watchlist concept is reintroduced. The Atom feed is firehose-scoped, matching the coverage decision of ADR 0021.
 

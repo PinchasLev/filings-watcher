@@ -24,6 +24,7 @@ import sys
 
 from filings_orchestrator.classify import reduce_filing, reducer_version
 from filings_orchestrator.config import MissingConfigError, get_config_str, get_secret
+from filings_orchestrator.cost import db_llm_call_sink, set_cost_sink
 from filings_orchestrator.log_events import emit
 from filings_orchestrator.persistence import open_engine
 from filings_orchestrator.persistence.repository import (
@@ -57,6 +58,13 @@ def main() -> None:
 
     db_path = get_config_str("FILINGS_DB_PATH", default="/var/lib/filings-watcher/filings.db")
     engine = open_engine(db_path)
+
+    # Reduce calls Anthropic per filing; route the LLM-call observations through
+    # the DB sink so they contribute to the daily aggregate the live tick's
+    # pre-check consults (ADR 0029). This CLI does not enforce the cap itself —
+    # it is an operator-invoked sweep, and an in-flight sweep should not
+    # interrupt itself mid-corpus; the surface records, the next live tick decides.
+    set_cost_sink(db_llm_call_sink(engine))
 
     if args.accession:
         accessions = [args.accession]

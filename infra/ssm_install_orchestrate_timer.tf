@@ -53,6 +53,12 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "EDGAR_USER_AGENT=$(aws ssm get-parameter --name /filings-watcher/edgar-user-agent --with-decryption --query Parameter.Value --output text --region ${var.aws_region})",
           "export ANTHROPIC_API_KEY LANGSMITH_API_KEY EDGAR_USER_AGENT",
           "export FILINGS_DB_PATH=/var/lib/filings-watcher/filings.db",
+          # ADR 0029 spend-cap surface. Operator-tunable starting values; update
+          # in source and re-apply terraform to push to the host. The orchestrator
+          # falls back to the same defaults via config.py if these are unset, so
+          # an outdated wrapper does not silently disable the cap.
+          "export ANTHROPIC_DAILY_COST_CAP_USD=5.00",
+          "export ANTHROPIC_DAILY_COST_WARN_USD=4.00",
           # OpenTelemetry configuration. The orchestrator's setup_otel()
           # reads these standard env vars; if OTEL_EXPORTER_OTLP_ENDPOINT
           # is unset (e.g., during local dev) the SDK stays no-op. The

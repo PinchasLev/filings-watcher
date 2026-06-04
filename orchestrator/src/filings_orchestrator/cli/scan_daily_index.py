@@ -41,6 +41,7 @@ from filings_orchestrator.classify import (
 )
 from filings_orchestrator.classify.retry import with_retries
 from filings_orchestrator.config import MissingConfigError, load_config
+from filings_orchestrator.cost import db_llm_call_sink, set_cost_sink
 from filings_orchestrator.edgar import EdgarClient, fetch_filing_document
 from filings_orchestrator.edgar.daily_index import (
     DailyIndexEntry,
@@ -56,6 +57,7 @@ from filings_orchestrator.persistence.repository import (
     advance_ingest_cursor,
     complete_run,
     create_run,
+    daily_cost_usd,
     insert_classifications,
     insert_events,
     lookup_ticker_by_cik,
@@ -92,6 +94,38 @@ def main() -> None:
         emit("tick_started", started_at=tick_started_at.isoformat())
 
         engine = open_engine(config.filings_db_path)
+
+        # Pre-tick spend cap check (ADR 0029). The cost_observed events recorded
+        # by classify and reduce calls feed daily_cost_usd; the tick refuses to
+        # do new LLM-bound work once today's aggregate is at or above the cap.
+        # A warn-level aggregate fires a structured event without blocking, so
+        # the operator sees the approach before the wall.
+        today_utc = datetime.now(UTC).date().isoformat()
+        spend_today = daily_cost_usd(engine, today_utc)
+        if spend_today >= config.anthropic_daily_cost_cap_usd:
+            emit(
+                "tick_failed",
+                error_class="cost_cap_exceeded",
+                daily_spend_usd=round(spend_today, 6),
+                cap_usd=config.anthropic_daily_cost_cap_usd,
+                day_utc=today_utc,
+            )
+            sys.exit(1)
+        if spend_today >= config.anthropic_daily_cost_warn_usd:
+            emit(
+                "cost_warning",
+                daily_spend_usd=round(spend_today, 6),
+                warn_usd=config.anthropic_daily_cost_warn_usd,
+                cap_usd=config.anthropic_daily_cost_cap_usd,
+                day_utc=today_utc,
+            )
+
+        # Route classify- and reduce-stage LLM-call observations through the DB
+        # sink so the per-call rows accumulate for the next tick's pre-check
+        # (ADR 0029). Tokens are recorded for engineering analysis; the cost
+        # column drives the cap.
+        set_cost_sink(db_llm_call_sink(engine))
+
         cursor = read_ingest_cursor(engine)
         cursor_acc = cursor[0] if cursor else None
         cursor_filed = cursor[1] if cursor else None

@@ -35,6 +35,7 @@ fetch-edgar = "filings_orchestrator.cli.fetch_edgar:main"
 classify-filing = "filings_orchestrator.cli.classify_filing:main"
 migrate-db = "filings_orchestrator.cli.migrate_db:main"
 scan-daily-index = "filings_orchestrator.cli.scan_daily_index:main"
+scan-atom-feed = "filings_orchestrator.cli.scan_atom_feed:main"
 scan-tickers = "filings_orchestrator.cli.scan_tickers:main"
 reduce-corpus = "filings_orchestrator.cli.reduce_corpus:main"
 

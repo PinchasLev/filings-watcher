@@ -4,6 +4,14 @@
 
 set -euxo pipefail
 
+# --- hostname ---
+# Match the EC2 Name tag so Tailscale's MagicDNS name and the host's
+# kernel hostname agree (operators reach the host as
+# `filings-watcher-host` on the tailnet). Without this, AL2023 keeps
+# the cloud-assigned `ip-10-x-x-x.ec2.internal` default and the two
+# diverge after every instance replacement.
+hostnamectl set-hostname filings-watcher-host
+
 # --- security patches ---
 dnf update -y
 

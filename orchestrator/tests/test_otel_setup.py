@@ -16,6 +16,8 @@ of failing in production on the next tick.
 from __future__ import annotations
 
 import pytest
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 
 def test_setup_otel_initializes_under_collector_env_vars(
@@ -23,17 +25,31 @@ def test_setup_otel_initializes_under_collector_env_vars(
 ) -> None:
     """setup_otel must return without raising when the Collector env vars are set.
 
-    No real Collector is listening on the endpoint; the SDK's exporter
-    starts a background channel lazily and will silently drop spans
-    until shutdown. What we are testing here is that the synchronous
-    setup path — TracerProvider, MeterProvider, and the LangChain
-    instrumentor's instrument() call — completes cleanly.
+    The OTLP span and metric exporters are swapped for in-memory equivalents
+    before setup_otel runs. setup_otel installs its providers globally and
+    the OTel SDK registers atexit handlers to flush them at process exit; if
+    the real OTLPSpanExporter were installed, its atexit drain would fire
+    `Failed to export traces to 127.0.0.1:4317` against the (absent) local
+    Collector and pollute every subsequent pytest run's output. The
+    in-memory exporters are byte-for-byte compatible with the SDK's
+    BatchSpanProcessor and PeriodicExportingMetricReader; nothing networks.
+
+    What we are testing here is that the synchronous setup path —
+    TracerProvider, MeterProvider, and the LangChain instrumentor's
+    instrument() call — completes cleanly.
     """
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4317")
     monkeypatch.setenv("OTEL_SERVICE_NAME", "filings-orchestrator-test")
     monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "service.version=test")
 
     import filings_orchestrator.otel_setup as otel_setup_mod
+
+    monkeypatch.setattr(otel_setup_mod, "OTLPSpanExporter", InMemorySpanExporter)
+    monkeypatch.setattr(
+        otel_setup_mod,
+        "PeriodicExportingMetricReader",
+        lambda _exporter: InMemoryMetricReader(),
+    )
 
     # Force re-initialization so the test actually exercises setup logic
     # even if a prior test (or repeat run) already flipped the guard.

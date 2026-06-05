@@ -129,6 +129,13 @@ def test_scan_daily_index_classifies_new_8k_and_advances_cursor(
     assert "tick_completed" in event_names
     assert "tick_failed" not in event_names
 
+    # ADR 0029 reconciliation event: successful fetch of today's daily-
+    # index file fires the publication heartbeat with form-level counts.
+    published = next(e for e in events if e["event"] == "daily_index_published")
+    assert published["date"] == "2026-05-15"
+    assert published["total_entries"] == 2  # 8-K + 13F-HR in the fixture
+    assert published["eight_k_entries"] == 1
+
     # The reduce stage ran inline as its own run and wrote the events layer.
     # The stub yields a whole-filing classification (no Items), so reduce is a
     # pass-through: one event, no model call — keeping the test hermetic.
@@ -315,6 +322,97 @@ def test_scan_daily_index_skips_missing_daily_index(
     skipped = next(e for e in events if e["event"] == "tick_skipped_date")
     assert skipped["date"] == "2026-05-19"
     assert skipped["status"] == status
+
+
+def test_scan_daily_index_emits_publication_missing_at_2300_et_on_business_day(
+    configured_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ADR 0029: the cluster's last invocation (23:00 ET or later) emits a
+    publication-missing signal when today's daily-index file is still
+    absent. is_business_day=True on a weekday routes the event to alarm."""
+    # 2026-05-19 23:30 ET (Tue) = 2026-05-20 03:30 UTC in EDT.
+    fixed_now = datetime(2026, 5, 20, 3, 30, 0, tzinfo=UTC)
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:  # type: ignore[override]
+            return fixed_now if tz is None else fixed_now.astimezone(tz)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("filings_orchestrator.cli.scan_daily_index.datetime", _FixedDateTime)
+
+    with respx.mock(assert_all_called=True) as mock:
+        mock.get(
+            "https://www.sec.gov/Archives/edgar/daily-index/2026/QTR2/master.20260519.idx"
+        ).mock(return_value=httpx.Response(403))
+        main()
+
+    events = _read_jsonl(capsys.readouterr().out)
+    missing = next(e for e in events if e["event"] == "daily_index_publication_missing")
+    assert missing["date"] == "2026-05-19"
+    assert missing["is_business_day"] is True
+
+
+def test_scan_daily_index_does_not_emit_publication_missing_before_2300_et(
+    configured_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The publication-missing signal is reserved for the cluster's final
+    invocation. Earlier cluster windows (22:15/22:30/22:45) finding the
+    file absent must not emit — that would alarm on a normal, in-progress
+    publication wait."""
+    # 2026-05-19 22:45 ET (Tue) = 2026-05-20 02:45 UTC.
+    fixed_now = datetime(2026, 5, 20, 2, 45, 0, tzinfo=UTC)
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:  # type: ignore[override]
+            return fixed_now if tz is None else fixed_now.astimezone(tz)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("filings_orchestrator.cli.scan_daily_index.datetime", _FixedDateTime)
+
+    with respx.mock(assert_all_called=True) as mock:
+        mock.get(
+            "https://www.sec.gov/Archives/edgar/daily-index/2026/QTR2/master.20260519.idx"
+        ).mock(return_value=httpx.Response(403))
+        main()
+
+    events = _read_jsonl(capsys.readouterr().out)
+    assert "daily_index_publication_missing" not in [e["event"] for e in events]
+    # The skip event still fires — that's the per-attempt log line.
+    assert "tick_skipped_date" in [e["event"] for e in events]
+
+
+def test_scan_daily_index_publication_missing_marks_weekend_as_not_business_day(
+    configured_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Weekend cluster invocations still emit the publication-missing
+    signal at 23:00 ET, but with is_business_day=False so downstream
+    routes treat it as informational rather than alarm-eligible."""
+    # 2026-05-16 23:30 ET (Sat) = 2026-05-17 03:30 UTC.
+    fixed_now = datetime(2026, 5, 17, 3, 30, 0, tzinfo=UTC)
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:  # type: ignore[override]
+            return fixed_now if tz is None else fixed_now.astimezone(tz)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("filings_orchestrator.cli.scan_daily_index.datetime", _FixedDateTime)
+
+    with respx.mock(assert_all_called=True) as mock:
+        mock.get(
+            "https://www.sec.gov/Archives/edgar/daily-index/2026/QTR2/master.20260516.idx"
+        ).mock(return_value=httpx.Response(403))
+        main()
+
+    events = _read_jsonl(capsys.readouterr().out)
+    missing = next(e for e in events if e["event"] == "daily_index_publication_missing")
+    assert missing["date"] == "2026-05-16"
+    assert missing["is_business_day"] is False
 
 
 def test_dates_to_scan_returns_today_when_cursor_unset() -> None:

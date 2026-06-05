@@ -116,11 +116,16 @@ def main() -> None:
         cursor_acc = cursor[0] if cursor else None
         cursor_filed = cursor[1] if cursor else None
 
-        target_dates = _dates_to_scan(cursor_filed, today_et=datetime.now(_EASTERN).date())
+        today_et = datetime.now(_EASTERN).date()
+        target_dates = _dates_to_scan(cursor_filed, today_et=today_et)
 
         new_filings_count = 0
         errors_count = 0
         reduce_errors_count = 0
+        # ADR 0029: track whether today's daily-index file was attempted and
+        # found missing, so the late-cluster invocation can emit a
+        # `daily_index_publication_missing` signal at end-of-tick.
+        today_publication_missing = False
 
         with EdgarClient(
             user_agent=config.edgar_user_agent,
@@ -141,6 +146,8 @@ def main() -> None:
                             status=exc.response.status_code,
                             reason="daily index missing (EDGAR 403 for unpublished/non-business)",
                         )
+                        if target == today_et:
+                            today_publication_missing = True
                         continue
                     _fail(
                         tick_started_at,
@@ -149,7 +156,20 @@ def main() -> None:
                     )
                     return
 
-                entries = filter_form(parse_daily_index(index_text), "8-K")
+                all_entries = parse_daily_index(index_text)
+                entries = filter_form(all_entries, "8-K")
+                if target == today_et:
+                    # ADR 0029: heartbeat that EDGAR's daily-index publication
+                    # for today has been detected. Multiple cluster invocations
+                    # may all emit (each fetches the same file independently);
+                    # downstream consumers take MIN(emitted_at) per date as the
+                    # canonical publication signal.
+                    emit(
+                        "daily_index_published",
+                        date=target.isoformat(),
+                        total_entries=len(all_entries),
+                        eight_k_entries=len(entries),
+                    )
                 seen = select_seen_accessions(engine, [e.accession_number for e in entries])
                 new_entries = sorted(
                     (e for e in entries if e.accession_number not in seen),
@@ -185,6 +205,19 @@ def main() -> None:
                             errors_count=errors_count,
                         )
                         return
+
+        # ADR 0029: if today's file was missing at or after the cluster's
+        # last invocation window (23:00 ET), emit the publication-missing
+        # signal so downstream alarming can distinguish "EDGAR slipped"
+        # from "our ingest broke". The is_business_day flag lets
+        # consumers route weekend dates as informational and business-day
+        # misses as alarm-eligible.
+        if today_publication_missing and datetime.now(_EASTERN).hour >= 23:
+            emit(
+                "daily_index_publication_missing",
+                date=today_et.isoformat(),
+                is_business_day=_is_business_day(today_et),
+            )
 
         duration_ms = int((datetime.now(UTC) - tick_started_at).total_seconds() * 1000)
         span.set_attribute("dates_scanned", [d.isoformat() for d in target_dates])
@@ -223,6 +256,21 @@ def _dates_to_scan(cursor_filed_at: str | None, today_et: date) -> list[date]:
         out.append(current)
         current = date.fromordinal(current.toordinal() + 1)
     return out
+
+
+def _is_business_day(d: date) -> bool:
+    """Return True for Mon-Fri.
+
+    Deliberately weekday-only for v0 — the ~9 NYSE/SEC holidays per year
+    register as false positives (the publication-missing event would
+    flag is_business_day=True on, e.g., Memorial Day, when EDGAR
+    legitimately publishes nothing). The downstream alarm is meant to
+    surface anomalies; treating ~9 days per year as alarm-eligible
+    instead of informational is a known limitation, tracked for a
+    follow-up that wires in a real NYSE calendar (e.g., the `holidays`
+    package's `NYSE` calendar or `pandas_market_calendars`).
+    """
+    return d.weekday() < 5
 
 
 def _parse_filed_at_to_date(value: str) -> date:

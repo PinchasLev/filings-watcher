@@ -1,5 +1,5 @@
 {
-    email ${acme_email}
+	email ${acme_email}
 }
 
 # Apex is the canonical public URL serving the Filings Radar product
@@ -15,25 +15,32 @@
 # operator-access design) and see /ops/* normally. The 404 here is
 # the public-side enforcement of the same boundary.
 filingsradar.com {
-    header {
-        Strict-Transport-Security "max-age=31536000; includeSubDomains"
-        X-Content-Type-Options "nosniff"
-        Referrer-Policy "strict-origin-when-cross-origin"
-        Permissions-Policy "geolocation=(), microphone=(), camera=()"
-        Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'none'; img-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';"
-    }
-    handle /ops/* {
-        respond "Not Found" 404
-    }
-    handle {
-        reverse_proxy 127.0.0.1:8080
-    }
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "geolocation=(), microphone=(), camera=()"
+		Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'none'; img-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';"
+		# Disable browser caching for the apex. The product is read-mostly
+		# with sub-minute freshness (ADR 0029); without an explicit
+		# Cache-Control header, browsers apply heuristic caching and
+		# users see stale renders even after a manual refresh. `no-store`
+		# is simpler than ETag/Last-Modified revalidation for a site of
+		# this scale and traffic.
+		Cache-Control "no-store"
+	}
+	handle /ops/* {
+		respond "Not Found" 404
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8080
+	}
 }
 
 # www → apex 301 redirect. Anyone who types www.filingsradar.com lands
 # on the canonical apex URL; search engines canonicalize accordingly.
 www.filingsradar.com {
-    redir https://filingsradar.com{uri} permanent
+	redir https://filingsradar.com{uri} permanent
 }
 
 # staging.filingsradar.com currently redirects to apex. The DNS record
@@ -42,5 +49,5 @@ www.filingsradar.com {
 # to the staging host's tailnet IP. Single-host "staging" against the
 # same binary and database would be theater (see ADR 0024).
 staging.filingsradar.com {
-    redir https://filingsradar.com{uri} permanent
+	redir https://filingsradar.com{uri} permanent
 }

@@ -52,6 +52,20 @@ resource "aws_instance" "host" {
   tags = {
     Name = "filings-watcher-host"
   }
+
+  # Pin the AMI against the floating `most_recent` data source above.
+  # Without this, any `terraform apply` after Amazon publishes a newer
+  # AL2023 ARM build silently force-replaces this instance, cascade-
+  # replaces the EIP association and data-volume attachment, and takes
+  # the service down until both `filings-deploy` and
+  # `filings-install-orchestrate-timer` SSM commands are re-run on the
+  # fresh host. See 2026-06-05 outage. Bump the AMI explicitly (taint
+  # this resource or `terraform apply -replace`) when an OS refresh is
+  # actually wanted; routine security patches land via dnf-automatic on
+  # the live host (user_data.sh.tpl:25-27).
+  lifecycle {
+    ignore_changes = [ami]
+  }
 }
 
 resource "aws_eip" "host" {

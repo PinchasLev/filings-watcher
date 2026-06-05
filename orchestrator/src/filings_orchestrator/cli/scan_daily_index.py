@@ -31,38 +31,24 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from opentelemetry import trace
-from sqlalchemy import Engine, bindparam, text
 
-from filings_orchestrator.classify import (
-    FilingClassification,
-    classify_filing,
-    reduce_filing,
-    reducer_version,
-)
-from filings_orchestrator.classify.retry import with_retries
+from filings_orchestrator.cli._pipeline import process_one
 from filings_orchestrator.config import MissingConfigError, load_config
 from filings_orchestrator.cost import db_llm_call_sink, set_cost_sink
-from filings_orchestrator.edgar import EdgarClient, fetch_filing_document
+from filings_orchestrator.edgar import EdgarClient
 from filings_orchestrator.edgar.daily_index import (
-    DailyIndexEntry,
     fetch_daily_index,
     filter_form,
     parse_daily_index,
-    resolve_filing,
 )
 from filings_orchestrator.log_events import emit
 from filings_orchestrator.otel_setup import setup_otel
 from filings_orchestrator.persistence import open_engine
 from filings_orchestrator.persistence.repository import (
     advance_ingest_cursor,
-    complete_run,
-    create_run,
     daily_cost_usd,
-    insert_classifications,
-    insert_events,
-    lookup_ticker_by_cik,
     read_ingest_cursor,
-    upsert_filing_document,
+    select_seen_accessions,
 )
 
 # EDGAR rate limit for the unattended ingest path. The published ceiling is
@@ -164,11 +150,29 @@ def main() -> None:
                     return
 
                 entries = filter_form(parse_daily_index(index_text), "8-K")
-                new_entries = _filter_new_entries(engine, entries)
+                seen = select_seen_accessions(engine, [e.accession_number for e in entries])
+                new_entries = sorted(
+                    (e for e in entries if e.accession_number not in seen),
+                    key=lambda e: (e.filed_at, e.accession_number),
+                )
 
                 for entry in new_entries:
                     try:
-                        reduce_errors_count += _process_one(client, engine, entry)
+                        reduce_errors_count += process_one(
+                            client=client,
+                            engine=engine,
+                            cik=entry.cik,
+                            accession_number=entry.accession_number,
+                            company_name=entry.company_name,
+                            form=entry.form,
+                            filed_at=entry.filed_at,
+                        )
+                        advance_ingest_cursor(engine, entry.accession_number, entry.filed_at)
+                        emit(
+                            "cursor_advanced",
+                            accession_number=entry.accession_number,
+                            filed_at=entry.filed_at,
+                        )
                         new_filings_count += 1
                     except Exception as exc:
                         errors_count += 1
@@ -196,116 +200,6 @@ def main() -> None:
             dates_scanned=[d.isoformat() for d in target_dates],
             cursor_after=(cursor_acc, cursor_filed) if cursor else None,
         )
-
-
-def _process_one(client: EdgarClient, engine: Engine, entry: DailyIndexEntry) -> int:
-    """Resolve, fetch body, classify-with-retry, persist, reduce, advance cursor.
-
-    Returns the number of reduce failures for this filing (0 or 1). A classify
-    or fetch failure raises and fails the tick; a reduce failure does not (see
-    `_reduce_one`), so the count is surfaced rather than propagated.
-    """
-    emit(
-        "filing_fetched",
-        accession_number=entry.accession_number,
-        cik=entry.cik,
-        form=entry.form,
-        filed_at=entry.filed_at,
-        company_name=entry.company_name,
-    )
-    filing = resolve_filing(entry, client)
-    # Populate the ticker from the local CIK→ticker mirror before persisting.
-    # Returns the filing unchanged if cik_tickers has no entry — common for
-    # private subsidiaries, trusts, or fresh installs before scan-tickers
-    # has been run. See ADR 0025.
-    ticker = lookup_ticker_by_cik(engine, filing.cik)
-    if ticker is not None:
-        filing = filing.model_copy(update={"ticker": ticker})
-    document = fetch_filing_document(filing, client)
-    upsert_filing_document(engine, document)
-
-    emit(
-        "classification_started",
-        accession_number=entry.accession_number,
-        cik=entry.cik,
-        items_count=len(document.items),
-    )
-    result = with_retries(
-        lambda: classify_filing(document),
-        log_context={
-            "accession_number": entry.accession_number,
-            "cik": entry.cik,
-        },
-    )
-    inserted = insert_classifications(engine, result)
-
-    emit(
-        "classification_completed",
-        accession_number=entry.accession_number,
-        cik=entry.cik,
-        classifications_inserted=inserted,
-        classifier_version=result.classifier_version,
-        taxonomy_version=result.taxonomy_version,
-    )
-
-    reduce_errors = _reduce_one(engine, result)
-
-    advance_ingest_cursor(engine, entry.accession_number, entry.filed_at)
-    emit(
-        "cursor_advanced",
-        accession_number=entry.accession_number,
-        filed_at=entry.filed_at,
-    )
-    return reduce_errors
-
-
-def _reduce_one(engine: Engine, classification: FilingClassification) -> int:
-    """Reduce a freshly-classified filing into events as its own run (ADR 0028).
-
-    Best-effort and non-fatal: the classification — the irreplaceable map output
-    — is already persisted and the cursor will advance regardless. Reduce is a
-    derived, replayable stage, so a failure here is logged and counted, not
-    propagated; a later `reduce-corpus` sweep closes the resulting gap in the
-    events layer. Retries cover transient Anthropic errors, as classify does.
-    Returns 1 if the reduce failed, 0 otherwise.
-    """
-    run_id = create_run(
-        engine,
-        stage="reduce",
-        config_version=reducer_version(),
-        taxonomy_version=classification.taxonomy_version,
-    )
-    try:
-        events = with_retries(
-            lambda: reduce_filing(classification),
-            log_context={
-                "accession_number": classification.accession_number,
-                "cik": classification.cik,
-                "stage": "reduce",
-            },
-        )
-        written = insert_events(engine, events, run_id=run_id)
-    except Exception as exc:
-        complete_run(engine, run_id, status="failed")
-        emit(
-            "reduce_failed",
-            accession_number=classification.accession_number,
-            cik=classification.cik,
-            run_id=run_id,
-            error_class=type(exc).__name__,
-            message=str(exc),
-        )
-        return 1
-
-    complete_run(engine, run_id, status="succeeded")
-    emit(
-        "reduce_completed",
-        accession_number=classification.accession_number,
-        cik=classification.cik,
-        run_id=run_id,
-        events=written,
-    )
-    return 0
 
 
 def _dates_to_scan(cursor_filed_at: str | None, today_et: date) -> list[date]:
@@ -336,27 +230,6 @@ def _parse_filed_at_to_date(value: str) -> date:
     if len(s) == 8 and s.isdigit():
         return date(int(s[0:4]), int(s[4:6]), int(s[6:8]))
     return date.fromisoformat(s)
-
-
-def _filter_new_entries(engine: Engine, entries: list[DailyIndexEntry]) -> list[DailyIndexEntry]:
-    """Drop entries whose accession_number is already persisted.
-
-    Correctness here is from the filings PK, not the cursor. One indexed
-    lookup per tick instead of per entry; the IN-list scales to peak day
-    volume comfortably.
-    """
-    if not entries:
-        return []
-    accessions = [e.accession_number for e in entries]
-    sql = text("SELECT accession_number FROM filings WHERE accession_number IN :accs").bindparams(
-        bindparam("accs", expanding=True)
-    )
-    with engine.begin() as conn:
-        rows = conn.execute(sql, {"accs": accessions}).fetchall()
-    seen = {row[0] for row in rows}
-    new = [e for e in entries if e.accession_number not in seen]
-    new.sort(key=lambda e: (e.filed_at, e.accession_number))
-    return new
 
 
 def _fail(tick_started_at: datetime, **fields: object) -> None:

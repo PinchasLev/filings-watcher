@@ -10,18 +10,10 @@ The file is pipe-delimited (`CIK|Company Name|Form Type|Date Filed|File Name`)
 and covers every form filed across every company that day. One fetch per
 tick replaces N per-company fetches.
 
-The index gives us each filing's accession number and the path to the SGML
-submission archive (`*.txt`), but NOT the primary document name needed by
-`fetch_filing_document`. To bridge that, this module resolves each new
-filing's primary `.htm` document via the per-accession filing-index HTML
-page:
-
-    https://www.sec.gov/Archives/edgar/data/<cik>/<accession-no-dashes>/<accession>-index.html
-
-The page contains a "Document Format Files" table whose row Type column
-matches the filing's form (e.g., "8-K") and whose Document column links
-the primary document. (The companion `index.json` endpoint exposes only
-icon metadata, not form-type-to-document mapping.)
+The index gives us each filing's accession number, CIK, company name, form
+type, and submission path. The primary document name needed by
+`fetch_filing_document` is resolved via `filing_resolver.resolve_filing`,
+which is shared with the Atom feed ingest path (ADR 0029).
 
 See ADR 0021.
 """
@@ -31,23 +23,13 @@ from __future__ import annotations
 import re
 from datetime import date
 
-from bs4 import BeautifulSoup
 from pydantic import BaseModel
 
 from filings_orchestrator.edgar.client import EdgarClient
-from filings_orchestrator.edgar.models import Filing
 
 _DAILY_INDEX_URL_TEMPLATE = (
     "https://www.sec.gov/Archives/edgar/daily-index/{year}/QTR{quarter}/master.{date}.idx"
 )
-_FILING_INDEX_URL_TEMPLATE = (
-    "https://www.sec.gov/Archives/edgar/data/{cik_unpadded}/{accession_compact}/"
-    "{accession}-index.html"
-)
-
-# Match the iXBRL viewer wrapper that EDGAR uses for newer filings:
-#   /ix?doc=/Archives/edgar/data/<cik>/<accession-compact>/<filename>
-_IXBRL_VIEWER_PREFIX = "/ix?doc="
 
 # Accession number pattern from the SGML archive filename. Example file path:
 #   edgar/data/320193/0000320193-26-000045.txt
@@ -126,84 +108,3 @@ def filter_form(entries: list[DailyIndexEntry], form: str) -> list[DailyIndexEnt
     handled separately if at all (currently out of scope per ADR 0021).
     """
     return [e for e in entries if e.form == form]
-
-
-def resolve_filing(entry: DailyIndexEntry, client: EdgarClient) -> Filing:
-    """Resolve a daily-index entry to a Filing including its primary document.
-
-    Fetches the per-accession filing-index HTML page and parses the
-    "Document Format Files" table to find the row whose Type matches the
-    entry's form. The Document column on that row carries the primary
-    `.htm` filename (sometimes wrapped in EDGAR's iXBRL viewer URL).
-    """
-    cik_unpadded = str(int(entry.cik))
-    accession_compact = entry.accession_number.replace("-", "")
-    index_url = _FILING_INDEX_URL_TEMPLATE.format(
-        cik_unpadded=cik_unpadded,
-        accession_compact=accession_compact,
-        accession=entry.accession_number,
-    )
-    page_html = client.get_text(index_url)
-    primary_name = _extract_primary_document_name(page_html, entry.form)
-    primary_url = (
-        f"https://www.sec.gov/Archives/edgar/data/{cik_unpadded}/{accession_compact}/{primary_name}"
-    )
-
-    filed_date = date.fromisoformat(_format_iso_date(entry.filed_at))
-    return Filing(
-        cik=entry.cik,
-        company_name=entry.company_name,
-        ticker=None,
-        form=entry.form,
-        accession_number=entry.accession_number,
-        filing_date=filed_date,
-        report_date=None,
-        primary_document=primary_name,
-        primary_document_url=primary_url,
-        items=[],
-    )
-
-
-def _extract_primary_document_name(page_html: str, form: str) -> str:
-    """Extract the primary document filename from a filing-index HTML page.
-
-    The page's "Document Format Files" table has rows of:
-        Seq | Description | Document | Type | Size
-    where the Type column equals the form (`8-K`, `10-K`, etc.) for the
-    primary document row. The Document column carries an `<a href>`
-    pointing at either the file directly, or the iXBRL viewer wrapper
-    (`/ix?doc=<path>`) which we strip.
-    """
-    soup = BeautifulSoup(page_html, "lxml")
-    table = soup.find("table", attrs={"summary": "Document Format Files"})
-    if table is None:
-        raise LookupError("filing-index page missing 'Document Format Files' table")
-
-    for row in table.find_all("tr"):
-        cells = row.find_all("td")
-        if len(cells) < 4:
-            continue
-        type_text = cells[3].get_text(strip=True)
-        if type_text != form:
-            continue
-        link = cells[2].find("a")
-        if link is None or not link.get("href"):
-            continue
-        href = str(link["href"])
-        if href.startswith(_IXBRL_VIEWER_PREFIX):
-            href = href[len(_IXBRL_VIEWER_PREFIX) :]
-        return href.rsplit("/", 1)[-1]
-
-    raise LookupError(f"no Document Format Files row with Type={form!r} on filing-index page")
-
-
-def _format_iso_date(yyyymmdd_or_iso: str) -> str:
-    """Normalize a daily-index date to ISO YYYY-MM-DD.
-
-    EDGAR has used two formats for the `Date Filed` column historically:
-    `20260515` (compact) and `2026-05-15` (ISO). Tolerate both.
-    """
-    s = yyyymmdd_or_iso.strip()
-    if len(s) == 8 and s.isdigit():
-        return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
-    return s

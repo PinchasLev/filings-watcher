@@ -23,8 +23,7 @@ _SAMPLE_ATOM = (FIXTURES / "atom_feed_8k.xml").read_text()
 def test_atom_feed_url_composes_with_defaults() -> None:
     url = atom_feed_url()
     assert url == (
-        "https://www.sec.gov/cgi-bin/browse-edgar"
-        "?action=getcurrent&type=8-K&output=atom&count=100"
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&output=atom&count=100"
     )
 
 
@@ -94,8 +93,7 @@ def test_filter_form_is_exact_match() -> None:
 
 def test_fetch_atom_feed_uses_correct_url() -> None:
     target_url = (
-        "https://www.sec.gov/cgi-bin/browse-edgar"
-        "?action=getcurrent&type=8-K&output=atom&count=100"
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&output=atom&count=100"
     )
     with respx.mock(assert_all_called=True) as mock:
         mock.get(target_url).mock(return_value=httpx.Response(200, text=_SAMPLE_ATOM))

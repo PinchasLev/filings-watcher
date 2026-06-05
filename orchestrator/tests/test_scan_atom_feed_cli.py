@@ -40,8 +40,7 @@ _FILING_BODY_HTML = """<html><body>
 """
 
 _ATOM_URL = (
-    "https://www.sec.gov/cgi-bin/browse-edgar"
-    "?action=getcurrent&type=8-K&output=atom&count=100"
+    "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&output=atom&count=100"
 )
 
 

@@ -90,7 +90,7 @@ def test_scan_daily_index_classifies_new_8k_and_advances_cursor(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(
-        "filings_orchestrator.cli.scan_daily_index.classify_filing",
+        "filings_orchestrator.cli._pipeline.classify_filing",
         _stub_classify_filing,
     )
     # Pin the "today_et" the CLI sees so the test is date-stable.
@@ -174,7 +174,7 @@ def test_scan_daily_index_reduce_failure_is_non_fatal(
     persisted and reduce is a derived, replayable stage (ADR 0028). The tick
     completes, the cursor advances, and the failure is logged + counted."""
     monkeypatch.setattr(
-        "filings_orchestrator.cli.scan_daily_index.classify_filing",
+        "filings_orchestrator.cli._pipeline.classify_filing",
         _stub_classify_filing,
     )
 
@@ -183,7 +183,7 @@ def test_scan_daily_index_reduce_failure_is_non_fatal(
 
     # Patched at the tick's module boundary; ValueError is non-retryable, so
     # with_retries propagates it straight into _reduce_one's handler.
-    monkeypatch.setattr("filings_orchestrator.cli.scan_daily_index.reduce_filing", _boom)
+    monkeypatch.setattr("filings_orchestrator.cli._pipeline.reduce_filing", _boom)
 
     fixed_now = datetime(2026, 5, 15, 16, 0, 0, tzinfo=UTC)
 
@@ -241,7 +241,7 @@ def test_scan_daily_index_idempotent_on_already_seen_filing(
     """Re-running with the same filing already in the DB classifies nothing
     new (dedup via accession-number PK, the cursor is a query narrower)."""
     monkeypatch.setattr(
-        "filings_orchestrator.cli.scan_daily_index.classify_filing",
+        "filings_orchestrator.cli._pipeline.classify_filing",
         _stub_classify_filing,
     )
     fixed_now = datetime(2026, 5, 15, 16, 0, 0, tzinfo=UTC)
@@ -288,7 +288,7 @@ def test_scan_daily_index_skips_missing_daily_index(
     days, future dates, today before ~10 PM ET). 404 is the other
     not-present idiom. Both must skip + continue, not fail the tick."""
     monkeypatch.setattr(
-        "filings_orchestrator.cli.scan_daily_index.classify_filing",
+        "filings_orchestrator.cli._pipeline.classify_filing",
         _stub_classify_filing,
     )
     fixed_now = datetime(2026, 5, 19, 20, 0, 0, tzinfo=UTC)
@@ -396,7 +396,7 @@ def test_scan_daily_index_emits_cost_warning_between_warn_and_cap(
     """Between warn and cap, the tick proceeds but emits a structured
     cost_warning event so the operator sees the approach to the cap."""
     monkeypatch.setattr(
-        "filings_orchestrator.cli.scan_daily_index.classify_filing",
+        "filings_orchestrator.cli._pipeline.classify_filing",
         _stub_classify_filing,
     )
     monkeypatch.setenv("ANTHROPIC_DAILY_COST_CAP_USD", "1.00")

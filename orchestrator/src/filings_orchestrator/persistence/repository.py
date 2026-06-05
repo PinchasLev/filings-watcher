@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from sqlalchemy import Connection, Engine, text
+from sqlalchemy import Connection, Engine, bindparam, text
 
 from filings_orchestrator.classify import (
     Classification,
@@ -578,6 +578,24 @@ def load_latest_filing_classification(
         classifier_version=classifier_version,
         taxonomy_version=taxonomy_version,
     )
+
+
+def select_seen_accessions(engine: Engine, accessions: list[str]) -> set[str]:
+    """Return the subset of `accessions` already present in the filings table.
+
+    Both ingest paths (daily-index and Atom feed) use this to dedup candidate
+    entries before doing any LLM-bound work. Correctness relies on the
+    accession_number PK, not on any per-path cursor. One indexed lookup per
+    tick scales to peak-day candidate volume comfortably.
+    """
+    if not accessions:
+        return set()
+    sql = text("SELECT accession_number FROM filings WHERE accession_number IN :accs").bindparams(
+        bindparam("accs", expanding=True)
+    )
+    with engine.begin() as conn:
+        rows = conn.execute(sql, {"accs": accessions}).fetchall()
+    return {row[0] for row in rows}
 
 
 def daily_cost_usd(engine: Engine, day_utc: str) -> float:

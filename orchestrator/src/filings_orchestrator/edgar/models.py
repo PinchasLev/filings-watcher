@@ -42,3 +42,8 @@ class Filing(BaseModel):
     primary_document: str
     primary_document_url: str
     items: list[FilingItem] = Field(default_factory=list)
+    # Sub-day filing timestamp from EDGAR, ISO 8601 with offset (e.g.
+    # "2026-06-05T09:05:09-04:00"). Atom-feed ingest populates this from
+    # the entry's `<updated>` field; the daily-index path leaves it None
+    # because the master.idx file is date-only. See migration 006.
+    submitted_at: str | None = None

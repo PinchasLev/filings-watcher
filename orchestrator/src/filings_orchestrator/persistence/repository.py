@@ -31,7 +31,14 @@ from filings_orchestrator.edgar.models import Filing
 
 
 def upsert_filing(engine: Engine, filing: Filing) -> None:
-    """Insert or update a filing's metadata. Body fields are left untouched."""
+    """Insert or update a filing's metadata. Body fields are left untouched.
+
+    `submitted_at` (the bitemporal valid-time half) is preserved across
+    conflict updates: a re-ingest whose submitted_at is NULL does not
+    wipe a previously-recorded non-NULL value. This protects the
+    atom-path-set timestamp from being cleared by a later daily-index
+    re-fetch of the same accession.
+    """
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -39,12 +46,14 @@ def upsert_filing(engine: Engine, filing: Filing) -> None:
                 INSERT INTO filings (
                     accession_number, cik, ticker, company_name, form,
                     filing_date, report_date, primary_document,
-                    primary_document_url, items_json, fetched_at
+                    primary_document_url, items_json, fetched_at,
+                    submitted_at
                 )
                 VALUES (
                     :accession, :cik, :ticker, :company, :form,
                     :filing_date, :report_date, :primary_doc,
-                    :primary_url, :items_json, :fetched_at
+                    :primary_url, :items_json, :fetched_at,
+                    :submitted_at
                 )
                 ON CONFLICT (accession_number) DO UPDATE SET
                     cik = excluded.cik,
@@ -56,7 +65,8 @@ def upsert_filing(engine: Engine, filing: Filing) -> None:
                     primary_document = excluded.primary_document,
                     primary_document_url = excluded.primary_document_url,
                     items_json = excluded.items_json,
-                    fetched_at = excluded.fetched_at
+                    fetched_at = excluded.fetched_at,
+                    submitted_at = COALESCE(excluded.submitted_at, filings.submitted_at)
                 """
             ),
             {
@@ -71,6 +81,7 @@ def upsert_filing(engine: Engine, filing: Filing) -> None:
                 "primary_url": filing.primary_document_url,
                 "items_json": json.dumps([item.model_dump() for item in filing.items]),
                 "fetched_at": datetime.now(UTC).isoformat(),
+                "submitted_at": filing.submitted_at,
             },
         )
 

@@ -42,6 +42,7 @@ def process_one(
     company_name: str,
     form: str,
     filed_at: str,
+    submitted_at: str | None = None,
 ) -> int:
     """Resolve → fetch body → classify (with retry) → persist → reduce.
 
@@ -50,6 +51,11 @@ def process_one(
     the tick; a reduce failure does not raise (see `_reduce_one`), so the
     count is surfaced rather than propagated. The classification — the
     irreplaceable map output — is persisted before reduce runs.
+
+    `submitted_at` is the precise EDGAR-side filing timestamp (ISO 8601
+    with offset). The Atom ingest path passes this from the feed's
+    `<updated>` element; the daily-index path passes None because the
+    master.idx file is date-only. Migration 006 stores it on `filings`.
     """
     emit(
         "filing_fetched",
@@ -72,8 +78,13 @@ def process_one(
     # private subsidiaries, trusts, or fresh installs before scan-tickers
     # has been run. See ADR 0025.
     ticker = lookup_ticker_by_cik(engine, filing.cik)
+    update_fields: dict[str, object] = {}
     if ticker is not None:
-        filing = filing.model_copy(update={"ticker": ticker})
+        update_fields["ticker"] = ticker
+    if submitted_at is not None:
+        update_fields["submitted_at"] = submitted_at
+    if update_fields:
+        filing = filing.model_copy(update=update_fields)
     document = fetch_filing_document(filing, client)
     upsert_filing_document(engine, document)
 

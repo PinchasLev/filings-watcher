@@ -134,6 +134,7 @@ def main() -> None:
                         company_name=entry.company_name,
                         form=entry.form,
                         filed_at=entry.updated_at,
+                        submitted_at=entry.updated_at,
                     )
                     new_filings_count += 1
                 except Exception as exc:

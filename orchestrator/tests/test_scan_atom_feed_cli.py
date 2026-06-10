@@ -141,9 +141,15 @@ def test_scan_atom_feed_classifies_new_8k_without_advancing_cursor(
 
     # The 8-K is persisted exactly once.
     with engine.begin() as conn:
-        rows = conn.execute(text("SELECT accession_number, form FROM filings")).fetchall()
+        rows = conn.execute(
+            text("SELECT accession_number, form, submitted_at FROM filings")
+        ).fetchall()
     assert len(rows) == 1
     assert rows[0][0] == "0001171843-26-003455"
+    # The atom path populates submitted_at from the entry's `<updated>` field
+    # (migration 006 / slice 3a). The fixture's entry timestamp is preserved
+    # verbatim so the live page can sort by precise EDGAR-side filing time.
+    assert rows[0][2] == "2026-05-15T15:31:22-04:00"
 
 
 def test_scan_atom_feed_dedups_against_already_seen_accession(

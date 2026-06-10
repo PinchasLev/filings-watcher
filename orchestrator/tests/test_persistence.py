@@ -125,6 +125,7 @@ def test_apply_migrations_creates_tables_and_records_version() -> None:
         "003_cik_tickers",
         "004_runs_and_events",
         "005_llm_calls",
+        "006_submitted_at",
     ]
 
     with engine.begin() as conn:
@@ -178,6 +179,39 @@ def test_upsert_filing_inserts_then_updates() -> None:
         ).fetchone()
     assert row is not None
     assert row[0] == "Apple Inc. (renamed)"
+
+
+def test_upsert_filing_persists_submitted_at_and_preserves_it_on_null_re_ingest() -> None:
+    """Bitemporal correctness: a non-null `submitted_at` (atom-path-set) must
+    not be wiped by a subsequent re-ingest whose `submitted_at` is None
+    (e.g., a daily-index re-fetch of the same accession). The COALESCE in
+    upsert_filing protects the earlier, more precise value."""
+    engine = _fresh_db()
+
+    # First write: atom-path-style, submitted_at populated.
+    atom_filing_dict = _filing().model_dump()
+    atom_filing_dict["submitted_at"] = "2026-06-05T14:35:39-04:00"
+    upsert_filing(engine, Filing(**atom_filing_dict))
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT submitted_at FROM filings WHERE accession_number = :a"),
+            {"a": "0000320193-26-000045"},
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "2026-06-05T14:35:39-04:00"
+
+    # Second write: daily-index-style, submitted_at None. COALESCE preserves.
+    daily_filing = _filing()  # default submitted_at is None
+    upsert_filing(engine, daily_filing)
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT submitted_at FROM filings WHERE accession_number = :a"),
+            {"a": "0000320193-26-000045"},
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "2026-06-05T14:35:39-04:00"
 
 
 def test_upsert_filing_document_writes_body_and_sections() -> None:

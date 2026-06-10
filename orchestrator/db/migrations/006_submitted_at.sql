@@ -1,0 +1,34 @@
+-- 006_submitted_at
+--
+-- Adds the precise EDGAR-side filing time to `filings` as a new column.
+-- This is the event/valid-time half of a bitemporal pair; `fetched_at`
+-- (existing) is the system/transaction-time half. Together they let
+-- the read side distinguish "when EDGAR accepted the filing" from
+-- "when we recorded the row" — the two diverge by minutes on the
+-- Atom-feed ingest path and by hours on the daily-index path.
+--
+-- Population by ingest source (slice 3a):
+--   - Atom feed: populated from each entry's `<updated>` element
+--     (ISO 8601 with timezone offset, e.g. "2026-06-05T09:05:09-04:00").
+--   - Daily-index: NOT populated — the master.idx file is date-only,
+--     so we genuinely don't know the sub-day submission time. Leaving
+--     this NULL is the honest answer; synthesizing midnight would
+--     encode false knowledge and break bitemporality.
+--
+-- A future backfill against EDGAR's per-accession filing-index HTML
+-- (which carries an "Acceptance Datetime" field on every filing
+-- regardless of ingest path) can populate the daily-index rows
+-- retroactively. Tracked in the `bitemporal-followups` memory note.
+--
+-- Type: TEXT because SQLite has no native TIMESTAMP. The stored format
+-- matches the Atom feed verbatim — ISO 8601 with timezone offset — so
+-- string comparison sorts chronologically and round-tripping is
+-- lossless. Readers parse with `datetime.fromisoformat`.
+--
+-- No index in this migration. The live page reads the trailing window
+-- (`submitted_at >= datetime('now', '-1 hour')`) over a small recent
+-- subset; a full scan over that range is cheap until corpus growth or
+-- write volume justifies indexing. Adding the index later is a
+-- separate migration.
+
+ALTER TABLE filings ADD COLUMN submitted_at TEXT;

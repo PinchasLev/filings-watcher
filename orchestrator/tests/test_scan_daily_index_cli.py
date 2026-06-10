@@ -155,9 +155,16 @@ def test_scan_daily_index_classifies_new_8k_and_advances_cursor(
 
     # The 13F-HR was not persisted.
     with engine.begin() as conn:
-        rows = conn.execute(text("SELECT accession_number, form FROM filings")).fetchall()
+        rows = conn.execute(
+            text("SELECT accession_number, form, submitted_at FROM filings")
+        ).fetchall()
     assert len(rows) == 1
     assert rows[0][0] == "0001171843-26-003455"
+    # The daily-index path leaves submitted_at NULL — the master.idx file is
+    # date-only, so we don't know the sub-day filing time. Migration 006
+    # documents this as the honest answer; backfill from EDGAR's filing-index
+    # acceptance datetime is queued for later.
+    assert rows[0][2] is None
 
     # An events row exists under a succeeded reduce run for the classified filing.
     with engine.begin() as conn:

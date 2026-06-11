@@ -24,10 +24,48 @@
     border-color: var(--pico-primary);
   }
   .filter-nav a .count { opacity: 0.7; margin-left: 0.25rem; }
-  .page-nav { display: flex; gap: 1.25rem; margin: 0.75rem 0 0.25rem; font-size: 0.95rem; }
-  .page-nav a { text-decoration: none; color: var(--pico-muted-color); }
-  .page-nav a.active { color: var(--pico-color); font-weight: 600; }
-  .page-nav a:hover { color: var(--pico-primary); }
+  /* Section tabs. Adjacent and visually grouped so they read as
+     mutually-exclusive choices, with a colored underline on the active
+     tab that visually connects to the content below — the standard
+     "tab" pattern from desktop apps. */
+  .page-nav {
+    display: inline-flex;
+    gap: 0;
+    margin: 1rem 0 1.25rem;
+    border-bottom: 1px solid var(--pico-muted-border-color);
+    font-size: 0.95rem;
+  }
+  .page-nav a {
+    padding: 0.45rem 1rem;
+    text-decoration: none;
+    color: var(--pico-muted-color);
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px; /* overlap the container's border so the active
+                            tab's underline sits flush with the divider */
+    transition: color 0.12s, border-color 0.12s;
+  }
+  .page-nav a:hover { color: var(--pico-color); }
+  .page-nav a.active {
+    color: var(--pico-primary);
+    border-bottom-color: var(--pico-primary);
+    font-weight: 600;
+  }
+  /* Live-tape freshness banner (only rendered on /live by live.js). The
+     element is created at runtime by /static/live.js, so the styles
+     live in the layout rather than per-page. */
+  .live-banner {
+    position: sticky; top: 0; z-index: 10;
+    margin: 0 calc(-1 * var(--pico-spacing));
+    padding: 0.6rem var(--pico-spacing);
+    background: var(--pico-color-amber-100);
+    border-bottom: 1px solid var(--pico-color-amber-300);
+    text-align: center; font-size: 0.9rem;
+  }
+  .live-banner-link {
+    color: var(--pico-color-amber-800);
+    text-decoration: underline; font-weight: 600;
+  }
+  .live-banner-link:hover { color: var(--pico-color-amber-900); }
   .intro {
     font-size: 0.95rem;
     color: var(--pico-muted-color);

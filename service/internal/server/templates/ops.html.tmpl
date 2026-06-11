@@ -5,6 +5,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{{- /* Auto-refresh every 60 seconds. /ops is a status board you glance at,
+       not a feed you read — losing scroll position on reload costs nothing,
+       and the data ticks at ~30s but isn't critical at sub-minute
+       granularity. No JS needed for this, so /ops stays simpler than /live. */}}
+<meta http-equiv="refresh" content="60">
 <title>Filings Radar — operator dashboard</title>
 <style>
   :root {

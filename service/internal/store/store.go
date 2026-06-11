@@ -135,6 +135,11 @@ type Store interface {
 	MaterialEvents(ctx context.Context, eventType string, limit, offset int) ([]Event, int, error)
 	CompanyEvents(ctx context.Context, cik string, limit, offset int) (*Company, []Event, int, error)
 	LiveEvents(ctx context.Context, since time.Time, limit, offset int) ([]Event, int, error)
+	// CountLiveEventsSince is the cheap "is there new material atom-ingest
+	// since the operator's page render?" count. Backs the /live page's
+	// polled freshness banner; cheaper than calling LiveEvents because it
+	// returns a single integer instead of materializing rows.
+	CountLiveEventsSince(ctx context.Context, since time.Time) (int, error)
 	MaterialEventTypeCounts(ctx context.Context) ([]EventTypeCount, error)
 	EventsByAccession(ctx context.Context, accession string) ([]EventWithItems, error)
 	// Operator dashboard reads. Aggregations against the existing tables;
@@ -769,6 +774,30 @@ func (s *store) CompanyEvents(ctx context.Context, cik string, limit, offset int
 // offset differences (EDT vs EST) don't produce off-by-an-hour misorderings
 // at the DST boundary. At v0 corpus size the function-on-column cost is
 // negligible; an index on submitted_at is a future optimization.
+// CountLiveEventsSince counts the latest-run material atom-ingested
+// events whose `submitted_at` is strictly after `since`. The strict ">"
+// avoids re-counting the boundary event that was the most recent at
+// page-render time. Filter mirrors LiveEvents: is_material=1,
+// submitted_at IS NOT NULL (atom-feed-only).
+func (s *store) CountLiveEventsSince(ctx context.Context, since time.Time) (int, error) {
+	sinceUTC := since.UTC().Format(time.RFC3339Nano)
+	const q = latestRunEventsCTE + `
+		SELECT COUNT(*)
+		FROM events e
+		JOIN latest_run lr
+			ON lr.accession_number = e.accession_number AND lr.run_id = e.run_id
+		JOIN filings f ON f.accession_number = e.accession_number
+		WHERE e.is_material = 1
+		  AND f.submitted_at IS NOT NULL
+		  AND datetime(f.submitted_at) > datetime(?)
+	`
+	var n int
+	if err := s.db.QueryRowContext(ctx, q, sinceUTC).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count live events since: %w", err)
+	}
+	return n, nil
+}
+
 func (s *store) LiveEvents(ctx context.Context, since time.Time, limit, offset int) ([]Event, int, error) {
 	sinceUTC := since.UTC().Format(time.RFC3339Nano)
 	const baseQuery = latestRunEventsCTE + `

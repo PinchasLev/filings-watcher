@@ -28,6 +28,22 @@
   .page-nav a { text-decoration: none; color: var(--pico-muted-color); }
   .page-nav a.active { color: var(--pico-color); font-weight: 600; }
   .page-nav a:hover { color: var(--pico-primary); }
+  /* Live-tape freshness banner (only rendered on /live by live.js). The
+     element is created at runtime by /static/live.js, so the styles
+     live in the layout rather than per-page. */
+  .live-banner {
+    position: sticky; top: 0; z-index: 10;
+    margin: 0 calc(-1 * var(--pico-spacing));
+    padding: 0.6rem var(--pico-spacing);
+    background: var(--pico-color-amber-100);
+    border-bottom: 1px solid var(--pico-color-amber-300);
+    text-align: center; font-size: 0.9rem;
+  }
+  .live-banner-link {
+    color: var(--pico-color-amber-800);
+    text-decoration: underline; font-weight: 600;
+  }
+  .live-banner-link:hover { color: var(--pico-color-amber-900); }
   .intro {
     font-size: 0.95rem;
     color: var(--pico-muted-color);

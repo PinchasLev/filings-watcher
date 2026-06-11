@@ -43,6 +43,7 @@ type livePageData struct {
 	WindowHours   int
 	WindowOptions []int
 	SinceUTC      string
+	RenderedAt    string // RFC3339, page-render time. Used as the freshness-poll baseline.
 	Events        []store.Event
 	FilteredTotal int
 	RangeStart    int
@@ -55,7 +56,8 @@ func handleLive(s storer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		hours := parseHours(r.URL.Query().Get("hours"))
 		offset := parseOffset(r.URL.Query().Get("offset"))
-		since := time.Now().Add(-time.Duration(hours) * time.Hour)
+		now := time.Now()
+		since := now.Add(-time.Duration(hours) * time.Hour)
 
 		events, filteredTotal, err := s.LiveEvents(r.Context(), since, livePageLimit, offset)
 		if err != nil {
@@ -69,6 +71,7 @@ func handleLive(s storer) http.HandlerFunc {
 			WindowHours:   hours,
 			WindowOptions: liveWindowOptions,
 			SinceUTC:      since.UTC().Format(time.RFC3339),
+			RenderedAt:    now.UTC().Format(time.RFC3339),
 			Events:        events,
 			FilteredTotal: filteredTotal,
 			RangeStart:    pageRangeStart(offset, len(events)),

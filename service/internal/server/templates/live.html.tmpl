@@ -52,4 +52,7 @@
 {{else}}
   <p>No filings in this window yet. The atom poll runs every 30 seconds; refresh shortly.</p>
 {{end}}
+{{- /* Freshness-poll banner. Reads its baseline from data-since so the
+       page CSP can stay at script-src 'self' (no inline scripts). */}}
+<script src="/static/live.js" data-since="{{.RenderedAt}}" defer></script>
 {{end}}

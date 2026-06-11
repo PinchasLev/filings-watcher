@@ -129,6 +129,63 @@ func TestLiveEvents_OrdersBySubmittedAtDESC(t *testing.T) {
 	}
 }
 
+// TestCountLiveEventsSince_StrictGreaterThan confirms the count uses ">"
+// (strict), not ">=" — the boundary event the page rendered with shouldn't
+// re-trigger the freshness banner on every poll.
+func TestCountLiveEventsSince_StrictGreaterThan(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+	r := insertRun(t, raw, "reduce", "succeeded")
+
+	boundary := "2026-06-11T15:30:00-04:00"
+	after := "2026-06-11T15:31:00-04:00"
+	insertFilingWithSubmittedAt(t, raw, "0040-26-040", "0000000040", "Boundary Co.", &boundary)
+	insertFilingWithSubmittedAt(t, raw, "0041-26-041", "0000000041", "After Co.", &after)
+	insertEvent(t, raw, r, "0040-26-040", "2.02", "earnings_release", "financial", true, 0.95, "boundary")
+	insertEvent(t, raw, r, "0041-26-041", "5.02", "exec_departure", "governance", true, 0.90, "after")
+
+	_ = raw.Close()
+	s := openStore(t, dbPath)
+
+	// "since" equal to the boundary timestamp — the boundary event itself
+	// must NOT count (strict >). Only the after event qualifies.
+	since, _ := time.Parse(time.RFC3339, boundary)
+	n, err := s.CountLiveEventsSince(context.Background(), since)
+	if err != nil {
+		t.Fatalf("CountLiveEventsSince: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("n = %d, want 1 (boundary event excluded, after event included)", n)
+	}
+}
+
+// TestCountLiveEventsSince_ExcludesNullSubmittedAt mirrors LiveEvents:
+// daily-index reconciled rows lack sub-day timestamps and don't
+// belong on the "right now" surface.
+func TestCountLiveEventsSince_ExcludesNullSubmittedAt(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+	r := insertRun(t, raw, "reduce", "succeeded")
+
+	// Seeded filing has NULL submitted_at. Add a row's worth of events.
+	insertEvent(t, raw, r, "0001-26-001", "2.02", "earnings_release", "financial", true, 0.95, "daily-index style")
+
+	// Plus one atom-style row.
+	after := "2026-06-11T15:31:00-04:00"
+	insertFilingWithSubmittedAt(t, raw, "0050-26-050", "0000000050", "Atom Co.", &after)
+	insertEvent(t, raw, r, "0050-26-050", "5.02", "exec_departure", "governance", true, 0.90, "atom-style")
+
+	_ = raw.Close()
+	s := openStore(t, dbPath)
+
+	since := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	n, err := s.CountLiveEventsSince(context.Background(), since)
+	if err != nil {
+		t.Fatalf("CountLiveEventsSince: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("n = %d, want 1 (NULL submitted_at excluded)", n)
+	}
+}
+
 // TestLiveEvents_FiltersNonMaterial confirms the same materiality gate as
 // the home page — non-material events stay off the live tape so the surface
 // stays consistent across views.

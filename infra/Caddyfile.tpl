@@ -20,7 +20,7 @@ filingsradar.com {
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Permissions-Policy "geolocation=(), microphone=(), camera=()"
-		Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'none'; img-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';"
+		Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';"
 		# Disable browser caching for the apex. The product is read-mostly
 		# with sub-minute freshness (ADR 0029); without an explicit
 		# Cache-Control header, browsers apply heuristic caching and

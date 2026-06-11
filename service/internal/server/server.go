@@ -31,6 +31,10 @@ type storer interface {
 	LiveEvents(ctx context.Context, since time.Time, limit, offset int) ([]store.Event, int, error)
 	MaterialEventTypeCounts(ctx context.Context) ([]store.EventTypeCount, error)
 	EventsByAccession(ctx context.Context, accession string) ([]store.EventWithItems, error)
+	// Operator dashboard at /ops/. Tailnet-only via Caddy's public 404
+	// on /ops/* (ADR 0024). Cost trajectory and ingest freshness.
+	TodaySpend(ctx context.Context) (store.SpendSnapshot, error)
+	AtomSnapshotFreshness(ctx context.Context) (*string, error)
 }
 
 // New returns an http.Handler with all routes registered.
@@ -41,6 +45,7 @@ func New(s storer) http.Handler {
 	mux.HandleFunc("GET /filings/{accession}", handleFilingDetail(s))
 	mux.HandleFunc("GET /companies/{cik}", handleCompany(s))
 	mux.HandleFunc("GET /live", handleLive(s))
+	mux.HandleFunc("GET /ops/", handleOps(s))
 	mux.HandleFunc("GET /", handleHome(s))
 	return mux
 }

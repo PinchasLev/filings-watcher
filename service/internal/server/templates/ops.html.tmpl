@@ -1,0 +1,51 @@
+{{- /* Operator dashboard. Tailnet-only — Caddy 404s /ops/* for the public. */ -}}
+{{define "title"}}Filings Radar — operator dashboard{{end}}
+{{define "content"}}
+<style>
+  .ops-grid { display: grid; gap: 1.5rem; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); margin-top: 1.5rem; }
+  .ops-panel { padding: 1.25rem; border: 1px solid var(--pico-muted-border-color); border-radius: 0.5rem; background: var(--pico-card-background-color); }
+  .ops-panel h2 { font-size: 1rem; margin-bottom: 0.75rem; color: var(--pico-muted-color); text-transform: uppercase; letter-spacing: 0.05em; }
+  .ops-stat { font-size: 2rem; font-weight: 600; line-height: 1.1; margin: 0; }
+  .ops-stat .unit { font-size: 1rem; color: var(--pico-muted-color); font-weight: 400; margin-left: 0.25rem; }
+  .ops-sub { color: var(--pico-muted-color); font-size: 0.9rem; margin-top: 0.5rem; }
+  .ops-bar { height: 0.5rem; background: var(--pico-muted-border-color); border-radius: 999px; overflow: hidden; margin-top: 0.75rem; }
+  .ops-bar > span { display: block; height: 100%; background: var(--pico-primary); transition: width 0.2s; }
+  .ops-bar.warn > span { background: var(--pico-color-amber-500); }
+  .ops-bar.alarm > span { background: var(--pico-color-red-500); }
+  .ops-meta { margin-top: 0.5rem; font-size: 0.85rem; color: var(--pico-muted-color); }
+</style>
+
+<p class="intro">
+  Operator-facing snapshot. Page is rendered server-side without auto-refresh — reload to update.
+</p>
+
+<section class="ops-grid">
+  <article class="ops-panel">
+    <h2>Today's Anthropic spend</h2>
+    <p class="ops-stat">${{printf "%.2f" .SpendTotalUSD}} <span class="unit">of ${{printf "%.2f" .SpendCapUSD}}</span></p>
+    <p class="ops-sub">{{.SpendCallCount}} LLM call{{if ne .SpendCallCount 1}}s{{end}} today (UTC).</p>
+    {{$pct := .SpendPercentOfCap}}
+    {{if gt $pct 100.0}}{{$pct = 100.0}}{{end}}
+    <div class="ops-bar{{if gt .SpendPercentOfCap 80.0}} alarm{{else if gt .SpendPercentOfCap 60.0}} warn{{end}}">
+      <span style="width: {{printf "%.1f" $pct}}%"></span>
+    </div>
+    <p class="ops-meta">{{printf "%.1f" .SpendPercentOfCap}}% of cap. The pre-tick check refuses new work at 100%.</p>
+  </article>
+
+  <article class="ops-panel">
+    <h2>Atom-ingest freshness</h2>
+    {{if .FreshnessTimestamp}}
+      <p class="ops-stat">{{relTime .FreshnessTimestamp}}</p>
+      <p class="ops-sub">Most recent EDGAR submission timestamp recorded.</p>
+      <p class="ops-meta">{{ derefStr .FreshnessTimestamp }}</p>
+    {{else}}
+      <p class="ops-stat">no data</p>
+      <p class="ops-sub">No filings carry a precise submission timestamp yet. The atom path populates this on each new ingest.</p>
+    {{end}}
+  </article>
+</section>
+
+<footer style="margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--pico-muted-border-color); font-size: 0.8rem; color: var(--pico-muted-color);">
+  Rendered at {{.RenderedAt}}.
+</footer>
+{{end}}

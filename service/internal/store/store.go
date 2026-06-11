@@ -137,7 +137,20 @@ type Store interface {
 	LiveEvents(ctx context.Context, since time.Time, limit, offset int) ([]Event, int, error)
 	MaterialEventTypeCounts(ctx context.Context) ([]EventTypeCount, error)
 	EventsByAccession(ctx context.Context, accession string) ([]EventWithItems, error)
+	// Operator dashboard reads. Aggregations against the existing tables;
+	// no new schema. Surface the ingest cost trajectory and freshness so
+	// stalled exports or runaway spend are visible without journal-spelunking.
+	TodaySpend(ctx context.Context) (SpendSnapshot, error)
+	AtomSnapshotFreshness(ctx context.Context) (*string, error)
 	Close() error
+}
+
+// SpendSnapshot summarizes today's Anthropic spend as recorded by the
+// orchestrator. The day boundary is UTC, matching the pre-tick cap check
+// in the orchestrator so the operator's dashboard agrees with the gate.
+type SpendSnapshot struct {
+	TotalUSD  float64 `json:"total_usd"`
+	CallCount int     `json:"call_count"`
 }
 
 // store is the SQLite-backed implementation. Unexported by design.

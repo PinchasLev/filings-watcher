@@ -35,9 +35,13 @@ const (
 	trailingBudgetHours   = 24 * 30 // 30 days
 	trailingBehaviorHours = 24
 	trailingChartDays     = 30
+	// SVG viewBox dims. The Y-axis labels live in HTML next to the SVG
+	// (flexbox-aligned) so the SVG contains only bars and gridlines.
+	// Both stretch fine with preserveAspectRatio="none"; only text needed
+	// to escape the SVG to avoid the non-uniform scaling that hurts
+	// label legibility on wide panels.
 	chartViewBoxWidth     = 600
 	chartViewBoxHeight    = 120
-	chartLeftPadPx        = 56 // room for Y-axis labels (e.g., "$0.0688")
 	chartBarGapPx         = 2.0
 	chartFloorBarHeightPx = 1.5 // visible "no data" bar so the axis reads as N bars
 )
@@ -64,12 +68,19 @@ type opsPageData struct {
 	HourlyChart chartView
 	DailyChart  chartView
 
-	// SVG viewBox + label-positioning are shared across both charts
-	// (the panels are visually consistent).
+	// SVG viewBox shared across both charts so the panels are visually
+	// consistent. Y-axis labels are rendered in HTML, not SVG, so no
+	// label-positioning constants leak into the template data.
 	ChartViewBoxWidth  int
 	ChartViewBoxHeight int
-	ChartLeftPad       int
-	ChartLabelX        int // X coordinate for right-aligned Y-axis label text (left pad minus a small gap)
+
+	// SpendDataSince is set when per-call cost capture started inside
+	// the daily chart's 30-day window — without the caveat, days
+	// predating instrumentation look like genuine zero-spend days.
+	// Empty when the instrumentation predates the window (no caveat
+	// needed) or when there's no data at all (the chart is honestly all
+	// zeros).
+	SpendDataSince string
 
 	// Surface page staleness while there's no auto-refresh.
 	RenderedAt string
@@ -136,6 +147,11 @@ func handleOps(s storer) http.HandlerFunc {
 			http.Error(w, "query failed", http.StatusInternalServerError)
 			return
 		}
+		spendStart, err := s.SpendDataStartDate(r.Context())
+		if err != nil {
+			http.Error(w, "query failed", http.StatusInternalServerError)
+			return
+		}
 		freshness, err := s.AtomSnapshotFreshness(r.Context())
 		if err != nil {
 			http.Error(w, "query failed", http.StatusInternalServerError)
@@ -152,8 +168,7 @@ func handleOps(s storer) http.HandlerFunc {
 			DailyChart:          buildChartView(dailySources(dailyBuckets)),
 			ChartViewBoxWidth:   chartViewBoxWidth,
 			ChartViewBoxHeight:  chartViewBoxHeight,
-			ChartLeftPad:        chartLeftPadPx,
-			ChartLabelX:         chartLeftPadPx - 4,
+			SpendDataSince:      spendDataCaveat(spendStart, trailingChartDays),
 			FreshnessTimestamp:  freshness,
 			RenderedAt:          time.Now().UTC().Format(time.RFC3339),
 		}); err != nil {
@@ -199,6 +214,25 @@ func formatDayLabel(iso string) string {
 	return t.UTC().Format("2006-01-02")
 }
 
+// spendDataCaveat returns the start-date string when per-call cost
+// instrumentation began inside the chart window, otherwise "". The
+// template only renders the note when this string is non-empty, so the
+// dashboard reads cleanly once the historical caveat no longer applies.
+func spendDataCaveat(startDate string, windowDays int) string {
+	if startDate == "" {
+		return ""
+	}
+	start, err := time.Parse("2006-01-02", startDate)
+	if err != nil {
+		return ""
+	}
+	windowBegin := time.Now().UTC().Truncate(24 * time.Hour).Add(-time.Duration(windowDays-1) * 24 * time.Hour)
+	if !start.After(windowBegin) {
+		return ""
+	}
+	return startDate
+}
+
 // buildChartView packages the bars + Y-axis ticks for one chart panel.
 // Single entry point so the handler doesn't carry the two-call rhythm.
 func buildChartView(src []chartSource) chartView {
@@ -211,14 +245,14 @@ func buildChartView(src []chartSource) chartView {
 // existing printf "%.2f" pattern, matching the rest of the site.)
 
 // buildChartBars maps an ordered list of chart sources (label + value)
-// to SVG-coordinate bar geometry plus the peak value used for the Y-axis
-// labels. Bars are normalized so the largest source fills the chart
+// to SVG-coordinate bar geometry plus the peak value used to label the
+// Y-axis. Bars are normalized so the largest source fills the chart
 // height. If every source is zero, every bar gets the small "floor"
 // height so the x-axis still reads as N evenly-spaced markers rather
 // than nothing.
 //
-// Bars start at X = chartLeftPadPx to leave room on the left for the
-// Y-axis labels.
+// Bars span the full viewBox width — the Y-axis labels live in HTML
+// next to the SVG, not inside it.
 func buildChartBars(src []chartSource) ([]chartBar, float64) {
 	n := len(src)
 	if n == 0 {
@@ -232,8 +266,7 @@ func buildChartBars(src []chartSource) ([]chartBar, float64) {
 		}
 	}
 
-	plotWidth := float64(chartViewBoxWidth - chartLeftPadPx)
-	barWidth := (plotWidth - chartBarGapPx*float64(n-1)) / float64(n)
+	barWidth := (float64(chartViewBoxWidth) - chartBarGapPx*float64(n-1)) / float64(n)
 	bars := make([]chartBar, 0, n)
 	for i, s := range src {
 		var h float64
@@ -244,7 +277,7 @@ func buildChartBars(src []chartSource) ([]chartBar, float64) {
 			h = chartFloorBarHeightPx
 		}
 		bars = append(bars, chartBar{
-			X:           float64(chartLeftPadPx) + float64(i)*(barWidth+chartBarGapPx),
+			X:           float64(i) * (barWidth + chartBarGapPx),
 			Y:           float64(chartViewBoxHeight) - h,
 			Width:       barWidth,
 			Height:      h,

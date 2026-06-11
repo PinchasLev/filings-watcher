@@ -62,6 +62,9 @@ type fakeStore struct {
 	dailyBucketsResult []store.DailyBucket
 	dailyBucketsErr    error
 
+	spendStartResult string
+	spendStartErr    error
+
 	freshnessResult *string
 	freshnessErr    error
 
@@ -165,6 +168,10 @@ func (f *fakeStore) HourlySpendBuckets(_ context.Context, hours int) ([]store.Ho
 func (f *fakeStore) DailySpendBuckets(_ context.Context, days int) ([]store.DailyBucket, error) {
 	f.dailyBucketsCalledWith = append(f.dailyBucketsCalledWith, days)
 	return f.dailyBucketsResult, f.dailyBucketsErr
+}
+
+func (f *fakeStore) SpendDataStartDate(_ context.Context) (string, error) {
+	return f.spendStartResult, f.spendStartErr
 }
 
 func (f *fakeStore) AtomSnapshotFreshness(_ context.Context) (*string, error) {

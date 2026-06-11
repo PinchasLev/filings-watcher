@@ -131,6 +131,23 @@ func (s *store) DailySpendBuckets(ctx context.Context, days int) ([]DailyBucket,
 	return out, nil
 }
 
+// SpendDataStartDate returns the UTC date of the earliest llm_calls row,
+// formatted "YYYY-MM-DD". Returns "" when the table is empty. Used by
+// the dashboard to caveat the 30-day chart when instrumentation started
+// inside the window — otherwise days predating cost-capture would look
+// like genuine zero-spend days rather than no-data days.
+func (s *store) SpendDataStartDate(ctx context.Context) (string, error) {
+	const q = `SELECT substr(MIN(emitted_at), 1, 10) FROM llm_calls`
+	var raw sql.NullString
+	if err := s.db.QueryRowContext(ctx, q).Scan(&raw); err != nil {
+		return "", fmt.Errorf("spend data start date: %w", err)
+	}
+	if !raw.Valid {
+		return "", nil
+	}
+	return raw.String, nil
+}
+
 // AtomSnapshotFreshness returns the most recent EDGAR-side submission
 // timestamp recorded across the filings table — the high-water mark of
 // what the atom ingest path has captured. The handler renders the gap

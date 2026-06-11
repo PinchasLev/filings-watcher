@@ -149,6 +149,13 @@ type Store interface {
 	TrailingHoursSpend(ctx context.Context, hours int) (SpendSnapshot, error)
 	HourlySpendBuckets(ctx context.Context, hours int) ([]HourlyBucket, error)
 	DailySpendBuckets(ctx context.Context, days int) ([]DailyBucket, error)
+	// SpendDataStartDate is the UTC date of the earliest recorded llm_call
+	// row ("YYYY-MM-DD"), or "" when the table is empty. The dashboard uses
+	// it to caveat the 30-day chart when our per-call instrumentation
+	// started inside the window — without that note, days predating the
+	// instrumentation look like zero-spend days when they're actually
+	// no-data days.
+	SpendDataStartDate(ctx context.Context) (string, error)
 	AtomSnapshotFreshness(ctx context.Context) (*string, error)
 	Close() error
 }

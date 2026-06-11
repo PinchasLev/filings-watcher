@@ -37,6 +37,7 @@ type storer interface {
 	TrailingHoursSpend(ctx context.Context, hours int) (store.SpendSnapshot, error)
 	HourlySpendBuckets(ctx context.Context, hours int) ([]store.HourlyBucket, error)
 	DailySpendBuckets(ctx context.Context, days int) ([]store.DailyBucket, error)
+	SpendDataStartDate(ctx context.Context) (string, error)
 	AtomSnapshotFreshness(ctx context.Context) (*string, error)
 }
 

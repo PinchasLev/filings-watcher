@@ -35,8 +35,10 @@
   .sub { color: var(--muted); font-size: 0.85rem; margin: 0.4rem 0 0; }
   .chart-meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 0.75rem; margin-top: 0.4rem; }
   svg.chart { display: block; width: 100%; height: 7.5rem; margin-top: 0.6rem; }
-  svg.chart rect { fill: var(--primary); fill-opacity: 0.85; }
-  svg.chart rect:hover { fill-opacity: 1; }
+  svg.chart .bar { fill: var(--primary); fill-opacity: 0.85; }
+  svg.chart .bar:hover { fill-opacity: 1; }
+  svg.chart .gridline { stroke: var(--border); stroke-width: 0.5; stroke-dasharray: 2 2; }
+  svg.chart .axis-label { fill: var(--muted); font-size: 9px; font-family: ui-sans-serif, system-ui, sans-serif; }
   footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.75rem; color: var(--muted); }
 </style>
 </head>
@@ -78,14 +80,34 @@
     <article class="panel wide">
       <h2>Hourly spend, last 24 hours</h2>
       <svg class="chart" viewBox="0 0 {{.ChartViewBoxWidth}} {{.ChartViewBoxHeight}}" preserveAspectRatio="none" role="img" aria-label="Hourly spend bar chart, last 24 hours">
-        {{range .ChartBars -}}
-        <rect x="{{printf "%.2f" .X}}" y="{{printf "%.2f" .Y}}" width="{{printf "%.2f" .Width}}" height="{{printf "%.2f" .Height}}"><title>{{.HourStart}} — ${{printf "%.4f" .TotalUSD}}</title></rect>
+        {{range .HourlyChart.YAxisTicks -}}
+        <line class="gridline" x1="{{$.ChartLeftPad}}" x2="{{$.ChartViewBoxWidth}}" y1="{{printf "%.2f" .Y}}" y2="{{printf "%.2f" .Y}}" />
+        <text class="axis-label" x="{{$.ChartLabelX}}" y="{{printf "%.2f" .Y}}" text-anchor="end" dominant-baseline="middle">{{.Label}}</text>
+        {{- end}}
+        {{range .HourlyChart.Bars -}}
+        <rect class="bar" x="{{printf "%.2f" .X}}" y="{{printf "%.2f" .Y}}" width="{{printf "%.2f" .Width}}" height="{{printf "%.2f" .Height}}"><title>{{.BucketLabel}} — ${{printf "%.4f" .TotalUSD}}</title></rect>
         {{- end}}
       </svg>
       <div class="chart-meta">
         <span>24h ago</span>
-        <span>peak ${{printf "%.4f" .ChartPeakUSD}}/h</span>
         <span>now</span>
+      </div>
+    </article>
+
+    <article class="panel wide">
+      <h2>Daily spend, last 30 days</h2>
+      <svg class="chart" viewBox="0 0 {{.ChartViewBoxWidth}} {{.ChartViewBoxHeight}}" preserveAspectRatio="none" role="img" aria-label="Daily spend bar chart, last 30 days">
+        {{range .DailyChart.YAxisTicks -}}
+        <line class="gridline" x1="{{$.ChartLeftPad}}" x2="{{$.ChartViewBoxWidth}}" y1="{{printf "%.2f" .Y}}" y2="{{printf "%.2f" .Y}}" />
+        <text class="axis-label" x="{{$.ChartLabelX}}" y="{{printf "%.2f" .Y}}" text-anchor="end" dominant-baseline="middle">{{.Label}}</text>
+        {{- end}}
+        {{range .DailyChart.Bars -}}
+        <rect class="bar" x="{{printf "%.2f" .X}}" y="{{printf "%.2f" .Y}}" width="{{printf "%.2f" .Width}}" height="{{printf "%.2f" .Height}}"><title>{{.BucketLabel}} — ${{printf "%.4f" .TotalUSD}}</title></rect>
+        {{- end}}
+      </svg>
+      <div class="chart-meta">
+        <span>30 days ago</span>
+        <span>today</span>
       </div>
     </article>
   </section>

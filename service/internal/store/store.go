@@ -148,6 +148,7 @@ type Store interface {
 	// point); the dashboard is a separate question.
 	TrailingHoursSpend(ctx context.Context, hours int) (SpendSnapshot, error)
 	HourlySpendBuckets(ctx context.Context, hours int) ([]HourlyBucket, error)
+	DailySpendBuckets(ctx context.Context, days int) ([]DailyBucket, error)
 	AtomSnapshotFreshness(ctx context.Context) (*string, error)
 	Close() error
 }
@@ -166,6 +167,15 @@ type SpendSnapshot struct {
 type HourlyBucket struct {
 	HourStart string  `json:"hour_start"`
 	TotalUSD  float64 `json:"total_usd"`
+}
+
+// DailyBucket is one bar of the rolling-30-day shape chart. DayStart is
+// the UTC midnight boundary the bucket covers ("2026-06-11T00:00:00Z"
+// covers 2026-06-11 00:00:00 UTC through 23:59:59.999... UTC). Zero-padded
+// like HourlyBucket so the chart's x-axis stays uniform across the window.
+type DailyBucket struct {
+	DayStart string  `json:"day_start"`
+	TotalUSD float64 `json:"total_usd"`
 }
 
 // store is the SQLite-backed implementation. Unexported by design.

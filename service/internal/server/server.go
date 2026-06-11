@@ -32,8 +32,10 @@ type storer interface {
 	MaterialEventTypeCounts(ctx context.Context) ([]store.EventTypeCount, error)
 	EventsByAccession(ctx context.Context, accession string) ([]store.EventWithItems, error)
 	// Operator dashboard at /ops/. Tailnet-only via Caddy's public 404
-	// on /ops/* (ADR 0024). Cost trajectory and ingest freshness.
-	TodaySpend(ctx context.Context) (store.SpendSnapshot, error)
+	// on /ops/* (ADR 0024). Cost trajectory and ingest freshness over
+	// rolling windows (not calendar-aligned).
+	TrailingHoursSpend(ctx context.Context, hours int) (store.SpendSnapshot, error)
+	HourlySpendBuckets(ctx context.Context, hours int) ([]store.HourlyBucket, error)
 	AtomSnapshotFreshness(ctx context.Context) (*string, error)
 }
 

@@ -140,17 +140,32 @@ type Store interface {
 	// Operator dashboard reads. Aggregations against the existing tables;
 	// no new schema. Surface the ingest cost trajectory and freshness so
 	// stalled exports or runaway spend are visible without journal-spelunking.
-	TodaySpend(ctx context.Context) (SpendSnapshot, error)
+	//
+	// Windows are deliberately rolling, not calendar-aligned: "today" is a
+	// full day at 11:59pm UTC and near-zero at 12:01am, which doesn't match
+	// how an operator thinks about recent usage. The orchestrator's safety
+	// cap stays calendar-day in the gate logic (it needs a hard reset
+	// point); the dashboard is a separate question.
+	TrailingHoursSpend(ctx context.Context, hours int) (SpendSnapshot, error)
+	HourlySpendBuckets(ctx context.Context, hours int) ([]HourlyBucket, error)
 	AtomSnapshotFreshness(ctx context.Context) (*string, error)
 	Close() error
 }
 
-// SpendSnapshot summarizes today's Anthropic spend as recorded by the
-// orchestrator. The day boundary is UTC, matching the pre-tick cap check
-// in the orchestrator so the operator's dashboard agrees with the gate.
+// SpendSnapshot summarizes Anthropic spend over a window. The window
+// itself is set by the caller; this struct is window-agnostic.
 type SpendSnapshot struct {
 	TotalUSD  float64 `json:"total_usd"`
 	CallCount int     `json:"call_count"`
+}
+
+// HourlyBucket is one bar of the rolling-24h shape chart. HourStart is the
+// UTC hour boundary the bucket covers (e.g., "2026-06-11T08:00:00Z" covers
+// 08:00:00 through 08:59:59.999...). Buckets are zero-padded by the store
+// so empty hours still appear — the chart's x-axis stays uniform.
+type HourlyBucket struct {
+	HourStart string  `json:"hour_start"`
+	TotalUSD  float64 `json:"total_usd"`
 }
 
 // store is the SQLite-backed implementation. Unexported by design.

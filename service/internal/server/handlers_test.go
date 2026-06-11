@@ -53,6 +53,12 @@ type fakeStore struct {
 	liveEventsTotal  int
 	liveEventsErr    error
 
+	todaySpendResult store.SpendSnapshot
+	todaySpendErr    error
+
+	freshnessResult *string
+	freshnessErr    error
+
 	listCalledWith    struct{ limit, offset int }
 	filingCalledWith  string
 	eventsCalledWith  string
@@ -131,6 +137,14 @@ func (f *fakeStore) LiveEvents(
 	f.liveCalledWith.limit = limit
 	f.liveCalledWith.offset = offset
 	return f.liveEventsResult, f.liveEventsTotal, f.liveEventsErr
+}
+
+func (f *fakeStore) TodaySpend(_ context.Context) (store.SpendSnapshot, error) {
+	return f.todaySpendResult, f.todaySpendErr
+}
+
+func (f *fakeStore) AtomSnapshotFreshness(_ context.Context) (*string, error) {
+	return f.freshnessResult, f.freshnessErr
 }
 
 // migrationsDir locates the shared SQL migrations directory.

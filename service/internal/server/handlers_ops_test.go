@@ -11,17 +11,17 @@ import (
 	"github.com/PinchasLev/filings-watcher/service/internal/store"
 )
 
-// TestHandleOpsRendersAllThreePanels checks the happy path with all three
-// panels having data: trailing-30-day total, trailing-24h total, and a
-// non-nil freshness timestamp.
-func TestHandleOpsRendersAllThreePanels(t *testing.T) {
+// TestHandleOpsRendersAllPanels checks the happy path with both spend
+// totals, both charts, and a non-nil freshness timestamp populated.
+func TestHandleOpsRendersAllPanels(t *testing.T) {
 	freshness := time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
 	fake := &fakeStore{
 		trailingSpendByHours: map[int]store.SpendSnapshot{
 			24 * 30: {TotalUSD: 43.21, CallCount: 1234},
 			24:      {TotalUSD: 1.50, CallCount: 42},
 		},
-		hourlyBucketsResult: bucketsAllZero(24),
+		hourlyBucketsResult: hourlyZeros(24),
+		dailyBucketsResult:  dailyZeros(30),
 		freshnessResult:     &freshness,
 	}
 
@@ -44,6 +44,8 @@ func TestHandleOpsRendersAllThreePanels(t *testing.T) {
 		"Atom-ingest freshness",
 		"min ago",
 		"Hourly spend, last 24 hours",
+		"Daily spend, last 30 days",
+		"30 days ago",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("response missing %q", want)
@@ -51,16 +53,13 @@ func TestHandleOpsRendersAllThreePanels(t *testing.T) {
 	}
 }
 
-// TestHandleOpsStripsPublicChrome ensures the operator dashboard does NOT
+// TestHandleOpsStripsPublicChrome ensures the operator dashboard does not
 // inherit the public site's header (ticker search form, Latest/Live nav).
-// Those bled in from layout.html.tmpl in the first cut and were a UX bug.
 func TestHandleOpsStripsPublicChrome(t *testing.T) {
 	fake := &fakeStore{
-		trailingSpendByHours: map[int]store.SpendSnapshot{
-			24 * 30: {},
-			24:      {},
-		},
-		hourlyBucketsResult: bucketsAllZero(24),
+		trailingSpendByHours: map[int]store.SpendSnapshot{24 * 30: {}, 24: {}},
+		hourlyBucketsResult:  hourlyZeros(24),
+		dailyBucketsResult:   dailyZeros(30),
 	}
 
 	rec := httptest.NewRecorder()
@@ -69,33 +68,27 @@ func TestHandleOpsStripsPublicChrome(t *testing.T) {
 
 	body := rec.Body.String()
 	for _, banned := range []string{
-		`name="ticker"`, // public search form
+		`name="ticker"`,
 		"Search by ticker",
-		`href="/live"`, // Latest/Live nav
-		"page-nav",     // the nav CSS class
+		`href="/live"`,
+		"page-nav",
 	} {
 		if strings.Contains(body, banned) {
-			t.Errorf("response should not contain %q (public chrome leaked into /ops)", banned)
+			t.Errorf("response should not contain %q (public chrome leaked)", banned)
 		}
 	}
-	// A back link to the public site is fine — it's the operator's
-	// "let me peek at what users see" affordance.
 	if !strings.Contains(body, `href="/"`) {
 		t.Errorf("response should contain a back-to-site link")
 	}
 }
 
-// TestHandleOpsRendersOneRectPerBucket confirms the SVG chart renders 24
-// <rect> elements — one per trailing-hour bucket — even when every bucket
-// has zero spend. Each rect should carry the floor height so the axis
-// still reads as 24 evenly-spaced bars.
-func TestHandleOpsRendersOneRectPerBucket(t *testing.T) {
+// TestHandleOpsRenders24RectsForHourlyChartPlus30ForDaily confirms each
+// chart panel renders exactly one <rect class="bar"> per source bucket.
+func TestHandleOpsRenders24RectsForHourlyChartPlus30ForDaily(t *testing.T) {
 	fake := &fakeStore{
-		trailingSpendByHours: map[int]store.SpendSnapshot{
-			24 * 30: {},
-			24:      {},
-		},
-		hourlyBucketsResult: bucketsAllZero(24),
+		trailingSpendByHours: map[int]store.SpendSnapshot{24 * 30: {}, 24: {}},
+		hourlyBucketsResult:  hourlyZeros(24),
+		dailyBucketsResult:   dailyZeros(30),
 	}
 
 	rec := httptest.NewRecorder()
@@ -103,20 +96,69 @@ func TestHandleOpsRendersOneRectPerBucket(t *testing.T) {
 	server.New(fake).ServeHTTP(rec, req)
 
 	body := rec.Body.String()
-	if got := strings.Count(body, "<rect "); got != 24 {
-		t.Errorf("<rect> count = %d, want 24", got)
+	if got := strings.Count(body, `<rect class="bar"`); got != 24+30 {
+		t.Errorf("<rect class=\"bar\"> count = %d, want %d (24 hourly + 30 daily)", got, 24+30)
+	}
+}
+
+// TestHandleOpsRendersYAxisLabels confirms that when there is real
+// non-zero data, the Y-axis renders peak / mid / zero tick labels in the
+// SVG. Each chart should have three text labels.
+func TestHandleOpsRendersYAxisLabels(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Hour)
+	hourly := make([]store.HourlyBucket, 24)
+	for i := 0; i < 24; i++ {
+		hourly[i] = store.HourlyBucket{
+			HourStart: now.Add(time.Duration(i-23) * time.Hour).Format(time.RFC3339),
+		}
+	}
+	// One spike of $0.10 produces a non-zero peak.
+	hourly[12].TotalUSD = 0.10
+
+	dayStart := time.Now().UTC().Truncate(24 * time.Hour)
+	daily := make([]store.DailyBucket, 30)
+	for i := 0; i < 30; i++ {
+		daily[i] = store.DailyBucket{
+			DayStart: dayStart.Add(time.Duration(i-29) * 24 * time.Hour).Format(time.RFC3339),
+		}
+	}
+	daily[15].TotalUSD = 5.50
+
+	fake := &fakeStore{
+		trailingSpendByHours: map[int]store.SpendSnapshot{24 * 30: {}, 24: {}},
+		hourlyBucketsResult:  hourly,
+		dailyBucketsResult:   daily,
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/ops/", nil)
+	server.New(fake).ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	// Peak labels — the values we seeded.
+	for _, want := range []string{
+		"$0.1000",
+		"$0.0500", // mid (peak/2) for hourly
+		"$5.5000",
+		"$2.7500", // mid (peak/2) for daily
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response missing Y-axis label %q", want)
+		}
+	}
+	// Gridlines: each chart has 3 ticks, so 6 total <line class="gridline">.
+	if got := strings.Count(body, `class="gridline"`); got != 6 {
+		t.Errorf("gridline count = %d, want 6 (3 per chart)", got)
 	}
 }
 
 // TestHandleOpsHandlesNoFreshnessData verifies the "no data" branch.
 func TestHandleOpsHandlesNoFreshnessData(t *testing.T) {
 	fake := &fakeStore{
-		trailingSpendByHours: map[int]store.SpendSnapshot{
-			24 * 30: {},
-			24:      {},
-		},
-		hourlyBucketsResult: bucketsAllZero(24),
-		freshnessResult:     nil,
+		trailingSpendByHours: map[int]store.SpendSnapshot{24 * 30: {}, 24: {}},
+		hourlyBucketsResult:  hourlyZeros(24),
+		dailyBucketsResult:   dailyZeros(30),
+		freshnessResult:      nil,
 	}
 
 	rec := httptest.NewRecorder()
@@ -129,15 +171,13 @@ func TestHandleOpsHandlesNoFreshnessData(t *testing.T) {
 	}
 }
 
-// TestHandleOpsCallsStoreWithBothWindows checks that both 30-day and 24h
-// windows were queried.
-func TestHandleOpsCallsStoreWithBothWindows(t *testing.T) {
+// TestHandleOpsCallsStoreWithRightWindows checks all three of the rolling
+// queries were dispatched with the expected windows.
+func TestHandleOpsCallsStoreWithRightWindows(t *testing.T) {
 	fake := &fakeStore{
-		trailingSpendByHours: map[int]store.SpendSnapshot{
-			24 * 30: {},
-			24:      {},
-		},
-		hourlyBucketsResult: bucketsAllZero(24),
+		trailingSpendByHours: map[int]store.SpendSnapshot{24 * 30: {}, 24: {}},
+		hourlyBucketsResult:  hourlyZeros(24),
+		dailyBucketsResult:   dailyZeros(30),
 	}
 
 	rec := httptest.NewRecorder()
@@ -156,17 +196,29 @@ func TestHandleOpsCallsStoreWithBothWindows(t *testing.T) {
 		t.Errorf("expected HourlySpendBuckets called once with 24, got %v",
 			fake.hourlyBucketsCalledWith)
 	}
+	if len(fake.dailyBucketsCalledWith) != 1 || fake.dailyBucketsCalledWith[0] != 30 {
+		t.Errorf("expected DailySpendBuckets called once with 30, got %v",
+			fake.dailyBucketsCalledWith)
+	}
 }
 
-// bucketsAllZero produces a slice of n hourly buckets with totals=0,
-// matching the store's zero-padded output shape.
-func bucketsAllZero(n int) []store.HourlyBucket {
+func hourlyZeros(n int) []store.HourlyBucket {
 	out := make([]store.HourlyBucket, n)
 	base := time.Now().UTC().Truncate(time.Hour).Add(-time.Duration(n-1) * time.Hour)
 	for i := 0; i < n; i++ {
 		out[i] = store.HourlyBucket{
 			HourStart: base.Add(time.Duration(i) * time.Hour).Format(time.RFC3339),
-			TotalUSD:  0,
+		}
+	}
+	return out
+}
+
+func dailyZeros(n int) []store.DailyBucket {
+	out := make([]store.DailyBucket, n)
+	base := time.Now().UTC().Truncate(24 * time.Hour).Add(-time.Duration(n-1) * 24 * time.Hour)
+	for i := 0; i < n; i++ {
+		out[i] = store.DailyBucket{
+			DayStart: base.Add(time.Duration(i) * 24 * time.Hour).Format(time.RFC3339),
 		}
 	}
 	return out

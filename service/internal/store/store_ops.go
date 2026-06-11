@@ -85,6 +85,52 @@ func (s *store) HourlySpendBuckets(ctx context.Context, hours int) ([]HourlyBuck
 	return out, nil
 }
 
+// DailySpendBuckets returns one bucket per trailing day, oldest first,
+// zero-padded so empty days still appear. The bucket day is the floor-of-day
+// UTC of when each call was emitted. The right-most bucket covers the
+// current (incomplete) day, so as the day progresses, that bar grows.
+//
+// Symmetric to HourlySpendBuckets but at the trailing-30-day horizon. The
+// chart this backs answers the budget-side question: "is my burn rate
+// steady, accelerating, or driven by a couple of bad days?"
+func (s *store) DailySpendBuckets(ctx context.Context, days int) ([]DailyBucket, error) {
+	now := time.Now().UTC().Truncate(24 * time.Hour)
+	start := now.Add(-time.Duration(days-1) * 24 * time.Hour)
+
+	const q = `
+		SELECT strftime('%Y-%m-%dT00:00:00Z', emitted_at) AS bucket,
+		       COALESCE(SUM(estimated_cost_usd), 0.0)
+		  FROM llm_calls
+		 WHERE emitted_at >= ?
+		 GROUP BY bucket
+	`
+	rows, err := s.db.QueryContext(ctx, q, start.Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, fmt.Errorf("daily spend buckets: %w", err)
+	}
+	defer rows.Close()
+
+	seen := make(map[string]float64, days)
+	for rows.Next() {
+		var bucket string
+		var total float64
+		if err := rows.Scan(&bucket, &total); err != nil {
+			return nil, fmt.Errorf("scan daily bucket: %w", err)
+		}
+		seen[bucket] = total
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate daily buckets: %w", err)
+	}
+
+	out := make([]DailyBucket, 0, days)
+	for i := 0; i < days; i++ {
+		day := start.Add(time.Duration(i) * 24 * time.Hour).Format("2006-01-02T15:04:05Z")
+		out = append(out, DailyBucket{DayStart: day, TotalUSD: seen[day]})
+	}
+	return out, nil
+}
+
 // AtomSnapshotFreshness returns the most recent EDGAR-side submission
 // timestamp recorded across the filings table — the high-water mark of
 // what the atom ingest path has captured. The handler renders the gap

@@ -59,11 +59,15 @@ type fakeStore struct {
 	hourlyBucketsResult []store.HourlyBucket
 	hourlyBucketsErr    error
 
+	dailyBucketsResult []store.DailyBucket
+	dailyBucketsErr    error
+
 	freshnessResult *string
 	freshnessErr    error
 
 	trailingSpendCalledWith []int
 	hourlyBucketsCalledWith []int
+	dailyBucketsCalledWith  []int
 
 	listCalledWith    struct{ limit, offset int }
 	filingCalledWith  string
@@ -156,6 +160,11 @@ func (f *fakeStore) TrailingHoursSpend(_ context.Context, hours int) (store.Spen
 func (f *fakeStore) HourlySpendBuckets(_ context.Context, hours int) ([]store.HourlyBucket, error) {
 	f.hourlyBucketsCalledWith = append(f.hourlyBucketsCalledWith, hours)
 	return f.hourlyBucketsResult, f.hourlyBucketsErr
+}
+
+func (f *fakeStore) DailySpendBuckets(_ context.Context, days int) ([]store.DailyBucket, error) {
+	f.dailyBucketsCalledWith = append(f.dailyBucketsCalledWith, days)
+	return f.dailyBucketsResult, f.dailyBucketsErr
 }
 
 func (f *fakeStore) AtomSnapshotFreshness(_ context.Context) (*string, error) {

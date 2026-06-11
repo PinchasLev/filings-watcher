@@ -36,6 +36,7 @@ type storer interface {
 	// rolling windows (not calendar-aligned).
 	TrailingHoursSpend(ctx context.Context, hours int) (store.SpendSnapshot, error)
 	HourlySpendBuckets(ctx context.Context, hours int) ([]store.HourlyBucket, error)
+	DailySpendBuckets(ctx context.Context, days int) ([]store.DailyBucket, error)
 	AtomSnapshotFreshness(ctx context.Context) (*string, error)
 }
 

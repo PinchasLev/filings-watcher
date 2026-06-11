@@ -148,6 +148,64 @@ func TestHourlySpendBuckets_OrderedOldestFirst(t *testing.T) {
 	}
 }
 
+// TestDailySpendBuckets_ZeroPadsEmptyDays mirrors the hourly-bucket guarantee
+// at a longer horizon: every day in the window appears, even if no llm_calls
+// landed that day, so the chart's x-axis stays uniform.
+func TestDailySpendBuckets_ZeroPadsEmptyDays(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+
+	now := time.Now().UTC()
+	// Seed exactly one row, 5 days ago.
+	insertLLMCall(t, raw, now.Add(-5*24*time.Hour).Format(time.RFC3339Nano), 2.50)
+
+	_ = raw.Close()
+	s := openStore(t, dbPath)
+
+	buckets, err := s.DailySpendBuckets(context.Background(), 30)
+	if err != nil {
+		t.Fatalf("DailySpendBuckets: %v", err)
+	}
+	if len(buckets) != 30 {
+		t.Fatalf("len = %d, want 30 (zero-padded)", len(buckets))
+	}
+	nonZero := 0
+	for _, b := range buckets {
+		if b.TotalUSD > 0 {
+			nonZero++
+		}
+	}
+	if nonZero != 1 {
+		t.Errorf("non-zero buckets = %d, want 1", nonZero)
+	}
+}
+
+// TestDailySpendBuckets_OrderedOldestFirst — the chart expects bars from
+// 30d-ago on the left to today on the right.
+func TestDailySpendBuckets_OrderedOldestFirst(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+	_ = raw.Close()
+	s := openStore(t, dbPath)
+
+	buckets, err := s.DailySpendBuckets(context.Background(), 30)
+	if err != nil {
+		t.Fatalf("DailySpendBuckets: %v", err)
+	}
+	if len(buckets) != 30 {
+		t.Fatalf("len = %d, want 30", len(buckets))
+	}
+	prev, _ := time.Parse(time.RFC3339, buckets[0].DayStart)
+	for i := 1; i < len(buckets); i++ {
+		cur, err := time.Parse(time.RFC3339, buckets[i].DayStart)
+		if err != nil {
+			t.Fatalf("parse bucket[%d] = %q: %v", i, buckets[i].DayStart, err)
+		}
+		if !cur.After(prev) {
+			t.Errorf("bucket[%d] (%v) not after bucket[%d] (%v)", i, cur, i-1, prev)
+		}
+		prev = cur
+	}
+}
+
 // TestAtomSnapshotFreshness_ReturnsLatestNonNull ignores any daily-index-style
 // filing (no submitted_at) and returns the explicit timestamp from an
 // atom-style row.

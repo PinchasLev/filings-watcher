@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -78,6 +79,12 @@ type Event struct {
 	CompanyName string  `json:"company_name"`
 	Ticker      *string `json:"ticker"`
 	FilingDate  string  `json:"filing_date"`
+	// SubmittedAt is the precise EDGAR-side filing timestamp (ISO 8601
+	// with offset, e.g. "2026-06-05T09:05:09-04:00"). Populated for
+	// atom-feed-ingested filings; NULL for daily-index-ingested rows
+	// because the master.idx file is date-only. The live page sorts
+	// on this field.
+	SubmittedAt *string `json:"submitted_at"`
 }
 
 // EventWithItems is an event plus the per-Item classifications it collated,
@@ -127,6 +134,7 @@ type Store interface {
 	// output of its single greatest run_id — never a per-anchor maximum.
 	MaterialEvents(ctx context.Context, eventType string, limit, offset int) ([]Event, int, error)
 	CompanyEvents(ctx context.Context, cik string, limit, offset int) (*Company, []Event, int, error)
+	LiveEvents(ctx context.Context, since time.Time, limit, offset int) ([]Event, int, error)
 	MaterialEventTypeCounts(ctx context.Context) ([]EventTypeCount, error)
 	EventsByAccession(ctx context.Context, accession string) ([]EventWithItems, error)
 	Close() error
@@ -582,7 +590,7 @@ const latestRunEventsCTE = `
 `
 
 // scanEvents reads Event rows in the column order the list queries below
-// project. Shared by MaterialEvents and CompanyEvents.
+// project. Shared by MaterialEvents, CompanyEvents, and LiveEvents.
 func scanEvents(rows *sql.Rows) ([]Event, error) {
 	var out []Event
 	for rows.Next() {
@@ -591,7 +599,7 @@ func scanEvents(rows *sql.Rows) ([]Event, error) {
 		if err := rows.Scan(
 			&e.ID, &e.RunID, &e.AccessionNumber, &e.AnchorItemNumber,
 			&e.EventType, &e.EventDomain, &isMaterial, &e.Confidence, &e.Summary,
-			&e.CompanyName, &e.Ticker, &e.FilingDate,
+			&e.CompanyName, &e.Ticker, &e.FilingDate, &e.SubmittedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}
@@ -613,7 +621,7 @@ func (s *store) MaterialEvents(ctx context.Context, eventType string, limit, off
 		SELECT
 			e.id, e.run_id, e.accession_number, e.anchor_item_number,
 			e.event_type, e.event_domain, e.is_material, e.confidence, e.summary,
-			f.company_name, f.ticker, f.filing_date
+			f.company_name, f.ticker, f.filing_date, f.submitted_at
 		FROM events e
 		JOIN latest_run lr
 			ON lr.accession_number = e.accession_number AND lr.run_id = e.run_id
@@ -663,7 +671,7 @@ func (s *store) CompanyEvents(ctx context.Context, cik string, limit, offset int
 		SELECT
 			e.id, e.run_id, e.accession_number, e.anchor_item_number,
 			e.event_type, e.event_domain, e.is_material, e.confidence, e.summary,
-			f.company_name, f.ticker, f.filing_date
+			f.company_name, f.ticker, f.filing_date, f.submitted_at
 		FROM events e
 		JOIN latest_run lr
 			ON lr.accession_number = e.accession_number AND lr.run_id = e.run_id
@@ -697,6 +705,69 @@ func (s *store) CompanyEvents(ctx context.Context, cik string, limit, offset int
 		return nil, nil, 0, err
 	}
 	return company, out, total, nil
+}
+
+// LiveEvents returns the latest-run material events whose filings were
+// recorded with a precise EDGAR-side submission timestamp, ordered by that
+// timestamp DESC and clipped to a rolling window. This is the read backing
+// the /live tape: a near-real-time view of what just filed, sorted by event
+// time rather than filing_date.
+//
+// Implicitly atom-feed-only: only the atom ingest path populates
+// `submitted_at`, so daily-index-only filings — which lack sub-day
+// timestamps — are excluded from the window by the
+// `submitted_at IS NOT NULL` predicate. This is the right scope for a
+// live tape: filings reconciled overnight by the backstop don't belong
+// on a "what's happening right now" view.
+//
+// `since` is compared as a UTC instant via SQLite's datetime() so that
+// offset differences (EDT vs EST) don't produce off-by-an-hour misorderings
+// at the DST boundary. At v0 corpus size the function-on-column cost is
+// negligible; an index on submitted_at is a future optimization.
+func (s *store) LiveEvents(ctx context.Context, since time.Time, limit, offset int) ([]Event, int, error) {
+	sinceUTC := since.UTC().Format(time.RFC3339Nano)
+	const baseQuery = latestRunEventsCTE + `
+		SELECT
+			e.id, e.run_id, e.accession_number, e.anchor_item_number,
+			e.event_type, e.event_domain, e.is_material, e.confidence, e.summary,
+			f.company_name, f.ticker, f.filing_date, f.submitted_at
+		FROM events e
+		JOIN latest_run lr
+			ON lr.accession_number = e.accession_number AND lr.run_id = e.run_id
+		JOIN filings f ON f.accession_number = e.accession_number
+		WHERE e.is_material = 1
+		  AND f.submitted_at IS NOT NULL
+		  AND datetime(f.submitted_at) >= datetime(?)
+		ORDER BY datetime(f.submitted_at) DESC, e.accession_number, e.id
+		LIMIT ? OFFSET ?
+	`
+	const countQuery = latestRunEventsCTE + `
+		SELECT COUNT(*)
+		FROM events e
+		JOIN latest_run lr
+			ON lr.accession_number = e.accession_number AND lr.run_id = e.run_id
+		JOIN filings f ON f.accession_number = e.accession_number
+		WHERE e.is_material = 1
+		  AND f.submitted_at IS NOT NULL
+		  AND datetime(f.submitted_at) >= datetime(?)
+	`
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, countQuery, sinceUTC).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count live events: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, baseQuery, sinceUTC, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query live events: %w", err)
+	}
+	defer rows.Close()
+
+	out, err := scanEvents(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return out, total, nil
 }
 
 // MaterialEventTypeCounts returns the distribution of latest-run material

@@ -1,0 +1,55 @@
+{{- /* Live tape: material 8-K events ordered by precise EDGAR submission time. */ -}}
+{{define "title"}}Filings Radar — live tape{{end}}
+{{define "content"}}
+<nav class="filter-nav" aria-label="Window">
+  {{$active := .WindowHours}}
+  {{range .WindowOptions}}
+    <a href="{{liveWindowURL .}}" {{if eq . $active}}class="active"{{end}}>
+      Last {{if eq . 1}}hour{{else if eq . 24}}24 hours{{else}}{{.}} hours{{end}}
+    </a>
+  {{end}}
+</nav>
+
+<p class="intro">
+  Material 8-K events ordered by the time EDGAR accepted them. Only filings ingested in near-real-time appear here; the daily-index reconciliation backstop fills in the catalog overnight, but those rows don't carry a sub-day timestamp and land on the <a href="/">Latest</a> view instead.
+</p>
+
+{{if .Events}}
+  <section>
+    {{range .Events}}
+      <article class="filing-card">
+        <h3>
+          <a href="/filings/{{.AccessionNumber}}">{{.CompanyName}}</a>
+          {{if .Ticker}} <small>({{ derefStr .Ticker }})</small>{{end}}
+        </h3>
+        <div class="filing-meta">
+          <span class="badge">{{eventLabel .EventType}}</span>
+          <span>confidence {{printf "%.0f" (mul .Confidence 100.0)}}%</span>
+          {{if .SubmittedAt}}<span>{{relTime .SubmittedAt}}</span>{{end}}
+          {{if .AnchorItemNumber}}<span>Item {{ derefStr .AnchorItemNumber }}</span>{{end}}
+        </div>
+        <p class="reasoning">{{.Summary}}</p>
+        <small><a href="{{edgarURL .AccessionNumber}}" rel="noopener" target="_blank">View raw filing on EDGAR &rarr;</a></small>
+      </article>
+    {{end}}
+  </section>
+
+  {{if or .PrevURL .NextURL}}
+    <nav class="pagination" aria-label="Pagination">
+      {{if .PrevURL}}
+        <a href="{{.PrevURL}}">&larr; Newer</a>
+      {{else}}
+        <span class="disabled">&larr; Newer</span>
+      {{end}}
+      <span>{{.RangeStart}}-{{.RangeEnd}} of {{.FilteredTotal}}</span>
+      {{if .NextURL}}
+        <a href="{{.NextURL}}">Older &rarr;</a>
+      {{else}}
+        <span class="disabled">Older &rarr;</span>
+      {{end}}
+    </nav>
+  {{end}}
+{{else}}
+  <p>No filings in this window yet. The atom poll runs every 30 seconds; refresh shortly.</p>
+{{end}}
+{{end}}

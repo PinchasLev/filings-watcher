@@ -27,6 +27,9 @@ var companyTemplate = template.Must(template.New("layout.html.tmpl").Funcs(templ
 ))
 
 type companyPageData struct {
+	// Nav is empty so neither top-bar section ("Latest" / "Live") is
+	// highlighted on the company view — both remain plainly clickable.
+	Nav         string
 	Company     store.Company
 	Events      []store.Event
 	FilingTotal int

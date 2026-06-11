@@ -24,6 +24,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/PinchasLev/filings-watcher/service/internal/store"
 )
@@ -38,10 +39,12 @@ var templateFS embed.FS
 // string dereferencing, the EDGAR URL construction, and confidence-
 // percentage math.
 var templateFuncs = template.FuncMap{
-	"eventLabel": eventLabel,
-	"derefStr":   derefStr,
-	"edgarURL":   edgarFilingURL,
-	"mul":        func(a, b float64) float64 { return a * b },
+	"eventLabel":    eventLabel,
+	"derefStr":      derefStr,
+	"edgarURL":      edgarFilingURL,
+	"mul":           func(a, b float64) float64 { return a * b },
+	"liveWindowURL": liveWindowURL,
+	"relTime":       relTimeFromISO,
 }
 
 // homeTemplate is parsed once at process start.
@@ -50,6 +53,7 @@ var homeTemplate = template.Must(template.New("layout.html.tmpl").Funcs(template
 ))
 
 type homePageData struct {
+	Nav             string
 	ActiveEventType string
 	EventTypeCounts []store.EventTypeCount
 	TotalMaterial   int
@@ -124,6 +128,7 @@ func handleHome(s storer) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := homeTemplate.ExecuteTemplate(w, "layout.html.tmpl", homePageData{
+			Nav:             "latest",
 			ActiveEventType: eventType,
 			EventTypeCounts: counts,
 			TotalMaterial:   total,
@@ -197,6 +202,34 @@ func pageURL(eventType string, targetOffset int, enabled bool) string {
 		return "/"
 	}
 	return "/?" + params.Encode()
+}
+
+// relTimeFromISO renders an ISO 8601 timestamp string as a coarse
+// human-readable relative duration ("12s ago", "3 min ago", "2 h ago").
+// Returns an empty string when the input is nil or unparseable so the
+// template can simply omit the rendered span. Coarse on purpose: the
+// live tape's value is "very recent" — minute precision is plenty.
+func relTimeFromISO(ts *string) string {
+	if ts == nil || *ts == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, *ts)
+	if err != nil {
+		return ""
+	}
+	d := time.Since(t)
+	switch {
+	case d < 0:
+		return "just now"
+	case d < time.Minute:
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%d min ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%d h ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%d d ago", int(d.Hours()/24))
+	}
 }
 
 // eventLabel turns taxonomy snake_case values (e.g., "ma_activity") into

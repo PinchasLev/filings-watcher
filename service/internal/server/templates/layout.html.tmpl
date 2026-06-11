@@ -24,6 +24,10 @@
     border-color: var(--pico-primary);
   }
   .filter-nav a .count { opacity: 0.7; margin-left: 0.25rem; }
+  .page-nav { display: flex; gap: 1.25rem; margin: 0.75rem 0 0.25rem; font-size: 0.95rem; }
+  .page-nav a { text-decoration: none; color: var(--pico-muted-color); }
+  .page-nav a.active { color: var(--pico-color); font-weight: 600; }
+  .page-nav a:hover { color: var(--pico-primary); }
   .intro {
     font-size: 0.95rem;
     color: var(--pico-muted-color);
@@ -132,8 +136,12 @@
   <header>
     <hgroup>
       <h1><a href="/" style="text-decoration: none; color: inherit;">Filings Radar</a></h1>
-      <p>SEC 8-K filings, classified by Claude with reasoning. Updated nightly from EDGAR's daily index (~10 PM ET).</p>
+      <p>SEC 8-K filings, classified by Claude with reasoning. Ingested in near-real time from EDGAR's filing stream, reconciled overnight.</p>
     </hgroup>
+    <nav class="page-nav" aria-label="Sections">
+      <a href="/" {{if eq .Nav "latest"}}class="active"{{end}}>Latest</a>
+      <a href="/live" {{if eq .Nav "live"}}class="active"{{end}}>Live</a>
+    </nav>
     <form class="search" method="get" action="/" role="search">
       <input type="search" name="ticker" placeholder="Search by ticker — e.g. AAPL"
              aria-label="Search by ticker symbol" autocapitalize="characters" autocomplete="off">

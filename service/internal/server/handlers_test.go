@@ -49,6 +49,10 @@ type fakeStore struct {
 	companyTotal  int
 	companyErr    error
 
+	liveEventsResult []store.Event
+	liveEventsTotal  int
+	liveEventsErr    error
+
 	listCalledWith    struct{ limit, offset int }
 	filingCalledWith  string
 	eventsCalledWith  string
@@ -59,6 +63,10 @@ type fakeStore struct {
 	}
 	materialCalledWith struct {
 		eventType     string
+		limit, offset int
+	}
+	liveCalledWith struct {
+		since         time.Time
 		limit, offset int
 	}
 }
@@ -114,6 +122,15 @@ func (f *fakeStore) CompanyEvents(
 	f.companyCalledWith.limit = limit
 	f.companyCalledWith.offset = offset
 	return f.companyResult, f.companyEvents, f.companyTotal, f.companyErr
+}
+
+func (f *fakeStore) LiveEvents(
+	_ context.Context, since time.Time, limit, offset int,
+) ([]store.Event, int, error) {
+	f.liveCalledWith.since = since
+	f.liveCalledWith.limit = limit
+	f.liveCalledWith.offset = offset
+	return f.liveEventsResult, f.liveEventsTotal, f.liveEventsErr
 }
 
 // migrationsDir locates the shared SQL migrations directory.

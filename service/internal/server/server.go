@@ -6,6 +6,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/PinchasLev/filings-watcher/service/internal/store"
 )
@@ -24,6 +25,10 @@ type storer interface {
 	// filter-chip counts, and the detail page's per-event drill-down.
 	MaterialEvents(ctx context.Context, eventType string, limit, offset int) ([]store.Event, int, error)
 	CompanyEvents(ctx context.Context, cik string, limit, offset int) (*store.Company, []store.Event, int, error)
+	// LiveEvents backs the /live tape: near-real-time material events sorted
+	// by precise EDGAR-side submission time within a rolling window. Implicit
+	// atom-feed-only via the submitted_at IS NOT NULL filter in the query.
+	LiveEvents(ctx context.Context, since time.Time, limit, offset int) ([]store.Event, int, error)
 	MaterialEventTypeCounts(ctx context.Context) ([]store.EventTypeCount, error)
 	EventsByAccession(ctx context.Context, accession string) ([]store.EventWithItems, error)
 }
@@ -35,6 +40,7 @@ func New(s storer) http.Handler {
 	mux.HandleFunc("GET /filings", handleListFilings(s))
 	mux.HandleFunc("GET /filings/{accession}", handleFilingDetail(s))
 	mux.HandleFunc("GET /companies/{cik}", handleCompany(s))
+	mux.HandleFunc("GET /live", handleLive(s))
 	mux.HandleFunc("GET /", handleHome(s))
 	return mux
 }

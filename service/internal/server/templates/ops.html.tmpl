@@ -1,51 +1,96 @@
-{{- /* Operator dashboard. Tailnet-only — Caddy 404s /ops/* for the public. */ -}}
-{{define "title"}}Filings Radar — operator dashboard{{end}}
-{{define "content"}}
+{{- /* Operator dashboard. Tailnet-only — Caddy 404s /ops/* for public visitors. */ -}}
+{{- /* Standalone HTML — does not extend layout.html.tmpl. Operator surface deserves its own minimal chrome. */ -}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Filings Radar — operator dashboard</title>
 <style>
-  .ops-grid { display: grid; gap: 1.5rem; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); margin-top: 1.5rem; }
-  .ops-panel { padding: 1.25rem; border: 1px solid var(--pico-muted-border-color); border-radius: 0.5rem; background: var(--pico-card-background-color); }
-  .ops-panel h2 { font-size: 1rem; margin-bottom: 0.75rem; color: var(--pico-muted-color); text-transform: uppercase; letter-spacing: 0.05em; }
-  .ops-stat { font-size: 2rem; font-weight: 600; line-height: 1.1; margin: 0; }
-  .ops-stat .unit { font-size: 1rem; color: var(--pico-muted-color); font-weight: 400; margin-left: 0.25rem; }
-  .ops-sub { color: var(--pico-muted-color); font-size: 0.9rem; margin-top: 0.5rem; }
-  .ops-bar { height: 0.5rem; background: var(--pico-muted-border-color); border-radius: 999px; overflow: hidden; margin-top: 0.75rem; }
-  .ops-bar > span { display: block; height: 100%; background: var(--pico-primary); transition: width 0.2s; }
-  .ops-bar.warn > span { background: var(--pico-color-amber-500); }
-  .ops-bar.alarm > span { background: var(--pico-color-red-500); }
-  .ops-meta { margin-top: 0.5rem; font-size: 0.85rem; color: var(--pico-muted-color); }
+  :root {
+    --bg: #fafafa;
+    --card: #fff;
+    --border: #e5e5e5;
+    --muted: #6b7280;
+    --text: #111827;
+    --primary: #2563eb;
+    --warn: #d97706;
+    --alarm: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+  .container { max-width: 1100px; margin: 0 auto; padding: 1.5rem 1.25rem 3rem; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; padding-bottom: 0.75rem; border-bottom: 1px solid var(--border); }
+  header h1 { margin: 0; font-size: 1.15rem; font-weight: 600; letter-spacing: -0.01em; }
+  header h1 .ops-tag { color: var(--muted); font-weight: 400; margin-left: 0.4rem; font-size: 0.95rem; }
+  header .back { font-size: 0.85rem; color: var(--muted); text-decoration: none; }
+  header .back:hover { color: var(--primary); }
+  .intro { color: var(--muted); font-size: 0.9rem; margin: 1.5rem 0 1.5rem; }
+  .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); margin-top: 1rem; }
+  .panel { background: var(--card); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.1rem 1.2rem; }
+  .panel.wide { grid-column: 1 / -1; }
+  .panel h2 { margin: 0 0 0.7rem; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+  .stat { margin: 0; font-size: 1.9rem; font-weight: 600; line-height: 1.1; }
+  .stat .unit { font-size: 0.95rem; color: var(--muted); font-weight: 400; margin-left: 0.3rem; }
+  .sub { color: var(--muted); font-size: 0.85rem; margin: 0.4rem 0 0; }
+  .chart-meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 0.75rem; margin-top: 0.4rem; }
+  svg.chart { display: block; width: 100%; height: 7.5rem; margin-top: 0.6rem; }
+  svg.chart rect { fill: var(--primary); fill-opacity: 0.85; }
+  svg.chart rect:hover { fill-opacity: 1; }
+  footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.75rem; color: var(--muted); }
 </style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>Filings Radar <span class="ops-tag">/ ops</span></h1>
+    <a class="back" href="/">&larr; back to filingsradar.com</a>
+  </header>
 
-<p class="intro">
-  Operator-facing snapshot. Page is rendered server-side without auto-refresh — reload to update.
-</p>
+  <p class="intro">
+    Operator-only view (tailnet-reachable, public 404). Page is server-rendered without auto-refresh — reload to update.
+  </p>
 
-<section class="ops-grid">
-  <article class="ops-panel">
-    <h2>Today's Anthropic spend</h2>
-    <p class="ops-stat">${{printf "%.2f" .SpendTotalUSD}} <span class="unit">of ${{printf "%.2f" .SpendCapUSD}}</span></p>
-    <p class="ops-sub">{{.SpendCallCount}} LLM call{{if ne .SpendCallCount 1}}s{{end}} today (UTC).</p>
-    {{$pct := .SpendPercentOfCap}}
-    {{if gt $pct 100.0}}{{$pct = 100.0}}{{end}}
-    <div class="ops-bar{{if gt .SpendPercentOfCap 80.0}} alarm{{else if gt .SpendPercentOfCap 60.0}} warn{{end}}">
-      <span style="width: {{printf "%.1f" $pct}}%"></span>
-    </div>
-    <p class="ops-meta">{{printf "%.1f" .SpendPercentOfCap}}% of cap. The pre-tick check refuses new work at 100%.</p>
-  </article>
+  <section class="grid">
+    <article class="panel">
+      <h2>Trailing 30 days spend</h2>
+      <p class="stat">${{printf "%.2f" .Trailing30dTotalUSD}}</p>
+      <p class="sub">{{.Trailing30dCalls}} LLM call{{if ne .Trailing30dCalls 1}}s{{end}}. Tracks prepaid-balance depletion regardless of invoice month.</p>
+    </article>
 
-  <article class="ops-panel">
-    <h2>Atom-ingest freshness</h2>
-    {{if .FreshnessTimestamp}}
-      <p class="ops-stat">{{relTime .FreshnessTimestamp}}</p>
-      <p class="ops-sub">Most recent EDGAR submission timestamp recorded.</p>
-      <p class="ops-meta">{{ derefStr .FreshnessTimestamp }}</p>
-    {{else}}
-      <p class="ops-stat">no data</p>
-      <p class="ops-sub">No filings carry a precise submission timestamp yet. The atom path populates this on each new ingest.</p>
-    {{end}}
-  </article>
-</section>
+    <article class="panel">
+      <h2>Trailing 24 hours spend</h2>
+      <p class="stat">${{printf "%.2f" .Trailing24hTotalUSD}}</p>
+      <p class="sub">{{.Trailing24hCalls}} LLM call{{if ne .Trailing24hCalls 1}}s{{end}}. See the shape below.</p>
+    </article>
 
-<footer style="margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--pico-muted-border-color); font-size: 0.8rem; color: var(--pico-muted-color);">
-  Rendered at {{.RenderedAt}}.
-</footer>
-{{end}}
+    <article class="panel">
+      <h2>Atom-ingest freshness</h2>
+      {{if .FreshnessTimestamp}}
+        <p class="stat">{{relTime .FreshnessTimestamp}}</p>
+        <p class="sub">Most recent EDGAR submission timestamp recorded: {{ derefStr .FreshnessTimestamp }}.</p>
+      {{else}}
+        <p class="stat">no data</p>
+        <p class="sub">No filings carry a precise submission timestamp yet. The atom path populates this on each new ingest.</p>
+      {{end}}
+    </article>
+
+    <article class="panel wide">
+      <h2>Hourly spend, last 24 hours</h2>
+      <svg class="chart" viewBox="0 0 {{.ChartViewBoxWidth}} {{.ChartViewBoxHeight}}" preserveAspectRatio="none" role="img" aria-label="Hourly spend bar chart, last 24 hours">
+        {{range .ChartBars -}}
+        <rect x="{{printf "%.2f" .X}}" y="{{printf "%.2f" .Y}}" width="{{printf "%.2f" .Width}}" height="{{printf "%.2f" .Height}}"><title>{{.HourStart}} — ${{printf "%.4f" .TotalUSD}}</title></rect>
+        {{- end}}
+      </svg>
+      <div class="chart-meta">
+        <span>24h ago</span>
+        <span>peak ${{printf "%.4f" .ChartPeakUSD}}/h</span>
+        <span>now</span>
+      </div>
+    </article>
+  </section>
+
+  <footer>Rendered at {{.RenderedAt}}.</footer>
+</div>
+</body>
+</html>

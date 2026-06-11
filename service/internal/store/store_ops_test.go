@@ -22,52 +22,135 @@ func insertLLMCall(t *testing.T, db *sql.DB, emittedAt string, costUSD float64) 
 	}
 }
 
-// TestTodaySpend_SumsAndCountsRowsForTodayUTC checks the day boundary is UTC
-// and that yesterday's rows don't leak into today's totals.
-func TestTodaySpend_SumsAndCountsRowsForTodayUTC(t *testing.T) {
+// TestTrailingHoursSpend_RollingWindowExcludesOlderRows checks the cutoff
+// math: a row 25 hours ago should not appear in the trailing-24h window.
+func TestTrailingHoursSpend_RollingWindowExcludesOlderRows(t *testing.T) {
 	dbPath, raw := freshDBPath(t)
 
-	today := time.Now().UTC().Format("2006-01-02")
-	yesterday := time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
-
-	insertLLMCall(t, raw, today+"T10:00:00+00:00", 1.25)
-	insertLLMCall(t, raw, today+"T14:00:00+00:00", 0.75)
-	insertLLMCall(t, raw, yesterday+"T23:00:00+00:00", 99.00) // must not count
+	now := time.Now().UTC()
+	insertLLMCall(t, raw, now.Add(-30*time.Minute).Format(time.RFC3339Nano), 0.50) // in
+	insertLLMCall(t, raw, now.Add(-12*time.Hour).Format(time.RFC3339Nano), 1.00)   // in
+	insertLLMCall(t, raw, now.Add(-25*time.Hour).Format(time.RFC3339Nano), 99.00)  // out
 
 	_ = raw.Close()
 	s := openStore(t, dbPath)
 
-	snap, err := s.TodaySpend(context.Background())
+	snap, err := s.TrailingHoursSpend(context.Background(), 24)
 	if err != nil {
-		t.Fatalf("TodaySpend: %v", err)
+		t.Fatalf("TrailingHoursSpend(24): %v", err)
 	}
 	if snap.CallCount != 2 {
-		t.Errorf("CallCount = %d, want 2 (yesterday excluded)", snap.CallCount)
+		t.Errorf("CallCount = %d, want 2 (>24h row excluded)", snap.CallCount)
 	}
-	if delta := snap.TotalUSD - 2.00; delta < -0.001 || delta > 0.001 {
-		t.Errorf("TotalUSD = %f, want 2.00", snap.TotalUSD)
+	if delta := snap.TotalUSD - 1.50; delta < -0.001 || delta > 0.001 {
+		t.Errorf("TotalUSD = %f, want 1.50", snap.TotalUSD)
 	}
 }
 
-// TestTodaySpend_ReturnsZeroWhenEmpty confirms the COALESCE handles the
-// fresh-DB case (no llm_calls rows at all).
-func TestTodaySpend_ReturnsZeroWhenEmpty(t *testing.T) {
+// TestTrailingHoursSpend_30DaysIncludesOlderRows confirms the same function
+// produces a wider window when called with 720 hours, used by the budget panel.
+func TestTrailingHoursSpend_30DaysIncludesOlderRows(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+
+	now := time.Now().UTC()
+	insertLLMCall(t, raw, now.Add(-30*time.Minute).Format(time.RFC3339Nano), 0.50)  // in 24h, in 30d
+	insertLLMCall(t, raw, now.Add(-10*24*time.Hour).Format(time.RFC3339Nano), 2.00) // out 24h, in 30d
+	insertLLMCall(t, raw, now.Add(-40*24*time.Hour).Format(time.RFC3339Nano), 9.00) // out both
+
+	_ = raw.Close()
+	s := openStore(t, dbPath)
+
+	snap, err := s.TrailingHoursSpend(context.Background(), 24*30)
+	if err != nil {
+		t.Fatalf("TrailingHoursSpend(720): %v", err)
+	}
+	if snap.CallCount != 2 {
+		t.Errorf("CallCount = %d, want 2 (40d-old row excluded)", snap.CallCount)
+	}
+	if delta := snap.TotalUSD - 2.50; delta < -0.001 || delta > 0.001 {
+		t.Errorf("TotalUSD = %f, want 2.50", snap.TotalUSD)
+	}
+}
+
+// TestTrailingHoursSpend_ReturnsZeroWhenEmpty confirms the COALESCE handles
+// the fresh-DB case.
+func TestTrailingHoursSpend_ReturnsZeroWhenEmpty(t *testing.T) {
 	dbPath, raw := freshDBPath(t)
 	_ = raw.Close()
 	s := openStore(t, dbPath)
 
-	snap, err := s.TodaySpend(context.Background())
+	snap, err := s.TrailingHoursSpend(context.Background(), 24)
 	if err != nil {
-		t.Fatalf("TodaySpend: %v", err)
+		t.Fatalf("TrailingHoursSpend: %v", err)
 	}
 	if snap.CallCount != 0 || snap.TotalUSD != 0.0 {
 		t.Errorf("empty result = %+v, want zero values", snap)
 	}
 }
 
-// TestAtomSnapshotFreshness_ReturnsLatestNonNull ignores the seeded
-// daily-index-style filing (no submitted_at) and returns the explicit
-// timestamp from an atom-style row.
+// TestHourlySpendBuckets_ZeroPadsEmptyHours is the central guarantee for the
+// chart: hours with no llm_calls still produce a bucket with TotalUSD=0,
+// so the SVG x-axis stays uniform.
+func TestHourlySpendBuckets_ZeroPadsEmptyHours(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+
+	now := time.Now().UTC()
+	// Seed exactly one row, 3 hours ago.
+	insertLLMCall(t, raw, now.Add(-3*time.Hour).Format(time.RFC3339Nano), 1.00)
+
+	_ = raw.Close()
+	s := openStore(t, dbPath)
+
+	buckets, err := s.HourlySpendBuckets(context.Background(), 24)
+	if err != nil {
+		t.Fatalf("HourlySpendBuckets: %v", err)
+	}
+	if len(buckets) != 24 {
+		t.Fatalf("len = %d, want 24 (zero-padded)", len(buckets))
+	}
+	// Exactly one bucket should be non-zero.
+	nonZero := 0
+	for _, b := range buckets {
+		if b.TotalUSD > 0 {
+			nonZero++
+		}
+	}
+	if nonZero != 1 {
+		t.Errorf("non-zero buckets = %d, want 1", nonZero)
+	}
+}
+
+// TestHourlySpendBuckets_OrderedOldestFirst — the chart expects bars from
+// 24h-ago on the left to "now" on the right.
+func TestHourlySpendBuckets_OrderedOldestFirst(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+	_ = raw.Close()
+	s := openStore(t, dbPath)
+
+	buckets, err := s.HourlySpendBuckets(context.Background(), 24)
+	if err != nil {
+		t.Fatalf("HourlySpendBuckets: %v", err)
+	}
+	if len(buckets) != 24 {
+		t.Fatalf("len = %d, want 24", len(buckets))
+	}
+	// Verify monotonically-increasing HourStart by parsing.
+	prev, _ := time.Parse(time.RFC3339, buckets[0].HourStart)
+	for i := 1; i < len(buckets); i++ {
+		cur, err := time.Parse(time.RFC3339, buckets[i].HourStart)
+		if err != nil {
+			t.Fatalf("parse bucket[%d] = %q: %v", i, buckets[i].HourStart, err)
+		}
+		if !cur.After(prev) {
+			t.Errorf("bucket[%d] (%v) not after bucket[%d] (%v)", i, cur, i-1, prev)
+		}
+		prev = cur
+	}
+}
+
+// TestAtomSnapshotFreshness_ReturnsLatestNonNull ignores any daily-index-style
+// filing (no submitted_at) and returns the explicit timestamp from an
+// atom-style row.
 func TestAtomSnapshotFreshness_ReturnsLatestNonNull(t *testing.T) {
 	dbPath, raw := freshDBPath(t)
 
@@ -88,9 +171,7 @@ func TestAtomSnapshotFreshness_ReturnsLatestNonNull(t *testing.T) {
 	}
 }
 
-// TestAtomSnapshotFreshness_ReturnsNilWhenAllNull is the fresh-install case
-// where every filing came in via the daily-index path with NULL submitted_at.
-// The seeded fixture row is one such case on its own.
+// TestAtomSnapshotFreshness_ReturnsNilWhenAllNull — fresh-install case.
 func TestAtomSnapshotFreshness_ReturnsNilWhenAllNull(t *testing.T) {
 	dbPath, raw := freshDBPath(t)
 	_ = raw.Close()
@@ -101,6 +182,6 @@ func TestAtomSnapshotFreshness_ReturnsNilWhenAllNull(t *testing.T) {
 		t.Fatalf("AtomSnapshotFreshness: %v", err)
 	}
 	if ts != nil {
-		t.Errorf("freshness = %q, want nil (no atom-ingested rows)", *ts)
+		t.Errorf("freshness = %q, want nil", *ts)
 	}
 }

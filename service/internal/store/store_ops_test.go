@@ -206,6 +206,43 @@ func TestDailySpendBuckets_OrderedOldestFirst(t *testing.T) {
 	}
 }
 
+// TestSpendDataStartDate_ReturnsEarliestDate confirms the dashboard caveat
+// query: the YYYY-MM-DD of the earliest llm_calls row.
+func TestSpendDataStartDate_ReturnsEarliestDate(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+
+	insertLLMCall(t, raw, "2026-06-04T22:00:00+00:00", 0.10)
+	insertLLMCall(t, raw, "2026-06-05T12:00:00+00:00", 0.20)
+	insertLLMCall(t, raw, "2026-06-10T08:00:00+00:00", 0.30)
+
+	_ = raw.Close()
+	s := openStore(t, dbPath)
+
+	d, err := s.SpendDataStartDate(context.Background())
+	if err != nil {
+		t.Fatalf("SpendDataStartDate: %v", err)
+	}
+	if d != "2026-06-04" {
+		t.Errorf("d = %q, want 2026-06-04", d)
+	}
+}
+
+// TestSpendDataStartDate_ReturnsEmptyWhenNoRows confirms the empty-table
+// case — the dashboard reads "" as "no caveat needed."
+func TestSpendDataStartDate_ReturnsEmptyWhenNoRows(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+	_ = raw.Close()
+	s := openStore(t, dbPath)
+
+	d, err := s.SpendDataStartDate(context.Background())
+	if err != nil {
+		t.Fatalf("SpendDataStartDate: %v", err)
+	}
+	if d != "" {
+		t.Errorf("d = %q, want \"\" (empty table)", d)
+	}
+}
+
 // TestAtomSnapshotFreshness_ReturnsLatestNonNull ignores any daily-index-style
 // filing (no submitted_at) and returns the explicit timestamp from an
 // atom-style row.

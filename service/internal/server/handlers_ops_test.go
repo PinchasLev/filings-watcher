@@ -45,7 +45,7 @@ func TestHandleOpsRendersAllPanels(t *testing.T) {
 		"min ago",
 		"Hourly spend, last 24 hours",
 		"Daily spend, last 30 days",
-		"30 days ago",
+		"30d ago",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("response missing %q", want)
@@ -149,6 +149,53 @@ func TestHandleOpsRendersYAxisLabels(t *testing.T) {
 	// Gridlines: each chart has 3 ticks, so 6 total <line class="gridline">.
 	if got := strings.Count(body, `class="gridline"`); got != 6 {
 		t.Errorf("gridline count = %d, want 6 (3 per chart)", got)
+	}
+}
+
+// TestHandleOpsRendersSpendDataCaveatWhenStartIsInsideWindow confirms the
+// note appears when per-call cost capture started inside the 30-day chart
+// window — otherwise days predating instrumentation look like genuine
+// zero-spend days.
+func TestHandleOpsRendersSpendDataCaveatWhenStartIsInsideWindow(t *testing.T) {
+	// 7 days ago is comfortably inside the 30-day window.
+	start := time.Now().UTC().AddDate(0, 0, -7).Format("2006-01-02")
+	fake := &fakeStore{
+		trailingSpendByHours: map[int]store.SpendSnapshot{24 * 30: {}, 24: {}},
+		hourlyBucketsResult:  hourlyZeros(24),
+		dailyBucketsResult:   dailyZeros(30),
+		spendStartResult:     start,
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/ops/", nil)
+	server.New(fake).ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "per-call cost capture started on "+start) {
+		t.Errorf("expected caveat note containing %q", start)
+	}
+}
+
+// TestHandleOpsOmitsCaveatWhenStartPrecedesWindow confirms the dashboard
+// reads cleanly once instrumentation has been around longer than the
+// chart's window.
+func TestHandleOpsOmitsCaveatWhenStartPrecedesWindow(t *testing.T) {
+	// 60 days ago is well before the 30-day window's start.
+	start := time.Now().UTC().AddDate(0, 0, -60).Format("2006-01-02")
+	fake := &fakeStore{
+		trailingSpendByHours: map[int]store.SpendSnapshot{24 * 30: {}, 24: {}},
+		hourlyBucketsResult:  hourlyZeros(24),
+		dailyBucketsResult:   dailyZeros(30),
+		spendStartResult:     start,
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/ops/", nil)
+	server.New(fake).ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "per-call cost capture started on") {
+		t.Errorf("expected no caveat note when instrumentation predates the window")
 	}
 }
 

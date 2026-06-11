@@ -1,5 +1,5 @@
 {{- /* Operator dashboard. Tailnet-only — Caddy 404s /ops/* for public visitors. */ -}}
-{{- /* Standalone HTML — does not extend layout.html.tmpl. Operator surface deserves its own minimal chrome. */ -}}
+{{- /* Standalone HTML — does not extend layout.html.tmpl. */ -}}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -14,8 +14,6 @@
     --muted: #6b7280;
     --text: #111827;
     --primary: #2563eb;
-    --warn: #d97706;
-    --alarm: #dc2626;
   }
   * { box-sizing: border-box; }
   body { margin: 0; padding: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
@@ -25,20 +23,29 @@
   header h1 .ops-tag { color: var(--muted); font-weight: 400; margin-left: 0.4rem; font-size: 0.95rem; }
   header .back { font-size: 0.85rem; color: var(--muted); text-decoration: none; }
   header .back:hover { color: var(--primary); }
-  .intro { color: var(--muted); font-size: 0.9rem; margin: 1.5rem 0 1.5rem; }
-  .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); margin-top: 1rem; }
+  .intro { color: var(--muted); font-size: 0.9rem; margin: 1.5rem 0; }
+  .stat-row { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); margin-top: 1rem; }
   .panel { background: var(--card); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.1rem 1.2rem; }
-  .panel.wide { grid-column: 1 / -1; }
+  .panel + .panel { margin-top: 1rem; }
+  .stat-row > .panel + .panel { margin-top: 0; }
   .panel h2 { margin: 0 0 0.7rem; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
   .stat { margin: 0; font-size: 1.9rem; font-weight: 600; line-height: 1.1; }
-  .stat .unit { font-size: 0.95rem; color: var(--muted); font-weight: 400; margin-left: 0.3rem; }
   .sub { color: var(--muted); font-size: 0.85rem; margin: 0.4rem 0 0; }
-  .chart-meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 0.75rem; margin-top: 0.4rem; }
-  svg.chart { display: block; width: 100%; height: 7.5rem; margin-top: 0.6rem; }
+  /* Chart: HTML Y-axis labels flexbox'd next to an SVG of bars + gridlines.
+     Keeping the labels in HTML avoids the non-uniform-scaling text legibility
+     problem you get when you stretch an SVG with preserveAspectRatio="none". */
+  .chart-wrap { display: flex; gap: 0.5rem; margin-top: 0.7rem; align-items: stretch; }
+  .y-axis-labels {
+    display: flex; flex-direction: column; justify-content: space-between;
+    font-size: 0.72rem; color: var(--muted); font-variant-numeric: tabular-nums;
+    text-align: right; min-width: 3.6rem; padding: 0.1rem 0;
+  }
+  svg.chart { flex: 1; min-height: 8rem; display: block; }
   svg.chart .bar { fill: var(--primary); fill-opacity: 0.85; }
   svg.chart .bar:hover { fill-opacity: 1; }
-  svg.chart .gridline { stroke: var(--border); stroke-width: 0.5; stroke-dasharray: 2 2; }
-  svg.chart .axis-label { fill: var(--muted); font-size: 9px; font-family: ui-sans-serif, system-ui, sans-serif; }
+  svg.chart .gridline { stroke: var(--border); stroke-width: 0.6; stroke-dasharray: 2 2; }
+  .chart-meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 0.75rem; margin-top: 0.4rem; padding-left: 4.1rem; /* match y-axis-labels width + gap */ }
+  .panel-note { margin-top: 0.6rem; color: var(--muted); font-size: 0.78rem; }
   footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.75rem; color: var(--muted); }
 </style>
 </head>
@@ -53,7 +60,7 @@
     Operator-only view (tailnet-reachable, public 404). Page is server-rendered without auto-refresh — reload to update.
   </p>
 
-  <section class="grid">
+  <section class="stat-row">
     <article class="panel">
       <h2>Trailing 30 days spend</h2>
       <p class="stat">${{printf "%.2f" .Trailing30dTotalUSD}}</p>
@@ -70,47 +77,62 @@
       <h2>Atom-ingest freshness</h2>
       {{if .FreshnessTimestamp}}
         <p class="stat">{{relTime .FreshnessTimestamp}}</p>
-        <p class="sub">Most recent EDGAR submission timestamp recorded: {{ derefStr .FreshnessTimestamp }}.</p>
+        <p class="sub">Most recent EDGAR submission timestamp: {{ derefStr .FreshnessTimestamp }}.</p>
       {{else}}
         <p class="stat">no data</p>
         <p class="sub">No filings carry a precise submission timestamp yet. The atom path populates this on each new ingest.</p>
       {{end}}
     </article>
+  </section>
 
-    <article class="panel wide">
-      <h2>Hourly spend, last 24 hours</h2>
+  <article class="panel">
+    <h2>Hourly spend, last 24 hours</h2>
+    <div class="chart-wrap">
+      <div class="y-axis-labels">
+        {{range .HourlyChart.YAxisTicks -}}
+        <span>{{.Label}}</span>
+        {{- end}}
+      </div>
       <svg class="chart" viewBox="0 0 {{.ChartViewBoxWidth}} {{.ChartViewBoxHeight}}" preserveAspectRatio="none" role="img" aria-label="Hourly spend bar chart, last 24 hours">
         {{range .HourlyChart.YAxisTicks -}}
-        <line class="gridline" x1="{{$.ChartLeftPad}}" x2="{{$.ChartViewBoxWidth}}" y1="{{printf "%.2f" .Y}}" y2="{{printf "%.2f" .Y}}" />
-        <text class="axis-label" x="{{$.ChartLabelX}}" y="{{printf "%.2f" .Y}}" text-anchor="end" dominant-baseline="middle">{{.Label}}</text>
+        <line class="gridline" x1="0" x2="{{$.ChartViewBoxWidth}}" y1="{{printf "%.2f" .Y}}" y2="{{printf "%.2f" .Y}}" />
         {{- end}}
         {{range .HourlyChart.Bars -}}
         <rect class="bar" x="{{printf "%.2f" .X}}" y="{{printf "%.2f" .Y}}" width="{{printf "%.2f" .Width}}" height="{{printf "%.2f" .Height}}"><title>{{.BucketLabel}} — ${{printf "%.4f" .TotalUSD}}</title></rect>
         {{- end}}
       </svg>
-      <div class="chart-meta">
-        <span>24h ago</span>
-        <span>now</span>
-      </div>
-    </article>
+    </div>
+    <div class="chart-meta">
+      <span>24h ago</span>
+      <span>now</span>
+    </div>
+  </article>
 
-    <article class="panel wide">
-      <h2>Daily spend, last 30 days</h2>
+  <article class="panel">
+    <h2>Daily spend, last 30 days</h2>
+    <div class="chart-wrap">
+      <div class="y-axis-labels">
+        {{range .DailyChart.YAxisTicks -}}
+        <span>{{.Label}}</span>
+        {{- end}}
+      </div>
       <svg class="chart" viewBox="0 0 {{.ChartViewBoxWidth}} {{.ChartViewBoxHeight}}" preserveAspectRatio="none" role="img" aria-label="Daily spend bar chart, last 30 days">
         {{range .DailyChart.YAxisTicks -}}
-        <line class="gridline" x1="{{$.ChartLeftPad}}" x2="{{$.ChartViewBoxWidth}}" y1="{{printf "%.2f" .Y}}" y2="{{printf "%.2f" .Y}}" />
-        <text class="axis-label" x="{{$.ChartLabelX}}" y="{{printf "%.2f" .Y}}" text-anchor="end" dominant-baseline="middle">{{.Label}}</text>
+        <line class="gridline" x1="0" x2="{{$.ChartViewBoxWidth}}" y1="{{printf "%.2f" .Y}}" y2="{{printf "%.2f" .Y}}" />
         {{- end}}
         {{range .DailyChart.Bars -}}
         <rect class="bar" x="{{printf "%.2f" .X}}" y="{{printf "%.2f" .Y}}" width="{{printf "%.2f" .Width}}" height="{{printf "%.2f" .Height}}"><title>{{.BucketLabel}} — ${{printf "%.4f" .TotalUSD}}</title></rect>
         {{- end}}
       </svg>
-      <div class="chart-meta">
-        <span>30 days ago</span>
-        <span>today</span>
-      </div>
-    </article>
-  </section>
+    </div>
+    <div class="chart-meta">
+      <span>30d ago</span>
+      <span>today</span>
+    </div>
+    {{if .SpendDataSince}}
+    <p class="panel-note">Note: per-call cost capture started on {{.SpendDataSince}}. Days before that read as $0 because no calls were recorded, not because none happened.</p>
+    {{end}}
+  </article>
 
   <footer>Rendered at {{.RenderedAt}}.</footer>
 </div>

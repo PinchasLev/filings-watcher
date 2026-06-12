@@ -129,10 +129,10 @@ func TestLiveEvents_OrdersBySubmittedAtDESC(t *testing.T) {
 	}
 }
 
-// TestCountLiveEventsSince_StrictGreaterThan confirms the count uses ">"
+// TestListLiveEventsSince_StrictGreaterThan confirms the cutoff uses ">"
 // (strict), not ">=" — the boundary event the page rendered with shouldn't
-// re-trigger the freshness banner on every poll.
-func TestCountLiveEventsSince_StrictGreaterThan(t *testing.T) {
+// re-appear on every poll.
+func TestListLiveEventsSince_StrictGreaterThan(t *testing.T) {
 	dbPath, raw := freshDBPath(t)
 	r := insertRun(t, raw, "reduce", "succeeded")
 
@@ -146,29 +146,57 @@ func TestCountLiveEventsSince_StrictGreaterThan(t *testing.T) {
 	_ = raw.Close()
 	s := openStore(t, dbPath)
 
-	// "since" equal to the boundary timestamp — the boundary event itself
-	// must NOT count (strict >). Only the after event qualifies.
 	since, _ := time.Parse(time.RFC3339, boundary)
-	n, err := s.CountLiveEventsSince(context.Background(), since)
+	out, err := s.ListLiveEventsSince(context.Background(), since, 50)
 	if err != nil {
-		t.Fatalf("CountLiveEventsSince: %v", err)
+		t.Fatalf("ListLiveEventsSince: %v", err)
 	}
-	if n != 1 {
-		t.Errorf("n = %d, want 1 (boundary event excluded, after event included)", n)
+	if len(out) != 1 {
+		t.Fatalf("len = %d, want 1 (boundary excluded)", len(out))
+	}
+	if out[0].AccessionNumber != "0041-26-041" {
+		t.Errorf("got %q, want 0041-26-041", out[0].AccessionNumber)
 	}
 }
 
-// TestCountLiveEventsSince_ExcludesNullSubmittedAt mirrors LiveEvents:
-// daily-index reconciled rows lack sub-day timestamps and don't
-// belong on the "right now" surface.
-func TestCountLiveEventsSince_ExcludesNullSubmittedAt(t *testing.T) {
+// TestListLiveEventsSince_OrdersDESC confirms the response is sorted
+// newest-first, so insertAdjacentHTML('afterbegin', html) preserves
+// newest-on-top in the DOM.
+func TestListLiveEventsSince_OrdersDESC(t *testing.T) {
 	dbPath, raw := freshDBPath(t)
 	r := insertRun(t, raw, "reduce", "succeeded")
 
-	// Seeded filing has NULL submitted_at. Add a row's worth of events.
+	earlier := "2026-06-11T15:31:00-04:00"
+	later := "2026-06-11T15:35:00-04:00"
+	insertFilingWithSubmittedAt(t, raw, "0042-26-042", "0000000042", "Earlier Co.", &earlier)
+	insertFilingWithSubmittedAt(t, raw, "0043-26-043", "0000000043", "Later Co.", &later)
+	insertEvent(t, raw, r, "0042-26-042", "2.02", "earnings_release", "financial", true, 0.95, "earlier")
+	insertEvent(t, raw, r, "0043-26-043", "5.02", "exec_departure", "governance", true, 0.90, "later")
+
+	_ = raw.Close()
+	s := openStore(t, dbPath)
+
+	since := time.Date(2026, 6, 11, 0, 0, 0, 0, time.UTC)
+	out, err := s.ListLiveEventsSince(context.Background(), since, 50)
+	if err != nil {
+		t.Fatalf("ListLiveEventsSince: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("len = %d, want 2", len(out))
+	}
+	if out[0].AccessionNumber != "0043-26-043" {
+		t.Errorf("first event = %q, want later filing 0043-26-043", out[0].AccessionNumber)
+	}
+}
+
+// TestListLiveEventsSince_ExcludesNullSubmittedAt mirrors LiveEvents:
+// daily-index reconciled rows don't belong on the live tape.
+func TestListLiveEventsSince_ExcludesNullSubmittedAt(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+	r := insertRun(t, raw, "reduce", "succeeded")
+
 	insertEvent(t, raw, r, "0001-26-001", "2.02", "earnings_release", "financial", true, 0.95, "daily-index style")
 
-	// Plus one atom-style row.
 	after := "2026-06-11T15:31:00-04:00"
 	insertFilingWithSubmittedAt(t, raw, "0050-26-050", "0000000050", "Atom Co.", &after)
 	insertEvent(t, raw, r, "0050-26-050", "5.02", "exec_departure", "governance", true, 0.90, "atom-style")
@@ -177,12 +205,12 @@ func TestCountLiveEventsSince_ExcludesNullSubmittedAt(t *testing.T) {
 	s := openStore(t, dbPath)
 
 	since := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	n, err := s.CountLiveEventsSince(context.Background(), since)
+	out, err := s.ListLiveEventsSince(context.Background(), since, 50)
 	if err != nil {
-		t.Fatalf("CountLiveEventsSince: %v", err)
+		t.Fatalf("ListLiveEventsSince: %v", err)
 	}
-	if n != 1 {
-		t.Errorf("n = %d, want 1 (NULL submitted_at excluded)", n)
+	if len(out) != 1 {
+		t.Errorf("len = %d, want 1 (NULL submitted_at excluded)", len(out))
 	}
 }
 

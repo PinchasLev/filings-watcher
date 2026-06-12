@@ -1,7 +1,6 @@
 package server_test
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,45 +11,73 @@ import (
 	"github.com/PinchasLev/filings-watcher/service/internal/store"
 )
 
-// TestHandleLiveSinceHappyPath: valid since, store returns N, JSON shape
-// is correct and includes "now".
-func TestHandleLiveSinceHappyPath(t *testing.T) {
-	fake := &fakeStore{countLiveSinceResult: 5}
+// TestHandleLiveEventsHappyPath: valid since, store returns events, the
+// response is HTML containing the rendered filing-card markup.
+func TestHandleLiveEventsHappyPath(t *testing.T) {
+	ts := "2026-06-11T15:35:00-04:00"
+	fake := &fakeStore{
+		listLiveSinceResult: []store.Event{
+			{
+				AccessionNumber: "0001234567-26-000001",
+				EventType:       "earnings_release",
+				IsMaterial:      true,
+				Confidence:      0.93,
+				Summary:         "Quarterly results press release.",
+				CompanyName:     "Acme Corp",
+				FilingDate:      "2026-06-11",
+				SubmittedAt:     &ts,
+			},
+		},
+	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/live-since?since=2026-06-11T15:00:00Z", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/live-events?since=2026-06-11T15:00:00Z", nil)
 	server.New(fake).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
-		t.Errorf("Content-Type = %q, want application/json", got)
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html", got)
 	}
 	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store", got)
 	}
 
-	var body struct {
-		NewCount int    `json:"new_count"`
-		Now      string `json:"now"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if body.NewCount != 5 {
-		t.Errorf("new_count = %d, want 5", body.NewCount)
-	}
-	if body.Now == "" {
-		t.Errorf("now is empty; want RFC3339 timestamp")
+	body := rec.Body.String()
+	for _, want := range []string{
+		`<article class="filing-card"`,
+		"Acme Corp",
+		"Earnings release",
+		`<time class="submitted-at" datetime="` + ts + `"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response missing %q", want)
+		}
 	}
 }
 
-// TestHandleLiveSinceMissingSince: empty ?since= → 400.
-func TestHandleLiveSinceMissingSince(t *testing.T) {
+// TestHandleLiveEventsEmptyResultIsEmptyBody: store returns no events,
+// the body is empty (no card markup). JS treats empty as no-op.
+func TestHandleLiveEventsEmptyResultIsEmptyBody(t *testing.T) {
+	fake := &fakeStore{listLiveSinceResult: nil}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/live-events?since=2026-06-11T15:00:00Z", nil)
+	server.New(fake).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("body = %q, want empty", rec.Body.String())
+	}
+}
+
+// TestHandleLiveEventsMissingSince: empty ?since= → 400.
+func TestHandleLiveEventsMissingSince(t *testing.T) {
 	fake := &fakeStore{}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/live-since", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/live-events", nil)
 	server.New(fake).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
@@ -58,11 +85,11 @@ func TestHandleLiveSinceMissingSince(t *testing.T) {
 	}
 }
 
-// TestHandleLiveSinceInvalidSince: malformed ?since= → 400.
-func TestHandleLiveSinceInvalidSince(t *testing.T) {
+// TestHandleLiveEventsInvalidSince: malformed ?since= → 400.
+func TestHandleLiveEventsInvalidSince(t *testing.T) {
 	fake := &fakeStore{}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/live-since?since=yesterday", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/live-events?since=yesterday", nil)
 	server.New(fake).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
@@ -70,22 +97,26 @@ func TestHandleLiveSinceInvalidSince(t *testing.T) {
 	}
 }
 
-// TestHandleLiveSincePassesRFC3339ThroughToStore confirms the parsed time
-// flows correctly to CountLiveEventsSince.
-func TestHandleLiveSincePassesRFC3339ThroughToStore(t *testing.T) {
+// TestHandleLiveEventsPassesParsedTimeAndLimit confirms the parsed time
+// flows correctly to ListLiveEventsSince along with the per-poll cap.
+func TestHandleLiveEventsPassesParsedTimeAndLimit(t *testing.T) {
 	fake := &fakeStore{}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/live-since?since=2026-06-11T15:00:00Z", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/live-events?since=2026-06-11T15:00:00Z", nil)
 	server.New(fake).ServeHTTP(rec, req)
 
 	want, _ := time.Parse(time.RFC3339, "2026-06-11T15:00:00Z")
-	if len(fake.countLiveSinceCalledWith) != 1 || !fake.countLiveSinceCalledWith[0].Equal(want) {
-		t.Errorf("CountLiveEventsSince called with %v, want %v", fake.countLiveSinceCalledWith, want)
+	if len(fake.listLiveSinceCalledWith) != 1 || !fake.listLiveSinceCalledWith[0].Equal(want) {
+		t.Errorf("ListLiveEventsSince since = %v, want %v", fake.listLiveSinceCalledWith, want)
+	}
+	if len(fake.listLiveSinceLimitWith) != 1 || fake.listLiveSinceLimitWith[0] <= 0 {
+		t.Errorf("ListLiveEventsSince limit = %v, want > 0", fake.listLiveSinceLimitWith)
 	}
 }
 
 // TestHandleLiveScriptServesEmbeddedFile checks the /static/live.js route
-// returns the embedded JS with the right Content-Type.
+// returns the embedded JS with the right Content-Type and the strings
+// the script must contain to do its job.
 func TestHandleLiveScriptServesEmbeddedFile(t *testing.T) {
 	fake := &fakeStore{}
 	rec := httptest.NewRecorder()
@@ -100,10 +131,10 @@ func TestHandleLiveScriptServesEmbeddedFile(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"live-banner",     // CSS class created in the JS
-		"/api/live-since", // endpoint the script polls
-		"data-since",      // attribute the script reads
-		"new filing",      // banner text format string
+		"/api/live-events", // endpoint the script polls
+		"data-since",       // baseline attribute
+		"live-tape",        // container id where cards are prepended
+		"toLocaleString",   // timezone localization
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("served live.js missing %q", want)
@@ -111,11 +142,21 @@ func TestHandleLiveScriptServesEmbeddedFile(t *testing.T) {
 	}
 }
 
-// TestHandleLiveEmbedsScriptTag confirms the /live page renders the
-// <script src="/static/live.js" data-since="..."> tag so the poller
-// has a baseline timestamp.
-func TestHandleLiveEmbedsScriptTag(t *testing.T) {
-	fake := &fakeStore{}
+// TestHandleLiveEmbedsScriptTagAndTimeElement confirms the /live page
+// renders the script tag and uses <time datetime> markup for the
+// timestamp on each card.
+func TestHandleLiveEmbedsScriptTagAndTimeElement(t *testing.T) {
+	ts := "2026-06-11T17:30:00-04:00"
+	fake := &fakeStore{
+		liveEventsResult: []store.Event{{
+			AccessionNumber: "0001-26-001",
+			IsMaterial:      true,
+			CompanyName:     "Sample Co.",
+			SubmittedAt:     &ts,
+			FilingDate:      "2026-06-11",
+		}},
+		liveEventsTotal: 1,
+	}
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/live", nil)
@@ -123,19 +164,23 @@ func TestHandleLiveEmbedsScriptTag(t *testing.T) {
 
 	body := rec.Body.String()
 	if !strings.Contains(body, `src="/static/live.js"`) {
-		t.Errorf("/live response missing script src=/static/live.js")
+		t.Errorf("/live response missing live.js script tag")
 	}
-	if !strings.Contains(body, `data-since="`) {
-		t.Errorf("/live response missing data-since attribute")
+	if !strings.Contains(body, `<time class="submitted-at" datetime="`+ts+`"`) {
+		t.Errorf("/live response missing <time> element with datetime=%q", ts)
+	}
+	// UTC fallback text should also be present so non-JS viewers see
+	// an honest timestamp.
+	if !strings.Contains(body, "2026-06-11 21:30 UTC") {
+		t.Errorf("/live response missing UTC fallback text inside <time>")
 	}
 }
 
-// TestHandleLiveBannerSinceIsNewestVisibleEventTimestamp confirms the
-// freshness banner is anchored to the newest visible event's
-// submitted_at, not to page-render time. That's the fix for the "tab
-// open for hours" UX problem where the banner accumulated a count of
-// filings that would already be on the page after refresh.
-func TestHandleLiveBannerSinceIsNewestVisibleEventTimestamp(t *testing.T) {
+// TestHandleLivePollSinceIsNewestVisibleEventTimestamp confirms the
+// poll baseline (the data-since attribute on the script tag) is anchored
+// to the newest visible event's submitted_at — so the AJAX poll only
+// asks for what hasn't been rendered yet.
+func TestHandleLivePollSinceIsNewestVisibleEventTimestamp(t *testing.T) {
 	newest := "2026-06-11T17:30:43-04:00"
 	older := "2026-06-11T14:00:00-04:00"
 	fake := &fakeStore{
@@ -143,7 +188,7 @@ func TestHandleLiveBannerSinceIsNewestVisibleEventTimestamp(t *testing.T) {
 			{
 				AccessionNumber: "0001-26-001",
 				IsMaterial:      true,
-				SubmittedAt:     &newest, // events sorted DESC: this is at index 0
+				SubmittedAt:     &newest, // sorted DESC: index 0 is newest
 				CompanyName:     "Acme",
 				FilingDate:      "2026-06-11",
 			},
@@ -163,22 +208,16 @@ func TestHandleLiveBannerSinceIsNewestVisibleEventTimestamp(t *testing.T) {
 	server.New(fake).ServeHTTP(rec, req)
 
 	body := rec.Body.String()
-	// data-since must match the newest visible event's submitted_at.
-	// HTML-escaping turns the ":" inside the offset into "&#43;"? No —
-	// only "&", "<", ">", "\"", "'" are escaped by html/template's
-	// default contextual auto-escaping for attribute values. Colons
-	// pass through verbatim.
 	want := `data-since="` + newest + `"`
 	if !strings.Contains(body, want) {
-		t.Errorf("/live response missing %q; banner would re-fire on already-visible events", want)
+		t.Errorf("/live response missing %q", want)
 	}
 }
 
-// TestHandleLiveBannerSinceFallsBackToNowOnEmptyWindow confirms the
-// empty-window path. When no events render, the banner has no event to
-// anchor against and falls back to "now" so it stays quiet until
-// something genuinely new arrives.
-func TestHandleLiveBannerSinceFallsBackToNowOnEmptyWindow(t *testing.T) {
+// TestHandleLivePollSinceFallsBackToNowOnEmptyWindow: when no events
+// render, the data-since attribute must still be a valid timestamp so
+// the script's first poll has a meaningful anchor.
+func TestHandleLivePollSinceFallsBackToNowOnEmptyWindow(t *testing.T) {
 	fake := &fakeStore{liveEventsResult: nil, liveEventsTotal: 0}
 
 	rec := httptest.NewRecorder()
@@ -189,29 +228,8 @@ func TestHandleLiveBannerSinceFallsBackToNowOnEmptyWindow(t *testing.T) {
 	if !strings.Contains(body, `data-since="`) {
 		t.Errorf("/live response missing data-since attribute on empty window")
 	}
-	// On empty window the data-since should be a current UTC timestamp
-	// (Z suffix), not a stale one. A loose check that it starts with the
-	// current year is sufficient — exact-time matching is racy.
 	thisYear := time.Now().UTC().Format("2006")
 	if !strings.Contains(body, `data-since="`+thisYear) {
 		t.Errorf("expected data-since to start with current year %q", thisYear)
-	}
-}
-
-// TestHandleOpsHasMetaRefresh confirms the /ops page auto-refreshes via
-// the meta tag — no JS, no CSP relaxation needed for that page.
-func TestHandleOpsHasMetaRefresh(t *testing.T) {
-	fake := &fakeStore{
-		hourlyBucketsResult: hourlyZeros(24),
-		dailyBucketsResult:  dailyZeros(30),
-	}
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/ops/", nil)
-	server.New(fake).ServeHTTP(rec, req)
-
-	body := rec.Body.String()
-	if !strings.Contains(body, `<meta http-equiv="refresh" content="60">`) {
-		t.Errorf("/ops response missing meta-refresh tag")
 	}
 }

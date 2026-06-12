@@ -29,9 +29,9 @@ type storer interface {
 	// by precise EDGAR-side submission time within a rolling window. Implicit
 	// atom-feed-only via the submitted_at IS NOT NULL filter in the query.
 	LiveEvents(ctx context.Context, since time.Time, limit, offset int) ([]store.Event, int, error)
-	// CountLiveEventsSince backs the /api/live-since polling endpoint that
-	// the /live tape's freshness banner reads.
-	CountLiveEventsSince(ctx context.Context, since time.Time) (int, error)
+	// ListLiveEventsSince backs /api/live-events: the AJAX path that
+	// the live tape's JS uses to fetch and prepend new cards.
+	ListLiveEventsSince(ctx context.Context, since time.Time, limit int) ([]store.Event, error)
 	MaterialEventTypeCounts(ctx context.Context) ([]store.EventTypeCount, error)
 	EventsByAccession(ctx context.Context, accession string) ([]store.EventWithItems, error)
 	// Operator dashboard at /ops/. Tailnet-only via Caddy's public 404
@@ -52,7 +52,7 @@ func New(s storer) http.Handler {
 	mux.HandleFunc("GET /filings/{accession}", handleFilingDetail(s))
 	mux.HandleFunc("GET /companies/{cik}", handleCompany(s))
 	mux.HandleFunc("GET /live", handleLive(s))
-	mux.HandleFunc("GET /api/live-since", handleLiveSince(s))
+	mux.HandleFunc("GET /api/live-events", handleLiveEvents(s))
 	mux.HandleFunc("GET /static/live.js", handleLiveScript())
 	mux.HandleFunc("GET /ops/", handleOps(s))
 	mux.HandleFunc("GET /", handleHome(s))

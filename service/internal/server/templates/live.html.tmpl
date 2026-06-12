@@ -1,5 +1,27 @@
-{{- /* Live tape: material 8-K events ordered by precise EDGAR submission time. */ -}}
+{{- /* Live tape: material 8-K events ordered by precise EDGAR submission time.
+       New events are prepended into #live-tape by /static/live.js polling
+       /api/live-events; the same `filing-card` partial backs both the initial
+       server render and the AJAX-injected fragments, so there's one source
+       of truth for card markup. */ -}}
 {{define "title"}}Filings Radar — live tape{{end}}
+{{define "filing-card"}}
+<article class="filing-card" data-accession="{{.AccessionNumber}}">
+  <h3>
+    <a href="/filings/{{.AccessionNumber}}">{{.CompanyName}}</a>
+    {{if .Ticker}} <small>({{ derefStr .Ticker }})</small>{{end}}
+  </h3>
+  <div class="filing-meta">
+    <span class="badge">{{eventLabel .EventType}}</span>
+    <span>confidence {{printf "%.0f" (mul .Confidence 100.0)}}%</span>
+    {{if .SubmittedAt -}}
+    <time class="submitted-at" datetime="{{ derefStr .SubmittedAt }}">{{utcDateTime .SubmittedAt}}</time>
+    {{- end}}
+    {{if .AnchorItemNumber}}<span>Item {{ derefStr .AnchorItemNumber }}</span>{{end}}
+  </div>
+  <p class="reasoning">{{.Summary}}</p>
+  <small><a href="{{edgarURL .AccessionNumber}}" rel="noopener" target="_blank">View raw filing on EDGAR &rarr;</a></small>
+</article>
+{{end}}
 {{define "content"}}
 <nav class="filter-nav" aria-label="Window">
   {{$active := .WindowHours}}
@@ -11,48 +33,36 @@
 </nav>
 
 <p class="intro">
-  Material 8-K events ordered by the time EDGAR accepted them. Only filings ingested in near-real-time appear here; the daily-index reconciliation backstop fills in the catalog overnight, but those rows don't carry a sub-day timestamp and land on the <a href="/">Latest</a> view instead.
+  Material 8-K events ordered by the time EDGAR accepted them. New filings appear at the top automatically — no refresh needed. Only filings ingested in near-real-time appear here; the daily-index reconciliation backstop fills in the catalog overnight, but those rows don't carry a sub-day timestamp and land on the <a href="/">Latest</a> view instead.
 </p>
 
-{{if .Events}}
-  <section>
-    {{range .Events}}
-      <article class="filing-card">
-        <h3>
-          <a href="/filings/{{.AccessionNumber}}">{{.CompanyName}}</a>
-          {{if .Ticker}} <small>({{ derefStr .Ticker }})</small>{{end}}
-        </h3>
-        <div class="filing-meta">
-          <span class="badge">{{eventLabel .EventType}}</span>
-          <span>confidence {{printf "%.0f" (mul .Confidence 100.0)}}%</span>
-          {{if .SubmittedAt}}<span>{{relTime .SubmittedAt}}</span>{{end}}
-          {{if .AnchorItemNumber}}<span>Item {{ derefStr .AnchorItemNumber }}</span>{{end}}
-        </div>
-        <p class="reasoning">{{.Summary}}</p>
-        <small><a href="{{edgarURL .AccessionNumber}}" rel="noopener" target="_blank">View raw filing on EDGAR &rarr;</a></small>
-      </article>
-    {{end}}
-  </section>
-
-  {{if or .PrevURL .NextURL}}
-    <nav class="pagination" aria-label="Pagination">
-      {{if .PrevURL}}
-        <a href="{{.PrevURL}}">&larr; Newer</a>
-      {{else}}
-        <span class="disabled">&larr; Newer</span>
-      {{end}}
-      <span>{{.RangeStart}}-{{.RangeEnd}} of {{.FilteredTotal}}</span>
-      {{if .NextURL}}
-        <a href="{{.NextURL}}">Older &rarr;</a>
-      {{else}}
-        <span class="disabled">Older &rarr;</span>
-      {{end}}
-    </nav>
+<section id="live-tape">
+  {{range .Events}}
+    {{template "filing-card" .}}
   {{end}}
-{{else}}
-  <p>No filings in this window yet. The atom poll runs every 30 seconds; refresh shortly.</p>
+</section>
+
+{{if not .Events}}
+  <p id="live-tape-empty">No filings in this window yet. New ones will appear automatically.</p>
 {{end}}
-{{- /* Freshness-poll banner. Reads its baseline from data-since so the
-       page CSP can stay at script-src 'self' (no inline scripts). */}}
-<script src="/static/live.js" data-since="{{.BannerSince}}" defer></script>
+
+{{if or .PrevURL .NextURL}}
+  <nav class="pagination" aria-label="Pagination">
+    {{if .PrevURL}}
+      <a href="{{.PrevURL}}">&larr; Newer</a>
+    {{else}}
+      <span class="disabled">&larr; Newer</span>
+    {{end}}
+    <span>{{.RangeStart}}-{{.RangeEnd}} of {{.FilteredTotal}}</span>
+    {{if .NextURL}}
+      <a href="{{.NextURL}}">Older &rarr;</a>
+    {{else}}
+      <span class="disabled">Older &rarr;</span>
+    {{end}}
+  </nav>
+{{end}}
+{{- /* live.js polls /api/live-events and prepends new cards into
+       #live-tape. data-since is the baseline timestamp the script
+       starts from; the script updates it after each successful poll. */}}
+<script src="/static/live.js" data-since="{{.PollSince}}" defer></script>
 {{end}}

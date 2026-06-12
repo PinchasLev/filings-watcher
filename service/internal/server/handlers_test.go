@@ -53,8 +53,8 @@ type fakeStore struct {
 	liveEventsTotal  int
 	liveEventsErr    error
 
-	countLiveSinceResult int
-	countLiveSinceErr    error
+	listLiveSinceResult []store.Event
+	listLiveSinceErr    error
 
 	trailingSpendByHours map[int]store.SpendSnapshot
 	trailingSpendErr     error
@@ -91,7 +91,8 @@ type fakeStore struct {
 		since         time.Time
 		limit, offset int
 	}
-	countLiveSinceCalledWith []time.Time
+	listLiveSinceCalledWith []time.Time
+	listLiveSinceLimitWith  []int
 }
 
 func (f *fakeStore) LatestClassifications(
@@ -156,11 +157,12 @@ func (f *fakeStore) LiveEvents(
 	return f.liveEventsResult, f.liveEventsTotal, f.liveEventsErr
 }
 
-func (f *fakeStore) CountLiveEventsSince(
-	_ context.Context, since time.Time,
-) (int, error) {
-	f.countLiveSinceCalledWith = append(f.countLiveSinceCalledWith, since)
-	return f.countLiveSinceResult, f.countLiveSinceErr
+func (f *fakeStore) ListLiveEventsSince(
+	_ context.Context, since time.Time, limit int,
+) ([]store.Event, error) {
+	f.listLiveSinceCalledWith = append(f.listLiveSinceCalledWith, since)
+	f.listLiveSinceLimitWith = append(f.listLiveSinceLimitWith, limit)
+	return f.listLiveSinceResult, f.listLiveSinceErr
 }
 
 func (f *fakeStore) TrailingHoursSpend(_ context.Context, hours int) (store.SpendSnapshot, error) {

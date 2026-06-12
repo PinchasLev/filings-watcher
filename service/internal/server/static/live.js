@@ -1,11 +1,12 @@
-/* Freshness banner for the /live tape. Polls /api/live-since on a short
- * interval; when the server reports new material atom-ingested events
- * filed after the page rendered, surfaces a sticky banner inviting the
- * operator to refresh.
+/* Live tape auto-update for /live. Replaces the older banner-based
+ * approach: new filings appear at the top of #live-tape automatically,
+ * timestamps are localized to the viewer's timezone, no manual refresh
+ * required.
  *
- * Reads its baseline timestamp from data-since on its own <script> tag
- * — keeps the page CSP at script-src 'self' (no inline scripts) and
- * lets the server pin "since" to the exact moment the page rendered.
+ * Reads its starting baseline from data-since on its own <script> tag
+ * — keeps the page CSP at script-src 'self' (no inline scripts). The
+ * baseline advances after every successful poll, anchored to the
+ * newest fetched card's datetime attribute.
  */
 (function () {
   "use strict";
@@ -17,65 +18,85 @@
   var since = script.dataset.since;
   var POLL_INTERVAL_MS = 30000;
 
-  var banner = document.createElement("div");
-  banner.className = "live-banner";
-  banner.hidden = true;
-  banner.setAttribute("role", "status");
-  banner.setAttribute("aria-live", "polite");
-
-  var link = document.createElement("a");
-  link.href = "/live";
-  link.className = "live-banner-link";
-  banner.appendChild(link);
-
-  // Insert at the top of the main container so it sits above the tape
-  // but inside the visible content area.
-  function mountBanner() {
-    var container = document.querySelector("main.container");
-    if (container && container.firstChild) {
-      container.insertBefore(banner, container.firstChild);
-    } else {
-      document.body.insertBefore(banner, document.body.firstChild);
+  /* localizeTimes converts every <time class="submitted-at"> inside
+   * `scope` from its UTC fallback text to the viewer's local timezone.
+   * The original UTC ISO is preserved in the datetime attribute, so
+   * this is idempotent — re-running the function reads from the
+   * attribute, not from the displayed text.
+   */
+  function localizeTimes(scope) {
+    var nodes = scope.querySelectorAll("time.submitted-at");
+    for (var i = 0; i < nodes.length; i++) {
+      var t = nodes[i];
+      var iso = t.getAttribute("datetime");
+      if (!iso) continue;
+      var d = new Date(iso);
+      if (isNaN(d.getTime())) continue;
+      t.textContent = d.toLocaleString([], {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      });
     }
   }
 
-  function renderCount(n) {
-    if (n <= 0) {
-      banner.hidden = true;
-      return;
-    }
-    link.textContent =
-      n + " new filing" + (n === 1 ? "" : "s") + " since you loaded — refresh";
-    banner.hidden = false;
+  /* removeEmptyPlaceholder removes the "No filings in this window yet"
+   * paragraph once we successfully insert any cards. Otherwise it
+   * lingers above the freshly-prepended content.
+   */
+  function removeEmptyPlaceholder() {
+    var empty = document.getElementById("live-tape-empty");
+    if (empty) empty.remove();
   }
 
+  /* check polls the endpoint with the current since baseline, prepends
+   * any returned card HTML to #live-tape, localizes the new times,
+   * and advances since to the newest card's datetime attribute. */
   async function check() {
     try {
       var resp = await fetch(
-        "/api/live-since?since=" + encodeURIComponent(since),
+        "/api/live-events?since=" + encodeURIComponent(since),
         { cache: "no-store" }
       );
-      if (!resp.ok) {
-        return;
-      }
-      var data = await resp.json();
-      if (typeof data.new_count === "number") {
-        renderCount(data.new_count);
+      if (!resp.ok) return;
+      var html = (await resp.text()).trim();
+      if (!html) return;
+
+      var container = document.getElementById("live-tape");
+      if (!container) return;
+
+      // Endpoint returns cards in DESC order; insertAdjacentHTML with
+      // 'afterbegin' places the whole block at the top, preserving
+      // newest-on-top semantics inside the prepended group.
+      container.insertAdjacentHTML("afterbegin", html);
+      removeEmptyPlaceholder();
+      localizeTimes(container);
+
+      // Advance the baseline to the newest card we just inserted. The
+      // first <time.submitted-at> in the container is now the newest;
+      // its datetime attribute is the verbatim ISO from the server.
+      var newest = container.querySelector("time.submitted-at");
+      if (newest) {
+        var iso = newest.getAttribute("datetime");
+        if (iso) since = iso;
       }
     } catch (e) {
       // Silent — a transient network blip shouldn't pollute the console.
     }
   }
 
-  // Wait for DOM ready before mounting the banner, then start polling.
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", function () {
-      mountBanner();
-      check();
-    });
-  } else {
-    mountBanner();
+  function start() {
+    localizeTimes(document);
     check();
+    setInterval(check, POLL_INTERVAL_MS);
   }
-  setInterval(check, POLL_INTERVAL_MS);
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", start);
+  } else {
+    start();
+  }
 })();

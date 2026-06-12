@@ -1,9 +1,9 @@
-# SSM document that installs the periodic ingest under systemd: two
-# wrapper scripts, two oneshot service units, and two timers — one for
-# the Atom feed (ADR 0029, near-real-time) and one for the daily-index
-# reconciliation backstop (ADR 0021, evening cluster per ADR 0029).
-# The operator runs this once per host (e.g., after the first deploy
-# on a new instance).
+# SSM document that installs the periodic ingest under systemd: three
+# wrapper scripts, three oneshot service units, and three timers — the
+# Atom feed (ADR 0029, near-real-time), the daily-index reconciliation
+# backstop (ADR 0021, evening cluster per ADR 0029), and the classify
+# reconciler that heals orphaned filings (ADR 0030). The operator runs
+# this once per host (e.g., after the first deploy on a new instance).
 #
 # Why an SSM document rather than user_data: both timers depend on the
 # orchestrator release tree being present on disk
@@ -22,7 +22,13 @@
 #     daily-index file once per day around 22:00 ET; the cluster
 #     catches publication regardless of routine slippage, and the
 #     filings PK makes the redundant invocations free.
-#   - Both: TimeoutStartSec=12m bounds a stuck tick (SIGTERM at 12 min)
+#   - Classify reconciler: OnUnitInactiveSec=20m. Heals orphaned
+#     filings — a row with no classification (ADR 0030) — by re-running
+#     the map stage over stored body text; no EDGAR fetch. Cost-cap
+#     gated, idempotent, and continue-on-failure, so it drains a backlog
+#     across runs and a run racing a live tick is harmless (the
+#     classifications unique index makes any double-work a no-op).
+#   - All three: TimeoutStartSec=12m bounds a stuck tick (SIGTERM at 12 min)
 #     and flock -n --conflict-exit-code=0 protects against an operator-
 #     triggered run racing a scheduled one.
 #
@@ -42,7 +48,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
 
   content = jsonencode({
     schemaVersion = "2.2"
-    description   = "Install + enable the systemd timers for scan-atom-feed (30s) and scan-daily-index (evening cluster)"
+    description   = "Install + enable the systemd timers for scan-atom-feed (30s), scan-daily-index (evening cluster), and reclassify-orphans (20m reconciler)"
     mainSteps = [{
       action = "aws:runShellScript"
       name   = "install"
@@ -128,6 +134,25 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "TICK_EOF",
           "chmod 0755 /usr/local/bin/filings-atom-feed-tick",
           "chown root:root /usr/local/bin/filings-atom-feed-tick",
+          # --- Classify-reconciler wrapper ---
+          # Heals orphaned filings (a row with no classification, ADR 0030)
+          # by re-running the map stage over stored body text. Needs only the
+          # Anthropic credential and the DB path — no EDGAR user agent, because
+          # it never fetches from EDGAR (filing text is immutable). The cost cap
+          # is exported so a heal shares the same daily budget the live ticks
+          # consult and stops cleanly when it is reached.
+          "cat > /usr/local/bin/filings-reclassify-orphans-tick <<'TICK_EOF'",
+          "#!/bin/bash",
+          "set -euo pipefail",
+          "ANTHROPIC_API_KEY=$(aws ssm get-parameter --name /filings-watcher/anthropic-api-key --with-decryption --query Parameter.Value --output text --region ${var.aws_region})",
+          "export ANTHROPIC_API_KEY",
+          "export FILINGS_DB_PATH=/var/lib/filings-watcher/filings.db",
+          "export ANTHROPIC_DAILY_COST_CAP_USD=5.00",
+          "cd /opt/filings-watcher/current/orchestrator",
+          "exec /home/filings/.local/bin/uv run --no-sync reclassify-orphans",
+          "TICK_EOF",
+          "chmod 0755 /usr/local/bin/filings-reclassify-orphans-tick",
+          "chown root:root /usr/local/bin/filings-reclassify-orphans-tick",
           "install -d -o filings -g filings -m 0755 /var/lib/filings-watcher",
           # --- Daily-index service + timer ---
           "cat > /etc/systemd/system/filings-daily-index.service <<'SERVICE_EOF'",
@@ -197,9 +222,47 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "[Install]",
           "WantedBy=timers.target",
           "TIMER_EOF",
+          # --- Classify-reconciler service + timer ---
+          # OnUnitInactiveSec=20m: schedule the next heal 20 minutes after the
+          # previous one exits, so runs never overlap and a large backlog drains
+          # across runs rather than stacking. Its own lock file lets it run
+          # concurrently with the live ticks (different locks) — safe by the
+          # data-layer idempotency, no coordination needed (ADR 0030).
+          "cat > /etc/systemd/system/filings-reclassify-orphans.service <<'SERVICE_EOF'",
+          "[Unit]",
+          "Description=filings-watcher classify reconciler (heal orphaned filings)",
+          "Documentation=https://github.com/PinchasLev/filings-watcher",
+          "After=network-online.target",
+          "Wants=network-online.target",
+          "",
+          "[Service]",
+          "Type=oneshot",
+          "User=filings",
+          "Group=filings",
+          "TimeoutStartSec=12m",
+          "ExecStart=/usr/bin/flock -n --conflict-exit-code=0 /var/lib/filings-watcher/reclassify-orphans.lock /usr/local/bin/filings-reclassify-orphans-tick",
+          "StandardOutput=journal",
+          "StandardError=journal",
+          "SyslogIdentifier=filings-reclassify-orphans",
+          "NoNewPrivileges=true",
+          "PrivateTmp=true",
+          "SERVICE_EOF",
+          "cat > /etc/systemd/system/filings-reclassify-orphans.timer <<'TIMER_EOF'",
+          "[Unit]",
+          "Description=Periodic classify reconciler (orphan recovery, ADR 0030)",
+          "Documentation=https://github.com/PinchasLev/filings-watcher",
+          "",
+          "[Timer]",
+          "Unit=filings-reclassify-orphans.service",
+          "OnUnitInactiveSec=20min",
+          "",
+          "[Install]",
+          "WantedBy=timers.target",
+          "TIMER_EOF",
           "systemctl daemon-reload",
           "systemctl enable filings-daily-index.timer",
           "systemctl enable filings-atom-feed.timer",
+          "systemctl enable filings-reclassify-orphans.timer",
           # Fire one Atom invocation now so OnUnitInactiveSec has a
           # reference timestamp; subsequent invocations are scheduled 30
           # seconds after each one exits. systemctl start --no-block
@@ -207,11 +270,17 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           # run. The daily-index timer is OnCalendar and needs no
           # priming.
           "systemctl start --no-block filings-atom-feed.service",
+          # Prime the reconciler too so OnUnitInactiveSec has a reference
+          # timestamp; --no-block returns immediately, so this primed heal runs
+          # in the background and does not hold up the SSM step.
+          "systemctl start --no-block filings-reclassify-orphans.service",
           "systemctl start filings-daily-index.timer",
           "systemctl start filings-atom-feed.timer",
+          "systemctl start filings-reclassify-orphans.timer",
           "systemctl status --no-pager filings-daily-index.timer || true",
           "systemctl status --no-pager filings-atom-feed.timer || true",
-          "echo \"install + enable of filings-daily-index.timer and filings-atom-feed.timer complete\"",
+          "systemctl status --no-pager filings-reclassify-orphans.timer || true",
+          "echo \"install + enable of filings-daily-index.timer, filings-atom-feed.timer, and filings-reclassify-orphans.timer complete\"",
         ]
       }
     }]

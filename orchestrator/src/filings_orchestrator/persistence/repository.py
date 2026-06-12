@@ -613,7 +613,7 @@ def list_classified_accessions(engine: Engine) -> list[str]:
         return [str(row[0]) for row in result]
 
 
-def list_orphaned_accessions(engine: Engine) -> list[str]:
+def list_orphaned_accessions(engine: Engine, max_attempts: int | None = None) -> list[str]:
     """Return every filing that has a row but zero classifications.
 
     The orphan signature (ADR 0030): a `filings` row written before classify,
@@ -622,21 +622,52 @@ def list_orphaned_accessions(engine: Engine) -> list[str]:
     These are the work set of the classify reconciler. Ordered newest-first so
     a heal processes the operator-visible order, mirroring
     `list_classified_accessions`.
+
+    When `max_attempts` is given, filings whose `classify_attempts` have reached
+    it are excluded — the dead-letter set the reconciler has given up on after
+    repeated deterministic failures. `None` (the default) returns every orphan,
+    abandoned ones included.
+    """
+    sql = """
+        SELECT f.accession_number
+          FROM filings f
+          LEFT JOIN classifications c
+                 ON c.accession_number = f.accession_number
+         WHERE c.accession_number IS NULL
+    """
+    params: dict[str, object] = {}
+    if max_attempts is not None:
+        sql += " AND f.classify_attempts < :max_attempts"
+        params["max_attempts"] = max_attempts
+    sql += " ORDER BY f.filing_date DESC, f.accession_number"
+    with engine.begin() as conn:
+        return [str(row[0]) for row in conn.execute(text(sql), params)]
+
+
+def increment_classify_attempt(engine: Engine, accession_number: str) -> int:
+    """Bump a filing's deterministic-classification-failure counter; return the new value.
+
+    Called by the classify reconciler when an attempt fails for a reason intrinsic
+    to the filing (not a transient outage — see `is_retryable_error`). The returned
+    count drives the abandonment threshold (ADR 0030). Returns 0 if the accession
+    is absent (no row to bump).
     """
     with engine.begin() as conn:
-        result = conn.execute(
+        conn.execute(
             text(
                 """
-                SELECT f.accession_number
-                  FROM filings f
-                  LEFT JOIN classifications c
-                         ON c.accession_number = f.accession_number
-                 WHERE c.accession_number IS NULL
-                 ORDER BY f.filing_date DESC, f.accession_number
+                UPDATE filings
+                   SET classify_attempts = classify_attempts + 1
+                 WHERE accession_number = :a
                 """
-            )
+            ),
+            {"a": accession_number},
         )
-        return [str(row[0]) for row in result]
+        row = conn.execute(
+            text("SELECT classify_attempts FROM filings WHERE accession_number = :a"),
+            {"a": accession_number},
+        ).fetchone()
+    return int(row[0]) if row is not None else 0
 
 
 def load_filing_document(engine: Engine, accession_number: str) -> FilingDocument | None:

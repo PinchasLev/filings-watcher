@@ -126,6 +126,7 @@ def test_apply_migrations_creates_tables_and_records_version() -> None:
         "004_runs_and_events",
         "005_llm_calls",
         "006_submitted_at",
+        "007_classify_attempts",
     ]
 
     with engine.begin() as conn:

@@ -1,0 +1,27 @@
+-- 007_classify_attempts
+--
+-- Adds a per-filing counter of deterministic classification failures, the
+-- dead-letter half of the classify-layer reconciler (ADR 0030).
+--
+-- An orphan (a `filings` row with zero classifications) is normally healed by
+-- re-running the map stage — `reclassify-orphans`. Most orphans come from
+-- transient or credit failures and heal on the next attempt. A small number
+-- may fail deterministically: the model completes (tokens billed) but its
+-- output fails our schema, so every re-attempt re-burns tokens for the same
+-- rejection. Pure re-derivation cannot bound that, because "how many times
+-- have we failed" is not a function of the immutable source filing.
+--
+-- This column is that bound. The reconciler increments it on a non-transient
+-- classification failure and skips filings whose count has reached the
+-- abandonment threshold, so repeated runs (and a future timer) do not re-charge
+-- poison records. An abandoned filing is surfaced via a `classification_abandoned`
+-- structured event and can be retried explicitly (the reconciler's --force flag),
+-- e.g. after a model or prompt change, or after fixing an auth/credit issue that
+-- was mis-attributed as a content failure.
+--
+-- Type INTEGER NOT NULL DEFAULT 0: every existing and future row starts at zero
+-- attempts. Counts only deterministic failures; transient (rate-limit, 5xx,
+-- network) failures are retried freely by the in-call backoff and never touch
+-- this counter.
+
+ALTER TABLE filings ADD COLUMN classify_attempts INTEGER NOT NULL DEFAULT 0;

@@ -14,7 +14,9 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 import pytest
+from anthropic import APITimeoutError
 from sqlalchemy import Engine
 
 from filings_orchestrator.classify import (
@@ -23,16 +25,19 @@ from filings_orchestrator.classify import (
     FilingClassification,
     ItemClassification,
 )
-from filings_orchestrator.cli.reclassify_orphans import main
+from filings_orchestrator.cli.reclassify_orphans import _MAX_CLASSIFY_ATTEMPTS, main
 from filings_orchestrator.edgar.document import FilingDocument, ItemSection
 from filings_orchestrator.edgar.models import Filing, FilingItem
 from filings_orchestrator.persistence import apply_migrations, open_engine
 from filings_orchestrator.persistence.repository import (
+    increment_classify_attempt,
     insert_classifications,
     list_orphaned_accessions,
     load_filing_document,
     upsert_filing_document,
 )
+
+_EMIT_PATCH = "filings_orchestrator.cli.reclassify_orphans.emit"
 
 MIGRATIONS_DIR = (Path(__file__).resolve().parent.parent / "db" / "migrations").resolve()
 
@@ -216,3 +221,100 @@ def test_heal_continues_past_a_failure(
 
     # The good one healed; the bad one is still an orphan.
     assert list_orphaned_accessions(open_engine(str(configured_db))) == [bad]
+
+
+# --- dead-letter (ADR 0030) ---
+
+
+def test_list_orphaned_accessions_excludes_abandoned_at_limit() -> None:
+    engine = _fresh_db()
+    upsert_filing_document(engine, _document(ORPHAN))
+    for _ in range(_MAX_CLASSIFY_ATTEMPTS):
+        increment_classify_attempt(engine, ORPHAN)
+
+    assert list_orphaned_accessions(engine) == [ORPHAN]  # unfiltered: still an orphan
+    assert list_orphaned_accessions(engine, max_attempts=_MAX_CLASSIFY_ATTEMPTS) == []  # abandoned
+
+
+def test_increment_classify_attempt_returns_new_count() -> None:
+    engine = _fresh_db()
+    upsert_filing_document(engine, _document(ORPHAN))
+    assert increment_classify_attempt(engine, ORPHAN) == 1
+    assert increment_classify_attempt(engine, ORPHAN) == 2
+    assert increment_classify_attempt(engine, "9999999999-99-999999") == 0  # absent: no-op
+
+
+def test_deterministic_failure_abandons_at_limit(
+    configured_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = open_engine(str(configured_db))
+    upsert_filing_document(engine, _document(ORPHAN))
+    for _ in range(_MAX_CLASSIFY_ATTEMPTS - 1):  # one short of the limit
+        increment_classify_attempt(engine, ORPHAN)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr("sys.argv", ["reclassify-orphans"])
+
+    def _boom(engine: Engine, document: FilingDocument) -> int:
+        raise RuntimeError("schema rejected the model output")
+
+    events: list[str] = []
+
+    with (
+        patch(_CLASSIFY_PATCH, side_effect=_boom),
+        patch(_EMIT_PATCH, side_effect=lambda name, **_: events.append(name)),
+        pytest.raises(SystemExit) as exc,
+    ):
+        main()
+    assert exc.value.code == 1
+    assert "classification_abandoned" in events
+
+    fresh = open_engine(str(configured_db))
+    assert list_orphaned_accessions(fresh, max_attempts=_MAX_CLASSIFY_ATTEMPTS) == []  # parked
+    assert list_orphaned_accessions(fresh) == [ORPHAN]  # not lost
+
+
+def test_transient_failure_does_not_count_toward_abandonment(
+    configured_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    upsert_filing_document(open_engine(str(configured_db)), _document(ORPHAN))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr("sys.argv", ["reclassify-orphans"])
+
+    timeout = APITimeoutError(
+        request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    )
+    with patch(_CLASSIFY_PATCH, side_effect=timeout), pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 1
+    # A transient outage must not park an otherwise-healthy filing.
+    assert list_orphaned_accessions(
+        open_engine(str(configured_db)), max_attempts=_MAX_CLASSIFY_ATTEMPTS
+    ) == [ORPHAN]
+
+
+def test_force_retries_the_abandoned_set(
+    configured_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = open_engine(str(configured_db))
+    upsert_filing_document(engine, _document(ORPHAN))
+    for _ in range(_MAX_CLASSIFY_ATTEMPTS):  # already abandoned
+        increment_classify_attempt(engine, ORPHAN)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    def _heal(engine: Engine, document: FilingDocument) -> int:
+        insert_classifications(engine, _classification(document.filing.accession_number))
+        return 0
+
+    # Normal run skips the abandoned filing entirely.
+    monkeypatch.setattr("sys.argv", ["reclassify-orphans"])
+    with patch(_CLASSIFY_PATCH, side_effect=_heal) as mock_cr:
+        main()
+    mock_cr.assert_not_called()
+    assert list_orphaned_accessions(open_engine(str(configured_db))) == [ORPHAN]
+
+    # --force re-includes it and heals it.
+    monkeypatch.setattr("sys.argv", ["reclassify-orphans", "--force"])
+    with patch(_CLASSIFY_PATCH, side_effect=_heal) as mock_cr:
+        main()
+    mock_cr.assert_called_once()
+    assert list_orphaned_accessions(open_engine(str(configured_db))) == []

@@ -54,5 +54,5 @@
 {{end}}
 {{- /* Freshness-poll banner. Reads its baseline from data-since so the
        page CSP can stay at script-src 'self' (no inline scripts). */}}
-<script src="/static/live.js" data-since="{{.RenderedAt}}" defer></script>
+<script src="/static/live.js" data-since="{{.BannerSince}}" defer></script>
 {{end}}

@@ -20,7 +20,7 @@ from filings_orchestrator.classify import (
     reducer_version,
 )
 from filings_orchestrator.classify.retry import with_retries
-from filings_orchestrator.edgar import EdgarClient, fetch_filing_document
+from filings_orchestrator.edgar import EdgarClient, FilingDocument, fetch_filing_document
 from filings_orchestrator.edgar.filing_resolver import resolve_filing
 from filings_orchestrator.log_events import emit
 from filings_orchestrator.persistence.repository import (
@@ -88,6 +88,21 @@ def process_one(
     document = fetch_filing_document(filing, client)
     upsert_filing_document(engine, document)
 
+    return classify_and_reduce(engine, document)
+
+
+def classify_and_reduce(engine: Engine, document: FilingDocument) -> int:
+    """Classify a fetched-or-stored document and reduce it into events.
+
+    The map→reduce tail shared by the live ingest path (`process_one`, which
+    resolves and fetches first) and the classify reconciler (`reclassify-orphans`
+    per ADR 0030, which loads the document from stored body text). Classifies
+    with Anthropic-side retries, persists the classification — the irreplaceable
+    map output — before reduce runs, and reduces best-effort. Returns the reduce
+    failure count (0 or 1); a classify or persist failure raises.
+    """
+    accession_number = document.filing.accession_number
+    cik = document.filing.cik
     emit(
         "classification_started",
         accession_number=accession_number,

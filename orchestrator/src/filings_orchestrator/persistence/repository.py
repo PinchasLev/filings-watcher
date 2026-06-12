@@ -14,7 +14,7 @@ in place. The UNIQUE INDEX in the schema makes same-version writes idempotent
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy import Connection, Engine, bindparam, text
 
@@ -26,8 +26,8 @@ from filings_orchestrator.classify import (
     ItemClassification,
     domain_for,
 )
-from filings_orchestrator.edgar.document import FilingDocument
-from filings_orchestrator.edgar.models import Filing
+from filings_orchestrator.edgar.document import FilingDocument, ItemSection
+from filings_orchestrator.edgar.models import Filing, FilingItem
 
 
 def upsert_filing(engine: Engine, filing: Filing) -> None:
@@ -611,6 +611,82 @@ def list_classified_accessions(engine: Engine) -> list[str]:
             )
         )
         return [str(row[0]) for row in result]
+
+
+def list_orphaned_accessions(engine: Engine) -> list[str]:
+    """Return every filing that has a row but zero classifications.
+
+    The orphan signature (ADR 0030): a `filings` row written before classify,
+    then a mid-classify failure, leaves a filing the ingest dedup skips forever
+    because it keys on row-existence, not on whether the map stage completed.
+    These are the work set of the classify reconciler. Ordered newest-first so
+    a heal processes the operator-visible order, mirroring
+    `list_classified_accessions`.
+    """
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                """
+                SELECT f.accession_number
+                  FROM filings f
+                  LEFT JOIN classifications c
+                         ON c.accession_number = f.accession_number
+                 WHERE c.accession_number IS NULL
+                 ORDER BY f.filing_date DESC, f.accession_number
+                """
+            )
+        )
+        return [str(row[0]) for row in result]
+
+
+def load_filing_document(engine: Engine, accession_number: str) -> FilingDocument | None:
+    """Reconstruct a FilingDocument from the stored filing row.
+
+    Rebuilds the map stage's input from the persisted body text and parsed
+    sections, so the classify reconciler can re-run classification without
+    re-fetching from EDGAR (filing text is immutable — ADR 0028/0030). Returns
+    None when the filing is absent or has no stored body (a metadata-only row
+    the reconciler cannot classify without a re-fetch, which is out of scope).
+    """
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT cik, ticker, company_name, form, filing_date, report_date,
+                       primary_document, primary_document_url, items_json,
+                       body_text, body_size_bytes, sections_json, submitted_at
+                  FROM filings
+                 WHERE accession_number = :a
+                """
+            ),
+            {"a": accession_number},
+        ).fetchone()
+    if row is None:
+        return None
+    m = row._mapping
+    if m["body_text"] is None:
+        return None
+    filing = Filing(
+        cik=str(m["cik"]),
+        company_name=str(m["company_name"]),
+        ticker=m["ticker"],
+        form=str(m["form"]),
+        accession_number=accession_number,
+        filing_date=date.fromisoformat(str(m["filing_date"])),
+        report_date=date.fromisoformat(str(m["report_date"])) if m["report_date"] else None,
+        primary_document=str(m["primary_document"]),
+        primary_document_url=str(m["primary_document_url"]),
+        items=[FilingItem(**item) for item in json.loads(m["items_json"])],
+        submitted_at=m["submitted_at"],
+    )
+    sections = json.loads(m["sections_json"]) if m["sections_json"] else []
+    body_text = str(m["body_text"])
+    return FilingDocument(
+        filing=filing,
+        text=body_text,
+        items=[ItemSection(**section) for section in sections],
+        raw_size_bytes=int(m["body_size_bytes"]) if m["body_size_bytes"] is not None else 0,
+    )
 
 
 def load_latest_filing_classification(

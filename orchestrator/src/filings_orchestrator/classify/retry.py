@@ -44,6 +44,18 @@ _RETRYABLE_EXC: tuple[type[BaseException], ...] = (
 )
 
 
+def is_retryable_error(exc: BaseException) -> bool:
+    """True if `exc` is a transient Anthropic failure (rate-limit, 5xx, network).
+
+    `with_retries` already retries these in-call; when one still propagates, the
+    condition is sustained (an outage), not a property of the input. Callers that
+    bound re-attempts across runs — the classify reconciler's dead-letter counter
+    (ADR 0030) — use this to count only *deterministic* failures toward
+    abandonment, so a transient outage does not park otherwise-healthy filings.
+    """
+    return isinstance(exc, _RETRYABLE_EXC)
+
+
 def with_retries[T](
     fn: Callable[[], T],
     *,

@@ -135,11 +135,12 @@ type Store interface {
 	MaterialEvents(ctx context.Context, eventType string, limit, offset int) ([]Event, int, error)
 	CompanyEvents(ctx context.Context, cik string, limit, offset int) (*Company, []Event, int, error)
 	LiveEvents(ctx context.Context, since time.Time, limit, offset int) ([]Event, int, error)
-	// CountLiveEventsSince is the cheap "is there new material atom-ingest
-	// since the operator's page render?" count. Backs the /live page's
-	// polled freshness banner; cheaper than calling LiveEvents because it
-	// returns a single integer instead of materializing rows.
-	CountLiveEventsSince(ctx context.Context, since time.Time) (int, error)
+	// ListLiveEventsSince returns the latest-run material atom-ingested
+	// events whose submitted_at is strictly after `since`, in
+	// descending order, capped at `limit`. Backs the live tape's
+	// auto-prepend AJAX path: same filters as LiveEvents but anchored
+	// to a moving baseline instead of a rolling window.
+	ListLiveEventsSince(ctx context.Context, since time.Time, limit int) ([]Event, error)
 	MaterialEventTypeCounts(ctx context.Context) ([]EventTypeCount, error)
 	EventsByAccession(ctx context.Context, accession string) ([]EventWithItems, error)
 	// Operator dashboard reads. Aggregations against the existing tables;
@@ -774,15 +775,17 @@ func (s *store) CompanyEvents(ctx context.Context, cik string, limit, offset int
 // offset differences (EDT vs EST) don't produce off-by-an-hour misorderings
 // at the DST boundary. At v0 corpus size the function-on-column cost is
 // negligible; an index on submitted_at is a future optimization.
-// CountLiveEventsSince counts the latest-run material atom-ingested
-// events whose `submitted_at` is strictly after `since`. The strict ">"
-// avoids re-counting the boundary event that was the most recent at
-// page-render time. Filter mirrors LiveEvents: is_material=1,
-// submitted_at IS NOT NULL (atom-feed-only).
-func (s *store) CountLiveEventsSince(ctx context.Context, since time.Time) (int, error) {
+// ListLiveEventsSince returns material atom-ingested events strictly
+// newer than `since`, descending, capped at `limit`. Anchored on a
+// moving baseline (the newest event the viewer has already seen) so
+// the live tape can fetch only what hasn't been shown yet.
+func (s *store) ListLiveEventsSince(ctx context.Context, since time.Time, limit int) ([]Event, error) {
 	sinceUTC := since.UTC().Format(time.RFC3339Nano)
 	const q = latestRunEventsCTE + `
-		SELECT COUNT(*)
+		SELECT
+			e.id, e.run_id, e.accession_number, e.anchor_item_number,
+			e.event_type, e.event_domain, e.is_material, e.confidence, e.summary,
+			f.company_name, f.ticker, f.filing_date, f.submitted_at
 		FROM events e
 		JOIN latest_run lr
 			ON lr.accession_number = e.accession_number AND lr.run_id = e.run_id
@@ -790,12 +793,16 @@ func (s *store) CountLiveEventsSince(ctx context.Context, since time.Time) (int,
 		WHERE e.is_material = 1
 		  AND f.submitted_at IS NOT NULL
 		  AND datetime(f.submitted_at) > datetime(?)
+		ORDER BY datetime(f.submitted_at) DESC, e.accession_number, e.id
+		LIMIT ?
 	`
-	var n int
-	if err := s.db.QueryRowContext(ctx, q, sinceUTC).Scan(&n); err != nil {
-		return 0, fmt.Errorf("count live events since: %w", err)
+	rows, err := s.db.QueryContext(ctx, q, sinceUTC, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list live events since: %w", err)
 	}
-	return n, nil
+	defer rows.Close()
+
+	return scanEvents(rows)
 }
 
 func (s *store) LiveEvents(ctx context.Context, since time.Time, limit, offset int) ([]Event, int, error) {

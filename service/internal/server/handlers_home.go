@@ -45,6 +45,11 @@ var templateFuncs = template.FuncMap{
 	"mul":           func(a, b float64) float64 { return a * b },
 	"liveWindowURL": liveWindowURL,
 	"relTime":       relTimeFromISO,
+	// utcDateTime is the server-side fallback for the <time> elements on
+	// the live tape. JS localizes them to the viewer's timezone on
+	// render; if JS is blocked, the operator still sees an honest UTC
+	// timestamp instead of a stale relative-time label.
+	"utcDateTime": utcDateTimeFromISO,
 }
 
 // homeTemplate is parsed once at process start.
@@ -202,6 +207,24 @@ func pageURL(eventType string, targetOffset int, enabled bool) string {
 		return "/"
 	}
 	return "/?" + params.Encode()
+}
+
+// utcDateTimeFromISO renders an ISO 8601 timestamp string as
+// "YYYY-MM-DD HH:MM UTC" — the server-rendered fallback inside
+// <time> elements on the live tape. The viewer-timezone version is
+// rendered client-side by /static/live.js using the datetime
+// attribute on the same element. Returns empty when the input is
+// nil or unparseable so the template can simply omit the rendered
+// text — better than showing "0001-01-01" placeholder times.
+func utcDateTimeFromISO(ts *string) string {
+	if ts == nil || *ts == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, *ts)
+	if err != nil {
+		return ""
+	}
+	return t.UTC().Format("2006-01-02 15:04 UTC")
 }
 
 // relTimeFromISO renders an ISO 8601 timestamp string as a coarse

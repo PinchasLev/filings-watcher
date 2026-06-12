@@ -488,6 +488,112 @@ def latest_run_events_for_filing(engine: Engine, accession_number: str) -> list[
         return [dict(row._mapping) for row in result]
 
 
+def find_over_emitted_events(
+    engine: Engine, accession_number: str | None = None
+) -> list[dict[str, object]]:
+    """Find latest-run events whose Item set is subsumed by another event's.
+
+    The reduce stage should give every Item exactly one event, but the model
+    sometimes also emits a smaller, separately-anchored event whose contributing
+    Items are a subset of a larger event's — the same map output double-counted
+    (the ADIL Certificate-of-Designation case). `reducer._drop_subsumed_events`
+    now prevents this at write time; this read-only detector surfaces rows that
+    predate the fix or slip through, for backfill targeting and as a regression
+    check (it should return nothing once the corpus is re-reduced).
+
+    An event's Item set is its `anchor_item_number` plus the Item numbers of its
+    linked classifications. Within each filing's latest run, an event is reported
+    when its non-empty Item set is a proper subset of another event's, or equals
+    another's and has the larger `id` (so exact duplicates report all but the
+    first). The predicate mirrors `_drop_subsumed_events`, with the event `id` as
+    the stable tiebreak. Scoped to one filing when `accession_number` is given.
+
+    Each finding is a dict: `accession_number`, `subsumed_event_id`,
+    `subsumed_anchor`, `subsumed_items`, `container_event_id`,
+    `container_anchor`, `container_items` (item lists sorted).
+    """
+    sql = """
+        SELECT e.accession_number AS accession,
+               e.id               AS event_id,
+               e.anchor_item_number AS anchor,
+               c.item_number      AS item_number
+          FROM events e
+          LEFT JOIN event_classifications ec ON ec.event_id = e.id
+          LEFT JOIN classifications c ON c.id = ec.classification_id
+         WHERE e.run_id = (
+               SELECT MAX(run_id) FROM events e2
+                WHERE e2.accession_number = e.accession_number
+         )
+    """
+    params: dict[str, object] = {}
+    if accession_number is not None:
+        sql += " AND e.accession_number = :accession"
+        params["accession"] = accession_number
+    sql += " ORDER BY e.accession_number, e.id"
+
+    # Reassemble each event's Item set from the (possibly multi-row) join.
+    by_accession: dict[str, dict[int, dict[str, object]]] = {}
+    with engine.begin() as conn:
+        for row in conn.execute(text(sql), params):
+            m = row._mapping
+            accession = str(m["accession"])
+            event_id = int(m["event_id"])
+            event = by_accession.setdefault(accession, {}).setdefault(
+                event_id, {"anchor": m["anchor"], "items": set()}
+            )
+            items = event["items"]
+            assert isinstance(items, set)
+            if m["anchor"] is not None:
+                items.add(str(m["anchor"]))
+            if m["item_number"] is not None:
+                items.add(str(m["item_number"]))
+
+    findings: list[dict[str, object]] = []
+    for accession, events in by_accession.items():
+        for event_id, event in events.items():
+            item_set = event["items"]
+            assert isinstance(item_set, set)
+            if not item_set:
+                continue
+            container = _subsuming_event(event_id, item_set, events)
+            if container is None:
+                continue
+            container_id, container_event = container
+            container_items = container_event["items"]
+            assert isinstance(container_items, set)
+            findings.append(
+                {
+                    "accession_number": accession,
+                    "subsumed_event_id": event_id,
+                    "subsumed_anchor": event["anchor"],
+                    "subsumed_items": sorted(item_set),
+                    "container_event_id": container_id,
+                    "container_anchor": container_event["anchor"],
+                    "container_items": sorted(container_items),
+                }
+            )
+    findings.sort(key=lambda f: (f["accession_number"], f["subsumed_event_id"]))
+    return findings
+
+
+def _subsuming_event(
+    event_id: int, item_set: set[str], events: dict[int, dict[str, object]]
+) -> tuple[int, dict[str, object]] | None:
+    """Return the (id, event) that subsumes `event_id`, or None if it is maximal.
+
+    Mirrors `_drop_subsumed_events`: a proper superset wins; among exact-equal
+    sets the lower id wins, so duplicates report against their kept first.
+    """
+    for other_id, other in events.items():
+        if other_id == event_id:
+            continue
+        other_items = other["items"]
+        assert isinstance(other_items, set)
+        if item_set < other_items or (item_set == other_items and other_id < event_id):
+            return other_id, other
+    return None
+
+
 def list_classified_accessions(engine: Engine) -> list[str]:
     """Return every accession number that has at least one classification.
 

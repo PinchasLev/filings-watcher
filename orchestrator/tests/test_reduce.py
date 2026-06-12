@@ -145,6 +145,110 @@ def test_reduce_grounds_out_invented_item_numbers() -> None:
     assert event.contributing_item_numbers == ["1.01"]
 
 
+def _merger_classification() -> FilingClassification:
+    """An ADIL-style merger 8-K: several Items all describing one transaction."""
+    return _classification(
+        [
+            _item("1.01", "ma_activity", True, "Merger agreement entered into."),
+            _item("2.01", "ma_activity", True, "Completion of the acquisition."),
+            _item("5.03", "other_material", True, "Certificate of Designation for the merger."),
+            _item("7.01", "other_material", True, "Press release furnishing the merger."),
+        ]
+    )
+
+
+def test_reduce_drops_event_whose_items_are_subset_of_another() -> None:
+    """The ADIL case: the model collates the merger into one event AND re-emits a
+    standalone single-Item event for 5.03, whose Items are a subset of the merger.
+    The subset event is dropped so the same classification isn't double-counted."""
+    output = ReduceOutput(
+        events=[
+            ReducedEvent(
+                event_type=EventType("ma_activity"),
+                is_material=True,
+                confidence=0.9,
+                summary="The merger, collating every Item.",
+                anchor_item_number="2.01",
+                contributing_item_numbers=["1.01", "2.01", "5.03", "7.01"],
+            ),
+            ReducedEvent(
+                event_type=EventType("other_material"),
+                is_material=True,
+                confidence=0.6,
+                summary="Standalone Certificate of Designation — already part of the merger.",
+                anchor_item_number="5.03",
+                contributing_item_numbers=["5.03"],
+            ),
+        ]
+    )
+
+    result = _patched_reduce(_merger_classification(), output)
+
+    assert len(result.events) == 1
+    assert result.events[0].anchor_item_number == "2.01"
+    assert set(result.events[0].contributing_item_numbers) == {"1.01", "2.01", "5.03", "7.01"}
+
+
+def test_reduce_keeps_partially_overlapping_events() -> None:
+    """Two events sharing one Item but neither nested in the other are both kept:
+    a shared Item contributing to two distinct events is not over-emission."""
+    output = ReduceOutput(
+        events=[
+            ReducedEvent(
+                event_type=EventType("ma_activity"),
+                is_material=True,
+                confidence=0.9,
+                summary="Financing.",
+                anchor_item_number="1.01",
+                contributing_item_numbers=["1.01", "7.01"],
+            ),
+            ReducedEvent(
+                event_type=EventType("exec_appointment"),
+                is_material=True,
+                confidence=0.9,
+                summary="Appointment, also furnished in the same 7.01 press release.",
+                anchor_item_number="5.02",
+                contributing_item_numbers=["5.02", "7.01"],
+            ),
+        ]
+    )
+
+    result = _patched_reduce(_dec_classification(), output)
+
+    assert {e.anchor_item_number for e in result.events} == {"1.01", "5.02"}
+
+
+def test_reduce_collapses_duplicate_events_with_identical_items() -> None:
+    """Two events covering the exact same Item set are mutual subsets; the first
+    is kept and the duplicate dropped."""
+    output = ReduceOutput(
+        events=[
+            ReducedEvent(
+                event_type=EventType("ma_activity"),
+                is_material=True,
+                confidence=0.9,
+                summary="The financing, first emission.",
+                anchor_item_number="1.01",
+                contributing_item_numbers=["1.01", "2.03"],
+            ),
+            ReducedEvent(
+                event_type=EventType("other_material"),
+                is_material=True,
+                confidence=0.5,
+                summary="The same Items re-emitted under a different type.",
+                anchor_item_number="2.03",
+                contributing_item_numbers=["1.01", "2.03"],
+            ),
+        ]
+    )
+
+    result = _patched_reduce(_dec_classification(), output)
+
+    assert len(result.events) == 1
+    assert result.events[0].anchor_item_number == "1.01"
+    assert result.events[0].event_type == EventType("ma_activity")
+
+
 def test_reduce_single_item_is_passthrough_without_model_call() -> None:
     classification = _classification(
         [_item("2.02", "earnings_release", True, "Quarterly results.")]

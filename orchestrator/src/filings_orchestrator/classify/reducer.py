@@ -204,7 +204,7 @@ def reduce_filing(
     valid_items = {item.item_number for item in items}
     return FilingEvents(
         accession_number=accession,
-        events=_ground_events(output.events, valid_items),
+        events=_drop_subsumed_events(_ground_events(output.events, valid_items)),
     )
 
 
@@ -237,3 +237,35 @@ def _ground_events(events: list[ReducedEvent], valid_items: set[str]) -> list[Re
             )
         )
     return grounded
+
+
+def _drop_subsumed_events(events: list[ReducedEvent]) -> list[ReducedEvent]:
+    """Drop events whose contributing Items are wholly contained in another event.
+
+    The reduce prompt requires every Item to belong to exactly one event, but the
+    model sometimes also emits a smaller, separately-anchored event whose Items
+    are a subset of a larger event's — e.g. a merger 8-K where the Certificate-of-
+    Designation Item appears both inside the collated merger event and again as a
+    standalone single-Item event. That smaller event is backed by the same
+    classifications already subsumed by the larger one, so emitting it double-
+    counts the same map output in downstream views and counts.
+
+    An event is kept only when its contributing-Item set is maximal: not a proper
+    subset of any other event's set. Exact-duplicate sets (identical contributing
+    Items) are mutual subsets — keep the first occurrence, drop the rest. Events
+    with partially overlapping but non-nested sets are left untouched: a shared
+    Item that genuinely contributes to two distinct events is not over-emission.
+    Order is otherwise preserved.
+    """
+    item_sets = [frozenset(e.contributing_item_numbers) for e in events]
+    kept: list[ReducedEvent] = []
+    for i, event in enumerate(events):
+        subsumed = any(
+            item_sets[i] < item_sets[j]  # proper subset of a larger event
+            or (item_sets[i] == item_sets[j] and j < i)  # earlier-kept duplicate set
+            for j in range(len(events))
+            if j != i
+        )
+        if not subsumed:
+            kept.append(event)
+    return kept

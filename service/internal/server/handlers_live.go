@@ -43,7 +43,15 @@ type livePageData struct {
 	WindowHours   int
 	WindowOptions []int
 	SinceUTC      string
-	RenderedAt    string // RFC3339, page-render time. Used as the freshness-poll baseline.
+	// BannerSince is the baseline the freshness banner counts against:
+	// the newest visible event's submitted_at (events are sorted DESC,
+	// so events[0]). Falls back to page-render time when the window is
+	// empty. Using "newest visible" instead of "page-render time" means
+	// the banner only fires for filings that arrived AFTER what's shown
+	// at the top — so a tab left open for hours doesn't accumulate a
+	// misleading count of filings that already appear on the page after
+	// refresh.
+	BannerSince   string
 	Events        []store.Event
 	FilteredTotal int
 	RangeStart    int
@@ -65,13 +73,22 @@ func handleLive(s storer) http.HandlerFunc {
 			return
 		}
 
+		// Banner baseline: newest visible event's submitted_at when there
+		// are events on the page (events are sorted DESC, so events[0]).
+		// Otherwise the freshness banner has nothing to anchor against, so
+		// fall back to page-render time.
+		bannerSince := now.UTC().Format(time.RFC3339)
+		if len(events) > 0 && events[0].SubmittedAt != nil {
+			bannerSince = *events[0].SubmittedAt
+		}
+
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := liveTemplate.ExecuteTemplate(w, "layout.html.tmpl", livePageData{
 			Nav:           "live",
 			WindowHours:   hours,
 			WindowOptions: liveWindowOptions,
 			SinceUTC:      since.UTC().Format(time.RFC3339),
-			RenderedAt:    now.UTC().Format(time.RFC3339),
+			BannerSince:   bannerSince,
 			Events:        events,
 			FilteredTotal: filteredTotal,
 			RangeStart:    pageRangeStart(offset, len(events)),

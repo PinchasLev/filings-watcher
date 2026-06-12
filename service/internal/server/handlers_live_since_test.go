@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PinchasLev/filings-watcher/service/internal/server"
+	"github.com/PinchasLev/filings-watcher/service/internal/store"
 )
 
 // TestHandleLiveSinceHappyPath: valid since, store returns N, JSON shape
@@ -110,10 +111,10 @@ func TestHandleLiveScriptServesEmbeddedFile(t *testing.T) {
 	}
 }
 
-// TestHandleLiveEmbedsScriptTagWithRenderedAt confirms the /live page
-// renders the <script src="/static/live.js" data-since="..."> tag so the
-// poller has a baseline.
-func TestHandleLiveEmbedsScriptTagWithRenderedAt(t *testing.T) {
+// TestHandleLiveEmbedsScriptTag confirms the /live page renders the
+// <script src="/static/live.js" data-since="..."> tag so the poller
+// has a baseline timestamp.
+func TestHandleLiveEmbedsScriptTag(t *testing.T) {
 	fake := &fakeStore{}
 
 	rec := httptest.NewRecorder()
@@ -126,6 +127,74 @@ func TestHandleLiveEmbedsScriptTagWithRenderedAt(t *testing.T) {
 	}
 	if !strings.Contains(body, `data-since="`) {
 		t.Errorf("/live response missing data-since attribute")
+	}
+}
+
+// TestHandleLiveBannerSinceIsNewestVisibleEventTimestamp confirms the
+// freshness banner is anchored to the newest visible event's
+// submitted_at, not to page-render time. That's the fix for the "tab
+// open for hours" UX problem where the banner accumulated a count of
+// filings that would already be on the page after refresh.
+func TestHandleLiveBannerSinceIsNewestVisibleEventTimestamp(t *testing.T) {
+	newest := "2026-06-11T17:30:43-04:00"
+	older := "2026-06-11T14:00:00-04:00"
+	fake := &fakeStore{
+		liveEventsResult: []store.Event{
+			{
+				AccessionNumber: "0001-26-001",
+				IsMaterial:      true,
+				SubmittedAt:     &newest, // events sorted DESC: this is at index 0
+				CompanyName:     "Acme",
+				FilingDate:      "2026-06-11",
+			},
+			{
+				AccessionNumber: "0002-26-002",
+				IsMaterial:      true,
+				SubmittedAt:     &older,
+				CompanyName:     "Older Co.",
+				FilingDate:      "2026-06-11",
+			},
+		},
+		liveEventsTotal: 2,
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/live", nil)
+	server.New(fake).ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	// data-since must match the newest visible event's submitted_at.
+	// HTML-escaping turns the ":" inside the offset into "&#43;"? No —
+	// only "&", "<", ">", "\"", "'" are escaped by html/template's
+	// default contextual auto-escaping for attribute values. Colons
+	// pass through verbatim.
+	want := `data-since="` + newest + `"`
+	if !strings.Contains(body, want) {
+		t.Errorf("/live response missing %q; banner would re-fire on already-visible events", want)
+	}
+}
+
+// TestHandleLiveBannerSinceFallsBackToNowOnEmptyWindow confirms the
+// empty-window path. When no events render, the banner has no event to
+// anchor against and falls back to "now" so it stays quiet until
+// something genuinely new arrives.
+func TestHandleLiveBannerSinceFallsBackToNowOnEmptyWindow(t *testing.T) {
+	fake := &fakeStore{liveEventsResult: nil, liveEventsTotal: 0}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/live", nil)
+	server.New(fake).ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `data-since="`) {
+		t.Errorf("/live response missing data-since attribute on empty window")
+	}
+	// On empty window the data-since should be a current UTC timestamp
+	// (Z suffix), not a stale one. A loose check that it starts with the
+	// current year is sufficient — exact-time matching is racy.
+	thisYear := time.Now().UTC().Format("2006")
+	if !strings.Contains(body, `data-since="`+thisYear) {
+		t.Errorf("expected data-since to start with current year %q", thisYear)
 	}
 }
 

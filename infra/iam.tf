@@ -85,3 +85,27 @@ resource "aws_iam_role_policy" "host_otel_cloudwatch_logs" {
   role   = aws_iam_role.host.id
   policy = data.aws_iam_policy_document.host_otel_cloudwatch_logs.json
 }
+
+# The host pushes liveness heartbeats (HostHeartbeat, DrainerHeartbeat) to
+# CloudWatch for the dead-man's-switch (ADR 0031). PutMetricData has no
+# resource-level permissions, so it is scoped instead by a condition on the
+# metric namespace — the role can write only to the filings-watcher namespace,
+# not to arbitrary CloudWatch metrics.
+data "aws_iam_policy_document" "host_cloudwatch_metrics" {
+  statement {
+    actions   = ["cloudwatch:PutMetricData"]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "cloudwatch:namespace"
+      values   = ["filings-watcher"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "host_cloudwatch_metrics" {
+  name   = "filings-watcher-host-cloudwatch-metrics"
+  role   = aws_iam_role.host.id
+  policy = data.aws_iam_policy_document.host_cloudwatch_metrics.json
+}

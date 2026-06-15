@@ -1,10 +1,12 @@
-# SSM document that installs the periodic ingest under systemd: four
-# wrapper scripts, four oneshot service units, and four timers — the
+# SSM document that installs the periodic ingest under systemd: five
+# wrapper scripts, five oneshot service units, and five timers — the
 # Atom feed (ADR 0029, near-real-time), the daily-index reconciliation
 # backstop (ADR 0021, evening cluster per ADR 0029), the classify
-# reconciler that heals orphaned filings (ADR 0030), and the alarm
-# drainer that delivers queued alerts to Discord (ADR 0031). The operator
-# runs this once per host (e.g., after the first deploy on a new instance).
+# reconciler that heals orphaned filings (ADR 0030), the alarm drainer
+# that delivers queued alerts to Discord (ADR 0031), and the host
+# heartbeat that feeds the external CloudWatch dead-man's-switch (ADR
+# 0031). The operator runs this once per host (e.g., after the first
+# deploy on a new instance).
 #
 # Why an SSM document rather than user_data: both timers depend on the
 # orchestrator release tree being present on disk
@@ -57,7 +59,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
 
   content = jsonencode({
     schemaVersion = "2.2"
-    description   = "Install + enable the systemd timers for scan-atom-feed (30s), scan-daily-index (evening cluster), reclassify-orphans (20m reconciler), and alarm-drain (2m alert delivery)"
+    description   = "Install + enable the systemd timers for scan-atom-feed (30s), scan-daily-index (evening cluster), reclassify-orphans (20m reconciler), alarm-drain (2m alert delivery), and host-heartbeat (5m dead-man's-switch)"
     mainSteps = [{
       action = "aws:runShellScript"
       name   = "install"
@@ -179,10 +181,39 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "export DISCORD_ALERTS_WEBHOOK_URL DISCORD_INFO_WEBHOOK_URL",
           "export FILINGS_DB_PATH=/var/lib/filings-watcher/filings.db",
           "cd /opt/filings-watcher/current/orchestrator",
-          "exec /home/filings/.local/bin/uv run --no-sync alarm-drain",
+          "set +e",
+          "/home/filings/.local/bin/uv run --no-sync alarm-drain",
+          "rc=$?",
+          "set -e",
+          # DrainerHeartbeat for the dead-man's-switch (ADR 0031): emit when the
+          # pass actually ran — rc 0 (clean) or rc 1 (some POSTs failed but the
+          # process is alive and retries next pass). Withhold on rc >= 2
+          # (misconfig / hard failure) so the drainer-heartbeat-missing alarm
+          # fires. This proves the alert-delivery path itself is alive, which the
+          # generic HostHeartbeat cannot. A failed metric push does not fail the
+          # unit (|| true) — a transient miss won't trip the 15-min alarm, and a
+          # persistent one IS the signal.
+          "if [ \"$rc\" -eq 0 ] || [ \"$rc\" -eq 1 ]; then",
+          "  aws cloudwatch put-metric-data --namespace filings-watcher --metric-name DrainerHeartbeat --value 1 --region ${var.aws_region} || true",
+          "fi",
+          "exit $rc",
           "TICK_EOF",
           "chmod 0755 /usr/local/bin/filings-alarm-drain-tick",
           "chown root:root /usr/local/bin/filings-alarm-drain-tick",
+          # --- Host-heartbeat wrapper ---
+          # Pushes a HostHeartbeat metric to CloudWatch for the dead-man's-switch
+          # (ADR 0031). A pure box-liveness probe — touches no app state, runs as
+          # root, deliberately independent of the filings user / DB / release
+          # tree, so it keeps signalling even if the app is wedged. If the box is
+          # dead, unreachable, or its IAM/network to CloudWatch is broken, the
+          # metric stops arriving and the heartbeat-missing alarm fires.
+          "cat > /usr/local/bin/filings-host-heartbeat-tick <<'TICK_EOF'",
+          "#!/bin/bash",
+          "set -euo pipefail",
+          "exec aws cloudwatch put-metric-data --namespace filings-watcher --metric-name HostHeartbeat --value 1 --region ${var.aws_region}",
+          "TICK_EOF",
+          "chmod 0755 /usr/local/bin/filings-host-heartbeat-tick",
+          "chown root:root /usr/local/bin/filings-host-heartbeat-tick",
           "install -d -o filings -g filings -m 0755 /var/lib/filings-watcher",
           # --- Daily-index service + timer ---
           "cat > /etc/systemd/system/filings-daily-index.service <<'SERVICE_EOF'",
@@ -326,11 +357,45 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "[Install]",
           "WantedBy=timers.target",
           "TIMER_EOF",
+          # --- Host-heartbeat service + timer ---
+          # OnUnitInactiveSec=5min. Runs as root (no User= line) — a box-liveness
+          # probe independent of the app user. No flock: a single idempotent
+          # metric push, no shared state to guard.
+          "cat > /etc/systemd/system/filings-host-heartbeat.service <<'SERVICE_EOF'",
+          "[Unit]",
+          "Description=filings-watcher host heartbeat (CloudWatch dead-man's-switch)",
+          "Documentation=https://github.com/PinchasLev/filings-watcher",
+          "After=network-online.target",
+          "Wants=network-online.target",
+          "",
+          "[Service]",
+          "Type=oneshot",
+          "TimeoutStartSec=2m",
+          "ExecStart=/usr/local/bin/filings-host-heartbeat-tick",
+          "StandardOutput=journal",
+          "StandardError=journal",
+          "SyslogIdentifier=filings-host-heartbeat",
+          "NoNewPrivileges=true",
+          "PrivateTmp=true",
+          "SERVICE_EOF",
+          "cat > /etc/systemd/system/filings-host-heartbeat.timer <<'TIMER_EOF'",
+          "[Unit]",
+          "Description=Periodic host heartbeat (CloudWatch dead-man's-switch, ADR 0031)",
+          "Documentation=https://github.com/PinchasLev/filings-watcher",
+          "",
+          "[Timer]",
+          "Unit=filings-host-heartbeat.service",
+          "OnUnitInactiveSec=5min",
+          "",
+          "[Install]",
+          "WantedBy=timers.target",
+          "TIMER_EOF",
           "systemctl daemon-reload",
           "systemctl enable filings-daily-index.timer",
           "systemctl enable filings-atom-feed.timer",
           "systemctl enable filings-reclassify-orphans.timer",
           "systemctl enable filings-alarm-drain.timer",
+          "systemctl enable filings-host-heartbeat.timer",
           # Fire one Atom invocation now so OnUnitInactiveSec has a
           # reference timestamp; subsequent invocations are scheduled 30
           # seconds after each one exits. systemctl start --no-block
@@ -347,15 +412,21 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           # queued in alerts_outbox since the producers shipped, subject to the
           # freshness window (stale INFO is retired without posting).
           "systemctl start --no-block filings-alarm-drain.service",
+          # Prime the host heartbeat so OnUnitInactiveSec has a reference and the
+          # first metric lands immediately (otherwise the alarm, which treats
+          # missing data as breaching, would page before the first push).
+          "systemctl start --no-block filings-host-heartbeat.service",
           "systemctl start filings-daily-index.timer",
           "systemctl start filings-atom-feed.timer",
           "systemctl start filings-reclassify-orphans.timer",
           "systemctl start filings-alarm-drain.timer",
+          "systemctl start filings-host-heartbeat.timer",
           "systemctl status --no-pager filings-daily-index.timer || true",
           "systemctl status --no-pager filings-atom-feed.timer || true",
           "systemctl status --no-pager filings-reclassify-orphans.timer || true",
           "systemctl status --no-pager filings-alarm-drain.timer || true",
-          "echo \"install + enable of filings-daily-index.timer, filings-atom-feed.timer, filings-reclassify-orphans.timer, and filings-alarm-drain.timer complete\"",
+          "systemctl status --no-pager filings-host-heartbeat.timer || true",
+          "echo \"install + enable of filings-daily-index.timer, filings-atom-feed.timer, filings-reclassify-orphans.timer, filings-alarm-drain.timer, and filings-host-heartbeat.timer complete\"",
         ]
       }
     }]

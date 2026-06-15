@@ -1,8 +1,8 @@
-"""Tests for the alerting outbox (ADR 0031): emit_alert + repository half.
+"""Tests for the alerting outbox (ADR 0031): emit_alert + outbox DB half.
 
 Uses in-memory SQLite with the on-disk migrations applied, like
 test_persistence. Covers the producer side only — the drainer (delivery to
-Discord) lands in a later PR.
+Discord) is exercised in test_alarm_drain.
 """
 
 from __future__ import annotations
@@ -12,9 +12,9 @@ from pathlib import Path
 import pytest
 from sqlalchemy import Engine, text
 
-from filings_orchestrator.alerts import ALERT, INFO, emit_alert
+from filings_orchestrator.alerting import ALERT, INFO, emit_alert
+from filings_orchestrator.alerting.outbox import fetch_undelivered_alerts, insert_alert
 from filings_orchestrator.persistence import apply_migrations, open_engine
-from filings_orchestrator.persistence.repository import fetch_undelivered_alerts, insert_alert
 
 MIGRATIONS_DIR = (Path(__file__).resolve().parent.parent / "db" / "migrations").resolve()
 

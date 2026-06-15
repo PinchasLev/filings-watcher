@@ -40,6 +40,7 @@ scan-tickers = "filings_orchestrator.cli.scan_tickers:main"
 reduce-corpus = "filings_orchestrator.cli.reduce_corpus:main"
 detect-over-emission = "filings_orchestrator.cli.detect_over_emission:main"
 reclassify-orphans = "filings_orchestrator.cli.reclassify_orphans:main"
+alarm-drain = "filings_orchestrator.alerting.drain:main"
 
 [build-system]
 requires = ["uv_build>=0.11.14,<0.12.0"]

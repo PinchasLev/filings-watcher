@@ -41,6 +41,7 @@ import os
 import sys
 from datetime import UTC, datetime
 
+from filings_orchestrator.alerts import ALERT, INFO, emit_alert
 from filings_orchestrator.classify.retry import is_retryable_error
 from filings_orchestrator.cli._pipeline import classify_and_reduce
 from filings_orchestrator.config import (
@@ -175,6 +176,22 @@ def main() -> None:
                         error_class=type(exc).__name__,
                         message=str(exc),
                     )
+                    # A dead-lettered filing is the canonical "needs a human"
+                    # signal (ADR 0030/0031): it has burned tokens N times on a
+                    # deterministic failure and no automatic path will retry it.
+                    # dedup_key on the accession so the drainer pages once, not
+                    # every time a later run re-encounters it.
+                    emit_alert(
+                        engine,
+                        ALERT,
+                        "Classification abandoned",
+                        body=f"{accession} failed classification {attempts} times "
+                        f"({type(exc).__name__}) and was dead-lettered; it needs review.",
+                        dedup_key=f"classification_abandoned:{accession}",
+                        accession=accession,
+                        attempts=attempts,
+                        error_class=type(exc).__name__,
+                    )
             emit(
                 "reclassify_failed",
                 accession=accession,
@@ -197,6 +214,21 @@ def main() -> None:
         remaining=len(orphans) - reclassified,
         already_abandoned=already_abandoned,
     )
+    # Situational-awareness ping when the reconciler actually healed something —
+    # a backlog draining is worth a glance but needs no action, so it goes to
+    # the INFO channel. Silent when there was nothing to heal (the steady state),
+    # so this does not chatter on every 20-minute tick.
+    if reclassified:
+        emit_alert(
+            engine,
+            INFO,
+            "Orphans reclassified",
+            body=f"The classify reconciler healed {reclassified} orphaned filing(s).",
+            reclassified=reclassified,
+            failed=failed,
+            newly_abandoned=newly_abandoned,
+            stopped_at_cap=stopped_at_cap,
+        )
     if failed:
         sys.exit(1)
 

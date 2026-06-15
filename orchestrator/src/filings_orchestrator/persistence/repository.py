@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, date, datetime
+from typing import NamedTuple
 
 from sqlalchemy import Connection, Engine, bindparam, text
 
@@ -875,3 +876,95 @@ def daily_token_usage(engine: Engine, day_utc: str) -> dict[str, int]:
         "cache_read_tokens": int(row[2]),
         "cache_creation_tokens": int(row[3]),
     }
+
+
+# --- Alerting outbox (ADR 0031) -------------------------------------------
+#
+# The write half takes a Connection, not an Engine, so a caller can emit an
+# alert in the SAME transaction as the state change that warrants it — the
+# transactional-outbox guarantee. `emit_alert` (alerts.py) provides the
+# common standalone-transaction wrapper over this. The read half is the
+# drainer's work set and lands paired with the drainer CLI.
+
+
+class PendingAlert(NamedTuple):
+    """One undelivered row of the alerting outbox, as the drainer sees it."""
+
+    id: int
+    created_at: str
+    severity: str
+    title: str
+    body: str | None
+    fields: dict[str, object]
+    dedup_key: str | None
+
+
+def insert_alert(
+    conn: Connection,
+    *,
+    severity: str,
+    title: str,
+    body: str | None = None,
+    fields: dict[str, object] | None = None,
+    dedup_key: str | None = None,
+    created_at: str | None = None,
+) -> None:
+    """Append one row to `alerts_outbox` using the caller's connection.
+
+    Takes a `Connection` rather than an `Engine` deliberately: the alert is
+    written inside whatever transaction the caller already holds, so it
+    commits atomically with the work it reports (ADR 0031). For the standalone
+    case — no surrounding transaction — use `emit_alert`, which opens its own.
+
+    `fields` is serialized to the `fields_json` column; `created_at` defaults
+    to now (UTC, ISO 8601). Delivery columns (`delivered_at`, `attempts`,
+    `last_error`) take their schema defaults — this is the producer half only.
+    """
+    conn.execute(
+        text(
+            """
+            INSERT INTO alerts_outbox (
+                created_at, severity, title, body, fields_json, dedup_key
+            )
+            VALUES (:created_at, :severity, :title, :body, :fields_json, :dedup_key)
+            """
+        ),
+        {
+            "created_at": created_at or datetime.now(UTC).isoformat(),
+            "severity": severity,
+            "title": title,
+            "body": body,
+            "fields_json": json.dumps(fields or {}),
+            "dedup_key": dedup_key,
+        },
+    )
+
+
+def fetch_undelivered_alerts(engine: Engine, *, limit: int | None = None) -> list[PendingAlert]:
+    """Return undelivered outbox rows, oldest first — the drainer's work set.
+
+    `delivered_at IS NULL` is the work predicate (matched by the partial index
+    from migration 008). `limit` bounds a single drain pass; None returns all.
+    """
+    sql = """
+        SELECT id, created_at, severity, title, body, fields_json, dedup_key
+          FROM alerts_outbox
+         WHERE delivered_at IS NULL
+         ORDER BY created_at, id
+    """
+    if limit is not None:
+        sql += "\n         LIMIT :limit"
+    with engine.begin() as conn:
+        rows = conn.execute(text(sql), {"limit": limit} if limit is not None else {}).fetchall()
+    return [
+        PendingAlert(
+            id=int(r[0]),
+            created_at=r[1],
+            severity=r[2],
+            title=r[3],
+            body=r[4],
+            fields=json.loads(r[5]) if r[5] else {},
+            dedup_key=r[6],
+        )
+        for r in rows
+    ]

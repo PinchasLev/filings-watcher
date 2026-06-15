@@ -44,6 +44,16 @@ variable "acme_email" {
   }
 }
 
+variable "alarm_email" {
+  description = "Email subscribed to the CloudWatch alarms SNS topic — the external dead-man's-switch (ADR 0031). Kept in gitignored tfvars like acme_email, not committed. The subscription must be confirmed via the emailed link before notifications deliver. The SNS topic fans out, so a later Discord/SMS bridge is an added subscription, not a change here."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.alarm_email))
+    error_message = "alarm_email must be a valid email address."
+  }
+}
+
 variable "otel_collector_version" {
   description = "OpenTelemetry Collector Contrib version to install on the host (e.g., \"0.121.0\"). Operator-controlled so version bumps are an SSM rerun, not a code change. See ADR 0018."
   type        = string

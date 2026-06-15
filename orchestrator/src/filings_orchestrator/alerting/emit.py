@@ -46,9 +46,16 @@ def emit_alert(
 
     `severity` must be `ALERT` or `INFO` (it routes the Discord channel).
     `title` is the headline; `body` an optional longer detail; `dedup_key` an
-    optional coalescing key the drainer uses to suppress re-paging a standing
-    condition (None = always deliver). Remaining keyword args become the
-    structured `fields` the drainer renders into the message.
+    optional coalescing key (None = always deliver). Remaining keyword args
+    become the structured `fields` the drainer renders into the message.
+
+    Choosing `dedup_key`: pick it at the granularity the operator *acts on*. A
+    per-entity key (e.g. `classification_abandoned:{accession}`) pages once per
+    independently-actionable thing. A per-cause key (e.g. `classify_outage`)
+    collapses one root cause that trips across many entities into a single page
+    instead of a storm. Within the drainer's repeat window (ALERT_REPEAT_HOURS)
+    a key pages at most once; a still-firing condition re-pages once per window
+    until the producer stops emitting it.
     """
     if severity not in _VALID_SEVERITIES:
         raise ValueError(

@@ -26,10 +26,16 @@ backlog. So delivery is severity-aware: an `info` row older than
 situational awareness has no value late. `alert` rows have no TTL: an old
 dead-letter still needs a human, and `dedup_key` already collapses repeats.
 
-**Dedup.** A pending row whose `dedup_key` already has a delivered sibling is
-retired without posting — the condition already paged for its window (the window
-lives in the key, e.g. one cost-cap alert per UTC day). Within a single pass,
-the first row for a key delivers and later ones coalesce.
+**Dedup + renotification.** A pending row whose `dedup_key` was delivered within
+the last `ALERT_REPEAT_HOURS` (default 4) is retired without posting — so a
+single root cause that keeps tripping (a hot-looping panic, a standing absence
+condition) pages at most once per window instead of on every occurrence. Once
+the window lapses, a still-firing condition re-pages as a "still broken"
+reminder; when the condition clears the producer simply stops emitting and the
+reminders stop (the implicit "resolved" — an explicit resolve is a future
+enhancement). Within a single pass, the first row for a key delivers and later
+ones coalesce. Choose the key at the granularity the operator acts on: per-entity
+for "this filing needs review", per-cause for "the system is broken".
 
 Needs the DB path always; needs the two webhook URLs only for a real pass
 (`--dry-run` does not). Output is JSON-line structured events to stdout; exits
@@ -64,6 +70,7 @@ from filings_orchestrator.log_events import emit
 from filings_orchestrator.persistence import open_engine
 
 _DEFAULT_INFO_TTL_MINUTES = 30.0
+_DEFAULT_REPEAT_HOURS = 4.0
 
 
 def _is_stale(alert: PendingAlert, now: datetime, info_ttl_minutes: float) -> bool:
@@ -85,15 +92,18 @@ def _drain(
     *,
     limit: int | None,
     info_ttl_minutes: float,
+    repeat_hours: float,
     dry_run: bool,
 ) -> dict[str, int]:
     """Run one delivery pass; return the per-outcome counts."""
     now = datetime.now(UTC)
     pending = fetch_undelivered_alerts(engine, limit=limit)
 
-    # One query for the whole batch: which dedup_keys already paged.
+    # One query for the whole batch: which dedup_keys paged within the repeat
+    # window. A key last delivered before the cutoff is eligible to re-page.
+    repeat_cutoff = (now - timedelta(hours=repeat_hours)).isoformat()
     candidate_keys = [a.dedup_key for a in pending if a.dedup_key]
-    already_paged = delivered_dedup_keys(engine, candidate_keys)
+    already_paged = delivered_dedup_keys(engine, candidate_keys, delivered_since=repeat_cutoff)
     paged_this_pass: set[str] = set()
 
     delivered = suppressed_stale = suppressed_dup = failed = unroutable = 0
@@ -188,12 +198,14 @@ def main() -> None:
     db_path = get_config_str("FILINGS_DB_PATH", default="/var/lib/filings-watcher/filings.db")
     engine = open_engine(db_path)
     info_ttl_minutes = get_config_float("ALERT_INFO_TTL_MINUTES", _DEFAULT_INFO_TTL_MINUTES)
+    repeat_hours = get_config_float("ALERT_REPEAT_HOURS", _DEFAULT_REPEAT_HOURS)
 
     emit(
         "alarm_drain_started",
         dry_run=args.dry_run,
         limit=args.limit,
         info_ttl_minutes=info_ttl_minutes,
+        repeat_hours=repeat_hours,
     )
 
     # --dry-run inspects routing/freshness without delivering, so it needs no
@@ -216,6 +228,7 @@ def main() -> None:
         channel_url,
         limit=args.limit,
         info_ttl_minutes=info_ttl_minutes,
+        repeat_hours=repeat_hours,
         dry_run=args.dry_run,
     )
 

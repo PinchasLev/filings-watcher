@@ -148,13 +148,18 @@ def record_alert_delivery_failure(engine: Engine, alert_id: int, error: str) -> 
         )
 
 
-def delivered_dedup_keys(engine: Engine, keys: list[str]) -> set[str]:
-    """Return which of `keys` already have a delivered row (the coalesce set).
+def delivered_dedup_keys(engine: Engine, keys: list[str], *, delivered_since: str) -> set[str]:
+    """Return which of `keys` were delivered at or after `delivered_since`.
 
-    The drainer suppresses a pending alert whose `dedup_key` already paged: the
-    period lives in the key itself (e.g. `cost_cap:2026-06-15`), so a key that
-    has ever been delivered means "this condition was already reported for its
-    window". Empty `keys` short-circuits to an empty set (no query).
+    This is the drainer's renotification window: a key delivered *recently*
+    (within the repeat interval) suppresses a fresh pending alert, but a key
+    last delivered *before* `delivered_since` is eligible to page again — so a
+    standing, still-firing condition re-pages once per window as a "still
+    broken" reminder, rather than alerting once and going silent forever.
+
+    `delivered_since` is an ISO-8601 UTC cutoff; our timestamps share the
+    `+00:00` offset, so the lexicographic `>=` is a correct time comparison.
+    Empty `keys` short-circuits to an empty set (no query).
     """
     if not keys:
         return set()
@@ -165,9 +170,10 @@ def delivered_dedup_keys(engine: Engine, keys: list[str]) -> set[str]:
                 SELECT DISTINCT dedup_key
                   FROM alerts_outbox
                  WHERE delivered_at IS NOT NULL
+                   AND delivered_at >= :delivered_since
                    AND dedup_key IN :keys
                 """
             ).bindparams(bindparam("keys", expanding=True)),
-            {"keys": keys},
+            {"delivered_since": delivered_since, "keys": keys},
         ).fetchall()
     return {r[0] for r in rows}

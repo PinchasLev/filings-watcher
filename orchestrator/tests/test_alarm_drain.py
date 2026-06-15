@@ -69,14 +69,20 @@ def _undelivered_titles(engine: Engine) -> list[str]:
 
 
 def _drain_once(
-    engine: Engine, notifier: FakeNotifier, *, info_ttl_minutes: float = 30.0, dry_run: bool = False
-):
+    engine: Engine,
+    notifier: FakeNotifier,
+    *,
+    info_ttl_minutes: float = 30.0,
+    repeat_hours: float = 4.0,
+    dry_run: bool = False,
+) -> dict[str, int]:
     return _drain(
         engine,
         notifier,
         CHANNELS,
         limit=None,
         info_ttl_minutes=info_ttl_minutes,
+        repeat_hours=repeat_hours,
         dry_run=dry_run,
     )
 
@@ -137,6 +143,29 @@ def test_dedup_suppresses_against_already_delivered_sibling() -> None:
     assert counts["suppressed_dup"] == 1
     assert notifier2.sent == []
     assert _undelivered_titles(engine) == []
+
+
+def test_dedup_repages_after_repeat_window_lapses() -> None:
+    engine = _fresh_db()
+    _seed(engine, severity=ALERT, title="still broken", dedup_key="classify_outage")
+    _drain_once(engine, FakeNotifier())  # first page
+
+    # Backdate the delivered row beyond the repeat window: the condition is
+    # still firing (a fresh row), so it must page again as a "still broken"
+    # reminder rather than stay suppressed forever.
+    with engine.begin() as conn:
+        old = (datetime.now(UTC) - timedelta(hours=5)).isoformat()
+        conn.execute(
+            text("UPDATE alerts_outbox SET delivered_at = :old WHERE delivered_at IS NOT NULL"),
+            {"old": old},
+        )
+    _seed(engine, severity=ALERT, title="still broken (reminder)", dedup_key="classify_outage")
+    notifier = FakeNotifier()
+    counts = _drain_once(engine, notifier, repeat_hours=4.0)
+
+    assert counts["delivered"] == 1
+    assert counts["suppressed_dup"] == 0
+    assert [n.title for _, n in notifier.sent] == ["still broken (reminder)"]
 
 
 def test_dedup_coalesces_within_a_single_pass() -> None:

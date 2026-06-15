@@ -1,9 +1,10 @@
-# SSM document that installs the periodic ingest under systemd: three
-# wrapper scripts, three oneshot service units, and three timers — the
+# SSM document that installs the periodic ingest under systemd: four
+# wrapper scripts, four oneshot service units, and four timers — the
 # Atom feed (ADR 0029, near-real-time), the daily-index reconciliation
-# backstop (ADR 0021, evening cluster per ADR 0029), and the classify
-# reconciler that heals orphaned filings (ADR 0030). The operator runs
-# this once per host (e.g., after the first deploy on a new instance).
+# backstop (ADR 0021, evening cluster per ADR 0029), the classify
+# reconciler that heals orphaned filings (ADR 0030), and the alarm
+# drainer that delivers queued alerts to Discord (ADR 0031). The operator
+# runs this once per host (e.g., after the first deploy on a new instance).
 #
 # Why an SSM document rather than user_data: both timers depend on the
 # orchestrator release tree being present on disk
@@ -28,9 +29,17 @@
 #     gated, idempotent, and continue-on-failure, so it drains a backlog
 #     across runs and a run racing a live tick is harmless (the
 #     classifications unique index makes any double-work a no-op).
-#   - All three: TimeoutStartSec=12m bounds a stuck tick (SIGTERM at 12 min)
-#     and flock -n --conflict-exit-code=0 protects against an operator-
-#     triggered run racing a scheduled one.
+#   - Alarm drainer: OnUnitInactiveSec=2m. Reads alerts_outbox and POSTs
+#     undelivered rows to the right Discord channel by severity (ADR 0031),
+#     so a panic or dead-letter reaches the operator within ~2 minutes. Pure
+#     delivery — no Anthropic/EDGAR credential, no cost cap (it never
+#     classifies or fetches). Its TimeoutStartSec is 5m, not 12m: a drain
+#     pass is a handful of HTTP POSTs, so a pass still running after 5 min is
+#     stuck and should be reaped. Idempotent across runs (delivered_at marks
+#     a row done) and flock-guarded like the others.
+#   - The three ingest/reconciler ticks: TimeoutStartSec=12m bounds a stuck
+#     tick (SIGTERM at 12 min) and flock -n --conflict-exit-code=0 protects
+#     against an operator-triggered run racing a scheduled one.
 #
 # An initial invocation of the Atom service is fired explicitly at the
 # end of the install so OnUnitInactiveSec has a reference point —
@@ -48,7 +57,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
 
   content = jsonencode({
     schemaVersion = "2.2"
-    description   = "Install + enable the systemd timers for scan-atom-feed (30s), scan-daily-index (evening cluster), and reclassify-orphans (20m reconciler)"
+    description   = "Install + enable the systemd timers for scan-atom-feed (30s), scan-daily-index (evening cluster), reclassify-orphans (20m reconciler), and alarm-drain (2m alert delivery)"
     mainSteps = [{
       action = "aws:runShellScript"
       name   = "install"
@@ -153,6 +162,27 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "TICK_EOF",
           "chmod 0755 /usr/local/bin/filings-reclassify-orphans-tick",
           "chown root:root /usr/local/bin/filings-reclassify-orphans-tick",
+          # --- Alarm-drain wrapper ---
+          # One delivery pass: read alerts_outbox and POST undelivered rows to
+          # the right Discord channel by severity (ADR 0031). Fetches the two
+          # channel webhook URLs from Parameter Store at run time (operator-
+          # seeded SecureStrings, never in Terraform state). Needs no Anthropic
+          # or EDGAR credential and no cost cap — it never classifies or fetches,
+          # it only reads a table and POSTs. ALERT_INFO_TTL_MINUTES and
+          # ALERT_REPEAT_HOURS are left unset so the drainer uses its config.py
+          # defaults (30m / 4h); set them here to override.
+          "cat > /usr/local/bin/filings-alarm-drain-tick <<'TICK_EOF'",
+          "#!/bin/bash",
+          "set -euo pipefail",
+          "DISCORD_ALERTS_WEBHOOK_URL=$(aws ssm get-parameter --name /filings-watcher/discord-alerts-webhook-url --with-decryption --query Parameter.Value --output text --region ${var.aws_region})",
+          "DISCORD_INFO_WEBHOOK_URL=$(aws ssm get-parameter --name /filings-watcher/discord-info-webhook-url --with-decryption --query Parameter.Value --output text --region ${var.aws_region})",
+          "export DISCORD_ALERTS_WEBHOOK_URL DISCORD_INFO_WEBHOOK_URL",
+          "export FILINGS_DB_PATH=/var/lib/filings-watcher/filings.db",
+          "cd /opt/filings-watcher/current/orchestrator",
+          "exec /home/filings/.local/bin/uv run --no-sync alarm-drain",
+          "TICK_EOF",
+          "chmod 0755 /usr/local/bin/filings-alarm-drain-tick",
+          "chown root:root /usr/local/bin/filings-alarm-drain-tick",
           "install -d -o filings -g filings -m 0755 /var/lib/filings-watcher",
           # --- Daily-index service + timer ---
           "cat > /etc/systemd/system/filings-daily-index.service <<'SERVICE_EOF'",
@@ -259,10 +289,48 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "[Install]",
           "WantedBy=timers.target",
           "TIMER_EOF",
+          # --- Alarm-drain service + timer ---
+          # OnUnitInactiveSec=2min: schedule the next drain 2 minutes after the
+          # previous one exits, so passes never overlap and an undelivered row
+          # waits at most ~2 min plus the previous pass. Its own lock file lets
+          # it run independently of the ingest/reconciler ticks. TimeoutStartSec
+          # is 5m (a drain is just HTTP POSTs); a longer-running pass is stuck.
+          "cat > /etc/systemd/system/filings-alarm-drain.service <<'SERVICE_EOF'",
+          "[Unit]",
+          "Description=filings-watcher alarm drainer (deliver queued alerts to Discord)",
+          "Documentation=https://github.com/PinchasLev/filings-watcher",
+          "After=network-online.target",
+          "Wants=network-online.target",
+          "",
+          "[Service]",
+          "Type=oneshot",
+          "User=filings",
+          "Group=filings",
+          "TimeoutStartSec=5m",
+          "ExecStart=/usr/bin/flock -n --conflict-exit-code=0 /var/lib/filings-watcher/alarm-drain.lock /usr/local/bin/filings-alarm-drain-tick",
+          "StandardOutput=journal",
+          "StandardError=journal",
+          "SyslogIdentifier=filings-alarm-drain",
+          "NoNewPrivileges=true",
+          "PrivateTmp=true",
+          "SERVICE_EOF",
+          "cat > /etc/systemd/system/filings-alarm-drain.timer <<'TIMER_EOF'",
+          "[Unit]",
+          "Description=Periodic alarm drainer (deliver queued alerts, ADR 0031)",
+          "Documentation=https://github.com/PinchasLev/filings-watcher",
+          "",
+          "[Timer]",
+          "Unit=filings-alarm-drain.service",
+          "OnUnitInactiveSec=2min",
+          "",
+          "[Install]",
+          "WantedBy=timers.target",
+          "TIMER_EOF",
           "systemctl daemon-reload",
           "systemctl enable filings-daily-index.timer",
           "systemctl enable filings-atom-feed.timer",
           "systemctl enable filings-reclassify-orphans.timer",
+          "systemctl enable filings-alarm-drain.timer",
           # Fire one Atom invocation now so OnUnitInactiveSec has a
           # reference timestamp; subsequent invocations are scheduled 30
           # seconds after each one exits. systemctl start --no-block
@@ -274,13 +342,20 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           # timestamp; --no-block returns immediately, so this primed heal runs
           # in the background and does not hold up the SSM step.
           "systemctl start --no-block filings-reclassify-orphans.service",
+          # Prime the drainer too so OnUnitInactiveSec has a reference timestamp;
+          # --no-block returns immediately. This first pass delivers whatever has
+          # queued in alerts_outbox since the producers shipped, subject to the
+          # freshness window (stale INFO is retired without posting).
+          "systemctl start --no-block filings-alarm-drain.service",
           "systemctl start filings-daily-index.timer",
           "systemctl start filings-atom-feed.timer",
           "systemctl start filings-reclassify-orphans.timer",
+          "systemctl start filings-alarm-drain.timer",
           "systemctl status --no-pager filings-daily-index.timer || true",
           "systemctl status --no-pager filings-atom-feed.timer || true",
           "systemctl status --no-pager filings-reclassify-orphans.timer || true",
-          "echo \"install + enable of filings-daily-index.timer, filings-atom-feed.timer, and filings-reclassify-orphans.timer complete\"",
+          "systemctl status --no-pager filings-alarm-drain.timer || true",
+          "echo \"install + enable of filings-daily-index.timer, filings-atom-feed.timer, filings-reclassify-orphans.timer, and filings-alarm-drain.timer complete\"",
         ]
       }
     }]

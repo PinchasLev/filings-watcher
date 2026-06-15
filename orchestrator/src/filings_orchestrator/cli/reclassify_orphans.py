@@ -41,7 +41,7 @@ import os
 import sys
 from datetime import UTC, datetime
 
-from filings_orchestrator.alerts import ALERT, INFO, emit_alert
+from filings_orchestrator.alerting import ALERT, INFO, emit_alert
 from filings_orchestrator.classify.retry import is_retryable_error
 from filings_orchestrator.cli._pipeline import classify_and_reduce
 from filings_orchestrator.config import (

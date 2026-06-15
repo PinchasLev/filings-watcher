@@ -127,6 +127,7 @@ def test_apply_migrations_creates_tables_and_records_version() -> None:
         "005_llm_calls",
         "006_submitted_at",
         "007_classify_attempts",
+        "008_alerts_outbox",
     ]
 
     with engine.begin() as conn:
@@ -143,6 +144,7 @@ def test_apply_migrations_creates_tables_and_records_version() -> None:
         "events",
         "event_classifications",
         "llm_calls",
+        "alerts_outbox",
         "schema_versions",
     }.issubset(tables)
 

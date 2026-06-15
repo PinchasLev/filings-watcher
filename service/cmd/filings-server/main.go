@@ -16,6 +16,7 @@ import (
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
+	"github.com/PinchasLev/filings-watcher/service/internal/alerts"
 	"github.com/PinchasLev/filings-watcher/service/internal/config"
 	otelsetup "github.com/PinchasLev/filings-watcher/service/internal/otel"
 	"github.com/PinchasLev/filings-watcher/service/internal/server"
@@ -60,11 +61,28 @@ func main() {
 		}
 	}()
 
+	// Alert writer (ADR 0031): a dedicated write handle to the shared DB for
+	// raising operator alerts (e.g. a recovered handler panic). Non-critical —
+	// if it can't be opened, fall back to a no-op so the service still serves
+	// reads. Alerting must never be the reason the site is down.
+	var emitter alerts.Emitter = alerts.Nop{}
+	if w, err := alerts.Open(cfg.DBPath, logger); err != nil {
+		logger.Warn("alert writer unavailable; service alerts disabled", "error", err)
+	} else {
+		emitter = w
+		defer func() {
+			if err := w.Close(); err != nil {
+				logger.Error("alert writer close failed", "error", err)
+			}
+		}()
+	}
+
 	// otelhttp wraps the mux so every request becomes a span with
 	// http.* semantic-convention attributes (method, route, status code,
 	// duration). The span name shown here is the surface name, not the
-	// per-request name — the contrib package fills the route in.
-	handler := otelhttp.NewHandler(server.New(s), "filings-server")
+	// per-request name — the contrib package fills the route in. RecoverPanic
+	// sits inside the span wrapper so a panic still yields a recorded span.
+	handler := otelhttp.NewHandler(server.RecoverPanic(emitter, server.New(s)), "filings-server")
 
 	// Graceful shutdown. systemd sends SIGTERM on stop/restart and waits
 	// TimeoutStopSec (default 90s) before SIGKILL. We listen for SIGTERM

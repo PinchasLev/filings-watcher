@@ -32,6 +32,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from opentelemetry import trace
 
+from filings_orchestrator.alerting import ALERT, emit_alert
 from filings_orchestrator.cli._pipeline import process_one
 from filings_orchestrator.config import MissingConfigError, load_config
 from filings_orchestrator.cost import db_llm_call_sink, set_cost_sink
@@ -213,11 +214,32 @@ def main() -> None:
         # consumers route weekend dates as informational and business-day
         # misses as alarm-eligible.
         if today_publication_missing and datetime.now(_EASTERN).hour >= 23:
+            is_business_day = _is_business_day(today_et)
             emit(
                 "daily_index_publication_missing",
                 date=today_et.isoformat(),
-                is_business_day=_is_business_day(today_et),
+                is_business_day=is_business_day,
             )
+            # Absence alarm (ADR 0031): a business-day miss at the end of the
+            # evening cluster means EDGAR slipped its publish OR our ingest is
+            # broken — either way filings for today may be missing, which a human
+            # should look at. Weekend/holiday misses are expected, so they stay
+            # informational (structured log only). dedup_key per date so a single
+            # dark day pages once, not on every late-cluster invocation.
+            if is_business_day:
+                emit_alert(
+                    engine,
+                    ALERT,
+                    "Daily index not published",
+                    body=(
+                        f"EDGAR's daily index for {today_et.isoformat()} was not found by "
+                        f"the end of the evening cluster. EDGAR may have slipped its publish, "
+                        f"or our ingest is broken — today's filings may be missing. Check the "
+                        f"EDGAR full-index site and the ingest logs."
+                    ),
+                    dedup_key=f"daily_index_missing:{today_et.isoformat()}",
+                    date=today_et.isoformat(),
+                )
 
         duration_ms = int((datetime.now(UTC) - tick_started_at).total_seconds() * 1000)
         span.set_attribute("dates_scanned", [d.isoformat() for d in target_dates])

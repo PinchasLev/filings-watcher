@@ -360,6 +360,14 @@ def test_scan_daily_index_emits_publication_missing_at_2300_et_on_business_day(
     assert missing["date"] == "2026-05-19"
     assert missing["is_business_day"] is True
 
+    # A business-day miss also raises an operator ALERT (ADR 0031), deduped per date.
+    with open_engine(str(configured_env)).begin() as conn:
+        rows = conn.execute(text("SELECT severity, title, dedup_key FROM alerts_outbox")).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "alert"
+    assert rows[0][1] == "Daily index not published"
+    assert rows[0][2] == "daily_index_missing:2026-05-19"
+
 
 def test_scan_daily_index_does_not_emit_publication_missing_before_2300_et(
     configured_env: Path,
@@ -420,6 +428,12 @@ def test_scan_daily_index_publication_missing_marks_weekend_as_not_business_day(
     missing = next(e for e in events if e["event"] == "daily_index_publication_missing")
     assert missing["date"] == "2026-05-16"
     assert missing["is_business_day"] is False
+
+    # A weekend miss is expected EDGAR behavior, so no ALERT is raised — the
+    # structured log carries it as informational only.
+    with open_engine(str(configured_env)).begin() as conn:
+        count = conn.execute(text("SELECT COUNT(*) FROM alerts_outbox")).scalar()
+    assert count == 0
 
 
 def test_dates_to_scan_returns_today_when_cursor_unset() -> None:

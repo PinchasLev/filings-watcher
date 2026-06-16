@@ -19,6 +19,7 @@ import pytest
 from anthropic import APITimeoutError
 from sqlalchemy import Engine, text
 
+from filings_orchestrator.alerting.outbox import fetch_undelivered_alerts
 from filings_orchestrator.classify import (
     Classification,
     EventType,
@@ -228,6 +229,52 @@ def test_grace_window_skips_a_just_fetched_orphan(
     mock_cr.assert_not_called()  # within grace → not healed
     # Still an orphan (no cutoff), just deliberately deferred this run.
     assert list_orphaned_accessions(open_engine(str(configured_db))) == [ORPHAN]
+
+
+def test_backlog_alert_fires_when_orphans_exceed_threshold(
+    configured_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("CLASSIFY_BACKLOG_ALERT_THRESHOLD", "0")  # any orphan trips it
+    upsert_filing_document(open_engine(str(configured_db)), _document(ORPHAN))
+    monkeypatch.setattr("sys.argv", ["reclassify-orphans"])
+
+    def _heal(engine: Engine, document: FilingDocument) -> int:
+        insert_classifications(engine, _classification(document.filing.accession_number))
+        return 0
+
+    with patch(_CLASSIFY_PATCH, side_effect=_heal):
+        main()
+
+    backlog = [
+        a
+        for a in fetch_undelivered_alerts(open_engine(str(configured_db)))
+        if a.title == "Classify backlog is deep"
+    ]
+    assert len(backlog) == 1
+    assert backlog[0].severity == "alert"
+    assert backlog[0].dedup_key is not None
+    assert backlog[0].dedup_key.startswith("classify_backlog:")
+    assert backlog[0].fields["orphans"] == 1
+
+
+def test_no_backlog_alert_under_threshold(
+    configured_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Default threshold (50) with a single orphan: no backlog alert.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    upsert_filing_document(open_engine(str(configured_db)), _document(ORPHAN))
+    monkeypatch.setattr("sys.argv", ["reclassify-orphans"])
+
+    def _heal(engine: Engine, document: FilingDocument) -> int:
+        insert_classifications(engine, _classification(document.filing.accession_number))
+        return 0
+
+    with patch(_CLASSIFY_PATCH, side_effect=_heal):
+        main()
+
+    titles = [a.title for a in fetch_undelivered_alerts(open_engine(str(configured_db)))]
+    assert "Classify backlog is deep" not in titles
 
 
 def test_heal_stops_at_cost_cap_before_classifying(

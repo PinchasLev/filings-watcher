@@ -77,6 +77,13 @@ _MAX_CLASSIFY_ATTEMPTS = 3
 # genuine orphan heals, since the reconciler only fires every ~20 minutes anyway.
 _DEFAULT_ORPHAN_GRACE_MINUTES = 5.0
 
+# Above this many real (grace-filtered) orphans, the reconciler is not keeping
+# up — a deep, non-draining backlog worth a human's attention (cost-cap
+# throttling, persistent classify failures, or a filing flood). Conservative by
+# default since steady state is ~0; the depth rides in the alert fields so the
+# operator sees how deep when it fires. Env-tunable.
+_DEFAULT_BACKLOG_ALERT_THRESHOLD = 50.0
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -148,6 +155,27 @@ def main() -> None:
         emit("reclassify_orphans_failed", error_class="MissingConfigError", message=str(exc))
         sys.exit(2)
     os.environ["ANTHROPIC_API_KEY"] = anthropic_key
+
+    # Backlog-depth alarm (ADR 0031): surface a deep, non-draining orphan backlog
+    # before attempting this run's heal, so the standing condition pages even
+    # while the reconciler chips away at it. dedup_key per UTC date keeps a
+    # multi-hour backlog to one page per day (the drainer's repeat window
+    # re-pages it through the day while it persists).
+    backlog_threshold = get_config_float(
+        "CLASSIFY_BACKLOG_ALERT_THRESHOLD", _DEFAULT_BACKLOG_ALERT_THRESHOLD
+    )
+    if total_orphans > backlog_threshold:
+        emit_alert(
+            engine,
+            ALERT,
+            "Classify backlog is deep",
+            body=f"{total_orphans} filings are unclassified and not draining "
+            f"(threshold {int(backlog_threshold)}). The classify reconciler may be falling "
+            f"behind — check for cost-cap throttling or persistent classification failures.",
+            dedup_key=f"classify_backlog:{datetime.now(UTC).date().isoformat()}",
+            orphans=total_orphans,
+            already_abandoned=already_abandoned,
+        )
 
     cap_usd = get_config_float("ANTHROPIC_DAILY_COST_CAP_USD", _DEFAULT_DAILY_COST_CAP_USD)
     # Route classify/reduce LLM-call observations through the DB sink so the

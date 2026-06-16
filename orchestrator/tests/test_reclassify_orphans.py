@@ -10,14 +10,14 @@ covered elsewhere.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 import httpx
 import pytest
 from anthropic import APITimeoutError
-from sqlalchemy import Engine
+from sqlalchemy import Engine, text
 
 from filings_orchestrator.classify import (
     Classification,
@@ -112,6 +112,29 @@ def test_list_orphaned_accessions_returns_only_unclassified() -> None:
     assert list_orphaned_accessions(engine) == [ORPHAN]
 
 
+def test_list_orphaned_accessions_grace_excludes_recently_fetched() -> None:
+    engine = _fresh_db()
+    upsert_filing_document(engine, _document(ORPHAN))  # fetched_at defaults to now
+    now = datetime.now(UTC)
+    cutoff = (now - timedelta(minutes=5)).isoformat()
+
+    # Just-fetched: the live path is probably still classifying it, so a 5-minute
+    # grace window excludes it — the reconciler must not race the live tick.
+    assert list_orphaned_accessions(engine, fetched_before=cutoff) == []
+
+    # Backdate the row past the window → a genuine orphan the live path is done
+    # with, so it is now in the work set.
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE filings SET fetched_at = :old WHERE accession_number = :acc"),
+            {"old": (now - timedelta(minutes=10)).isoformat(), "acc": ORPHAN},
+        )
+    assert list_orphaned_accessions(engine, fetched_before=cutoff) == [ORPHAN]
+
+    # No cutoff → unconditional orphan (the default, unchanged behavior).
+    assert list_orphaned_accessions(engine) == [ORPHAN]
+
+
 def test_load_filing_document_reconstructs_from_stored_row() -> None:
     engine = _fresh_db()
     upsert_filing_document(engine, _document(ORPHAN))
@@ -138,6 +161,11 @@ def test_load_filing_document_returns_none_when_absent() -> None:
 def configured_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "filings.db"
     monkeypatch.setenv("FILINGS_DB_PATH", str(db_path))
+    # These CLI tests upsert orphans with fetched_at = now and exercise the
+    # heal/abandon logic, not the grace window. Disable the window so a
+    # just-seeded orphan is in the work set; the window itself is covered by the
+    # repository test and the dedicated CLI test below.
+    monkeypatch.setenv("ORPHAN_GRACE_MINUTES", "0")
     apply_migrations(open_engine(str(db_path)), migrations_dir=MIGRATIONS_DIR)
     return db_path
 
@@ -182,6 +210,24 @@ def test_heal_reclassifies_and_clears_orphan(
     mock_cr.assert_called_once()
     assert mock_cr.call_args.args[1].filing.accession_number == ORPHAN
     assert list_orphaned_accessions(open_engine(str(configured_db))) == []
+
+
+def test_grace_window_skips_a_just_fetched_orphan(
+    configured_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Override the fixture's disabled window with a real one: a just-upserted
+    # orphan (fetched_at = now) is within the grace window, so the reconciler
+    # must leave it for the live tick rather than race it.
+    monkeypatch.setenv("ORPHAN_GRACE_MINUTES", "5")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    upsert_filing_document(open_engine(str(configured_db)), _document(ORPHAN))
+    monkeypatch.setattr("sys.argv", ["reclassify-orphans"])
+
+    with patch(_CLASSIFY_PATCH) as mock_cr:
+        main()
+    mock_cr.assert_not_called()  # within grace → not healed
+    # Still an orphan (no cutoff), just deliberately deferred this run.
+    assert list_orphaned_accessions(open_engine(str(configured_db))) == [ORPHAN]
 
 
 def test_heal_stops_at_cost_cap_before_classifying(

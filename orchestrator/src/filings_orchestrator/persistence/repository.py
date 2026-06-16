@@ -613,7 +613,11 @@ def list_classified_accessions(engine: Engine) -> list[str]:
         return [str(row[0]) for row in result]
 
 
-def list_orphaned_accessions(engine: Engine, max_attempts: int | None = None) -> list[str]:
+def list_orphaned_accessions(
+    engine: Engine,
+    max_attempts: int | None = None,
+    fetched_before: str | None = None,
+) -> list[str]:
     """Return every filing that has a row but zero classifications.
 
     The orphan signature (ADR 0030): a `filings` row written before classify,
@@ -627,6 +631,14 @@ def list_orphaned_accessions(engine: Engine, max_attempts: int | None = None) ->
     it are excluded — the dead-letter set the reconciler has given up on after
     repeated deterministic failures. `None` (the default) returns every orphan,
     abandoned ones included.
+
+    When `fetched_before` (ISO 8601 UTC) is given, filings whose row was written
+    at or after that cutoff are excluded. The live ingest path upserts the
+    `filings` row *before* it classifies, so a just-fetched filing is almost
+    certainly mid-classification in the live tick rather than a genuine failure.
+    A grace cutoff keeps the reconciler from racing the live path over a filing
+    that was never actually orphaned — which would burn duplicate LLM work and
+    raise a false "healed" alert. `None` (the default) applies no grace window.
     """
     sql = """
         SELECT f.accession_number
@@ -639,6 +651,9 @@ def list_orphaned_accessions(engine: Engine, max_attempts: int | None = None) ->
     if max_attempts is not None:
         sql += " AND f.classify_attempts < :max_attempts"
         params["max_attempts"] = max_attempts
+    if fetched_before is not None:
+        sql += " AND f.fetched_at < :fetched_before"
+        params["fetched_before"] = fetched_before
     sql += " ORDER BY f.filing_date DESC, f.accession_number"
     with engine.begin() as conn:
         return [str(row[0]) for row in conn.execute(text(sql), params)]

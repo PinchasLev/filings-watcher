@@ -39,7 +39,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from filings_orchestrator.alerting import ALERT, INFO, emit_alert
 from filings_orchestrator.classify.retry import is_retryable_error
@@ -68,6 +68,15 @@ _DEFAULT_DAILY_COST_CAP_USD = 5.00
 # while bounding wasted spend on a genuine poison record.
 _MAX_CLASSIFY_ATTEMPTS = 3
 
+# Grace window before a row counts as an orphan. The live ingest path upserts a
+# filing's row before it classifies, so for the few seconds (longer under retry
+# backoff) the live classify is in flight, the row looks orphaned. Without this
+# window the reconciler can race the live path — duplicate LLM work plus a false
+# "healed" alert. 5 minutes clears the live path's worst case (multi-item
+# classify + reduce + up to 5 retry backoffs) while barely affecting how fast a
+# genuine orphan heals, since the reconciler only fires every ~20 minutes anyway.
+_DEFAULT_ORPHAN_GRACE_MINUTES = 5.0
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -89,10 +98,22 @@ def main() -> None:
     db_path = get_config_str("FILINGS_DB_PATH", default="/var/lib/filings-watcher/filings.db")
     engine = open_engine(db_path)
 
+    # Exclude just-fetched filings the live path is still classifying (see
+    # _DEFAULT_ORPHAN_GRACE_MINUTES). Both the work set and the unfiltered count
+    # share the cutoff so `already_abandoned` stays a clean difference.
+    grace_minutes = get_config_float("ORPHAN_GRACE_MINUTES", _DEFAULT_ORPHAN_GRACE_MINUTES)
+    fetched_before = (datetime.now(UTC) - timedelta(minutes=grace_minutes)).isoformat()
+
     attempt_limit = None if args.force else _MAX_CLASSIFY_ATTEMPTS
-    orphans = list_orphaned_accessions(engine, max_attempts=attempt_limit)
+    orphans = list_orphaned_accessions(
+        engine, max_attempts=attempt_limit, fetched_before=fetched_before
+    )
     # Abandoned = orphans excluded from the work set by the attempt limit.
-    total_orphans = len(orphans) if args.force else len(list_orphaned_accessions(engine))
+    total_orphans = (
+        len(orphans)
+        if args.force
+        else len(list_orphaned_accessions(engine, fetched_before=fetched_before))
+    )
     already_abandoned = total_orphans - len(orphans)
     emit(
         "reclassify_orphans_started",

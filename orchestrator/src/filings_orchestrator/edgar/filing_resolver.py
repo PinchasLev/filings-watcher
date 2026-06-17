@@ -21,7 +21,12 @@ from datetime import date
 from bs4 import BeautifulSoup
 
 from filings_orchestrator.edgar.client import EdgarClient
-from filings_orchestrator.edgar.models import Filing
+from filings_orchestrator.edgar.models import Exhibit, Filing
+
+# EDGAR exhibit Type labels for the "Additional Exhibits" family: "EX-99",
+# "EX-99.1", "EX-99.2", ... The optional captured group is the sub-number,
+# used only to order the exhibits (99.1 before 99.2); it has no content meaning.
+_EX_99_SUBNUM_RE = re.compile(r"^EX-99(?:\.(\d+))?$", re.IGNORECASE)
 
 _FILING_INDEX_URL_TEMPLATE = (
     "https://www.sec.gov/Archives/edgar/data/{cik_unpadded}/{accession_compact}/"
@@ -74,6 +79,7 @@ def resolve_filing(
         accession_compact=accession_compact,
         document=primary_name,
     )
+    exhibits = _extract_exhibit_99_refs(page_html, cik_unpadded, accession_compact)
     return Filing(
         cik=cik,
         company_name=company_name,
@@ -85,7 +91,58 @@ def resolve_filing(
         primary_document=primary_name,
         primary_document_url=primary_url,
         items=[],
+        exhibits=exhibits,
     )
+
+
+def _extract_exhibit_99_refs(
+    page_html: str, cik_unpadded: str, accession_compact: str
+) -> list[Exhibit]:
+    """Collect EX-99.* exhibit fetch targets from the filing-index page.
+
+    Reads the same "Document Format Files" table as the primary-document
+    extraction, picking every row whose Type is in the EX-99 family. Returns
+    `Exhibit`s with `text=""` (fetch targets), ordered by sub-number so the
+    primary attachment (usually 99.1) leads. Missing/blank rows are skipped;
+    a filing with no EX-99 exhibits yields an empty list.
+    """
+    soup = BeautifulSoup(page_html, "lxml")
+    table = soup.find("table", attrs={"summary": "Document Format Files"})
+    if table is None:
+        return []
+
+    found: list[tuple[int, Exhibit]] = []
+    for row in table.find_all("tr"):
+        cells = row.find_all("td")
+        if len(cells) < 4:
+            continue
+        type_text = cells[3].get_text(strip=True)
+        match = _EX_99_SUBNUM_RE.match(type_text)
+        if match is None:
+            continue
+        link = cells[2].find("a")
+        if link is None or not link.get("href"):
+            continue
+        href = str(link["href"])
+        if href.startswith(_IXBRL_VIEWER_PREFIX):
+            href = href[len(_IXBRL_VIEWER_PREFIX) :]
+        document = href.rsplit("/", 1)[-1]
+        sort_key = int(match.group(1)) if match.group(1) else 0
+        found.append(
+            (
+                sort_key,
+                Exhibit(
+                    exhibit_type=type_text.upper(),
+                    document=document,
+                    url=_PRIMARY_DOC_URL_TEMPLATE.format(
+                        cik_unpadded=cik_unpadded,
+                        accession_compact=accession_compact,
+                        document=document,
+                    ),
+                ),
+            )
+        )
+    return [exhibit for _, exhibit in sorted(found, key=lambda pair: pair[0])]
 
 
 def _extract_primary_document_name(page_html: str, form: str) -> str:

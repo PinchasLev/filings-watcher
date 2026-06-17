@@ -28,6 +28,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 
+from filings_orchestrator.classify.exhibits import render_exhibits
 from filings_orchestrator.classify.schema import (
     Classification,
     FilingClassification,
@@ -92,6 +93,7 @@ def _build_system_prompt() -> str:
 def _build_user_message(
     document: FilingDocument,
     item: ItemSection | None,
+    exhibit_block: str = "",
 ) -> str:
     filing = document.filing
     header = (
@@ -99,14 +101,21 @@ def _build_user_message(
         f"Filing date: {filing.filing_date.isoformat()}\n"
         f"Form: {filing.form}\n"
     )
+    # Exhibits are shared context for whichever item (if any) they bear on, so
+    # the same block is appended to every item's prompt and to the whole-filing
+    # fallback. Empty when the filing has no EX-99 exhibits.
+    suffix = f"\n\n{exhibit_block}" if exhibit_block else ""
     if item is not None:
         body = item.text[:_MAX_SECTION_CHARS]
         section_header = f"Item {item.number}"
         if item.title:
             section_header += f": {item.title}"
-        return f"{header}\nSection under classification: {section_header}\n\n{body}"
+        return f"{header}\nSection under classification: {section_header}\n\n{body}{suffix}"
     body = document.text[:_MAX_SECTION_CHARS]
-    return f"{header}\nNo Item sections were extractable. Classify the whole filing body:\n\n{body}"
+    return (
+        f"{header}\nNo Item sections were extractable. Classify the whole filing body:"
+        f"\n\n{body}{suffix}"
+    )
 
 
 def _bind_classifier(model_name: str) -> Any:
@@ -171,6 +180,10 @@ def _classify_node(state: _State) -> _State:
     system = _build_system_prompt()
     accession_number = document.filing.accession_number
 
+    # Render the EX-99 exhibit context once and share it across every item's
+    # prompt (and the whole-filing fallback). Empty string when no exhibits.
+    exhibit_block = render_exhibits(document).block
+
     substantive_items = [
         item for item in document.items if item.number not in NON_SUBSTANTIVE_ITEMS
     ]
@@ -180,7 +193,7 @@ def _classify_node(state: _State) -> _State:
 
     if substantive_items:
         for item in substantive_items:
-            user = _build_user_message(document, item)
+            user = _build_user_message(document, item, exhibit_block)
             classification = _call_classifier(
                 model,
                 system,
@@ -196,7 +209,7 @@ def _classify_node(state: _State) -> _State:
                 )
             )
     else:
-        user = _build_user_message(document, None)
+        user = _build_user_message(document, None, exhibit_block)
         whole_filing = _call_classifier(
             model,
             system,

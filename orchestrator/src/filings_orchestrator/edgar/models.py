@@ -25,6 +25,23 @@ class FilingItem(BaseModel):
     title: str | None = None
 
 
+class Exhibit(BaseModel):
+    """An EX-99.* exhibit furnished with a filing.
+
+    `exhibit_type` is the EDGAR type label ("EX-99.1", "EX-99.2", ...). The
+    sub-number is just the filer's attachment order, not a content type, so we
+    keep them all. `url` is where the document lives (provenance); `text` is its
+    parsed plain text. The resolver produces these with `text=""` (a fetch
+    target on `Filing.exhibits`); the document fetch fills `text` (on
+    `FilingDocument.exhibits`).
+    """
+
+    exhibit_type: str
+    document: str
+    url: str
+    text: str = ""
+
+
 class Filing(BaseModel):
     """Metadata for one SEC filing.
 
@@ -42,6 +59,10 @@ class Filing(BaseModel):
     primary_document: str
     primary_document_url: str
     items: list[FilingItem] = Field(default_factory=list)
+    # EX-99.* exhibit fetch targets (text="") parsed from the filing-index
+    # page by the resolver. Transient: not persisted on the metadata row — the
+    # fetched exhibit content is stored separately via FilingDocument.exhibits.
+    exhibits: list[Exhibit] = Field(default_factory=list)
     # Sub-day filing timestamp from EDGAR, ISO 8601 with offset (e.g.
     # "2026-06-05T09:05:09-04:00"). Atom-feed ingest populates this from
     # the entry's `<updated>` field; the daily-index path leaves it None

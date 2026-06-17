@@ -11,6 +11,7 @@ import respx
 
 from filings_orchestrator.edgar import EdgarClient
 from filings_orchestrator.edgar.filing_resolver import (
+    _extract_exhibit_99_refs,
     _extract_primary_document_name,
     _to_date,
     resolve_filing,
@@ -18,6 +19,26 @@ from filings_orchestrator.edgar.filing_resolver import (
 
 FIXTURES = Path(__file__).parent / "fixtures"
 _SAMPLE_FILING_INDEX_HTML = (FIXTURES / "filing_index_8k.html").read_text()
+
+# A filing-index table carrying several EX-99 exhibits out of attachment order,
+# plus a non-EX-99 exhibit (EX-10.1) that must be ignored.
+_MULTI_EXHIBIT_INDEX_HTML = """
+<table summary="Document Format Files">
+  <tr><th>Seq</th><th>Description</th><th>Document</th><th>Type</th><th>Size</th></tr>
+  <tr><td>1</td><td>FORM 8-K</td>
+      <td><a href="/Archives/edgar/data/5/000000000000000005/f8k.htm">f8k.htm</a></td>
+      <td>8-K</td><td>100</td></tr>
+  <tr><td>3</td><td>EXHIBIT 99.2</td>
+      <td><a href="/Archives/edgar/data/5/000000000000000005/ex992.htm">ex992.htm</a></td>
+      <td>EX-99.2</td><td>200</td></tr>
+  <tr><td>2</td><td>PRESS RELEASE</td>
+      <td><a href="/Archives/edgar/data/5/000000000000000005/ex991.htm">ex991.htm</a></td>
+      <td>EX-99.1</td><td>300</td></tr>
+  <tr><td>4</td><td>MATERIAL CONTRACT</td>
+      <td><a href="/Archives/edgar/data/5/000000000000000005/ex101.htm">ex101.htm</a></td>
+      <td>EX-10.1</td><td>400</td></tr>
+</table>
+"""
 
 
 def test_extract_primary_document_strips_ixbrl_viewer_prefix() -> None:
@@ -86,6 +107,46 @@ def test_resolve_filing_accepts_iso_datetime_filed_at_from_atom_feed() -> None:
                 client=client,
             )
     assert filing.filing_date == date(2026, 5, 15)
+
+
+def test_resolve_filing_attaches_ex99_exhibit_refs() -> None:
+    """The sample index has one EX-99.1; the resolver attaches it as a fetch
+    target (text empty) with the document-direct URL."""
+    index_url = (
+        "https://www.sec.gov/Archives/edgar/data/101295/000117184326003455/"
+        "0001171843-26-003455-index.html"
+    )
+    with respx.mock(assert_all_called=True) as mock:
+        mock.get(index_url).mock(return_value=httpx.Response(200, text=_SAMPLE_FILING_INDEX_HTML))
+        with EdgarClient(user_agent="filings-watcher tester@example.com") as client:
+            filing = resolve_filing(
+                cik="0000101295",
+                accession_number="0001171843-26-003455",
+                company_name="UNITED GUARDIAN INC",
+                form="8-K",
+                filed_at="20260515",
+                client=client,
+            )
+    assert [e.exhibit_type for e in filing.exhibits] == ["EX-99.1"]
+    ex = filing.exhibits[0]
+    assert ex.document == "ex_99_1.htm"
+    assert ex.url == (
+        "https://www.sec.gov/Archives/edgar/data/101295/000117184326003455/ex_99_1.htm"
+    )
+    assert ex.text == ""  # a fetch target; body filled at document fetch
+
+
+def test_extract_exhibit_99_refs_orders_by_subnumber_and_ignores_non_ex99() -> None:
+    refs = _extract_exhibit_99_refs(_MULTI_EXHIBIT_INDEX_HTML, "5", "000000000000000005")
+    # 99.1 leads despite appearing after 99.2 in the table; EX-10.1 is excluded.
+    assert [e.exhibit_type for e in refs] == ["EX-99.1", "EX-99.2"]
+    assert [e.document for e in refs] == ["ex991.htm", "ex992.htm"]
+
+
+def test_extract_exhibit_99_refs_empty_when_no_exhibits() -> None:
+    html = '<table summary="Document Format Files"><tr><td>1</td><td>x</td>'
+    html += '<td><a href="/a/f.htm">f.htm</a></td><td>8-K</td><td>1</td></tr></table>'
+    assert _extract_exhibit_99_refs(html, "5", "000000000000000005") == []
 
 
 def test_to_date_accepts_compact_iso_and_iso_datetime() -> None:

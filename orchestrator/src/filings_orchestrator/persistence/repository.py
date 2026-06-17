@@ -27,7 +27,7 @@ from filings_orchestrator.classify import (
     domain_for,
 )
 from filings_orchestrator.edgar.document import FilingDocument, ItemSection
-from filings_orchestrator.edgar.models import Filing, FilingItem
+from filings_orchestrator.edgar.models import Exhibit, Filing, FilingItem
 
 
 def upsert_filing(engine: Engine, filing: Filing) -> None:
@@ -100,7 +100,8 @@ def upsert_filing_document(engine: Engine, document: FilingDocument) -> None:
                 UPDATE filings
                    SET body_text       = :body_text,
                        body_size_bytes = :body_size,
-                       sections_json   = :sections_json
+                       sections_json   = :sections_json,
+                       exhibits_json   = :exhibits_json
                  WHERE accession_number = :accession
                 """
             ),
@@ -109,6 +110,7 @@ def upsert_filing_document(engine: Engine, document: FilingDocument) -> None:
                 "body_text": document.text,
                 "body_size": document.raw_size_bytes,
                 "sections_json": json.dumps([section.model_dump() for section in document.items]),
+                "exhibits_json": json.dumps([ex.model_dump() for ex in document.exhibits]),
             },
         )
 
@@ -700,7 +702,8 @@ def load_filing_document(engine: Engine, accession_number: str) -> FilingDocumen
                 """
                 SELECT cik, ticker, company_name, form, filing_date, report_date,
                        primary_document, primary_document_url, items_json,
-                       body_text, body_size_bytes, sections_json, submitted_at
+                       body_text, body_size_bytes, sections_json, submitted_at,
+                       exhibits_json
                   FROM filings
                  WHERE accession_number = :a
                 """
@@ -726,11 +729,13 @@ def load_filing_document(engine: Engine, accession_number: str) -> FilingDocumen
         submitted_at=m["submitted_at"],
     )
     sections = json.loads(m["sections_json"]) if m["sections_json"] else []
+    exhibits = json.loads(m["exhibits_json"]) if m["exhibits_json"] else []
     body_text = str(m["body_text"])
     return FilingDocument(
         filing=filing,
         text=body_text,
         items=[ItemSection(**section) for section in sections],
+        exhibits=[Exhibit(**ex) for ex in exhibits],
         raw_size_bytes=int(m["body_size_bytes"]) if m["body_size_bytes"] is not None else 0,
     )
 

@@ -13,12 +13,14 @@ from __future__ import annotations
 
 from sqlalchemy import Engine
 
+from filings_orchestrator.alerting import ALERT, emit_alert
 from filings_orchestrator.classify import (
     FilingClassification,
     classify_filing,
     reduce_filing,
     reducer_version,
 )
+from filings_orchestrator.classify.exhibits import render_exhibits, scan_red_flags
 from filings_orchestrator.classify.retry import with_retries
 from filings_orchestrator.edgar import EdgarClient, FilingDocument, fetch_filing_document
 from filings_orchestrator.edgar.filing_resolver import resolve_filing
@@ -109,6 +111,44 @@ def classify_and_reduce(engine: Engine, document: FilingDocument) -> int:
         cik=cik,
         items_count=len(document.items),
     )
+
+    # Exhibit instrumentation (ADR 0031, measure-first): record how much exhibit
+    # context the classifier received and whether the volume budget cut any of
+    # it. Emitted whenever the filing carries EX-99 exhibits, so we can later
+    # measure both how often we truncate and whether exhibits lift classification
+    # (joining this against the classification's confidence/event_type).
+    rendered = render_exhibits(document)
+    if rendered.exhibit_count:
+        emit(
+            "exhibit_context",
+            accession_number=accession_number,
+            cik=cik,
+            exhibit_count=rendered.exhibit_count,
+            total_chars=rendered.total_chars,
+            used_chars=rendered.used_chars,
+            truncated=rendered.truncated,
+            dropped_chars=rendered.dropped_chars,
+        )
+        # Don't let a filer bury bad news past the budget: scan the *dropped*
+        # tail for curated adverse terms and raise an ALERT if any are there —
+        # the classifier never saw that text, so it needs human eyes.
+        if rendered.truncated:
+            flags = scan_red_flags(rendered.dropped_text)
+            if flags:
+                emit_alert(
+                    engine,
+                    ALERT,
+                    "Adverse content truncated from exhibit",
+                    body=f"{accession_number}: exhibit content exceeded the volume "
+                    f"budget and the dropped tail contains adverse terms "
+                    f"({', '.join(flags)}). The classifier did not see all of it — "
+                    f"review the full exhibit.",
+                    dedup_key=f"exhibit_truncated_redflag:{accession_number}",
+                    accession_number=accession_number,
+                    terms=", ".join(flags),
+                    dropped_chars=rendered.dropped_chars,
+                )
+
     result = with_retries(
         lambda: classify_filing(document),
         log_context={

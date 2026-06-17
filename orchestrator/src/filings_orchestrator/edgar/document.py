@@ -22,7 +22,8 @@ from bs4.element import NavigableString
 from pydantic import BaseModel, Field
 
 from filings_orchestrator.edgar.client import EdgarClient
-from filings_orchestrator.edgar.models import Filing
+from filings_orchestrator.edgar.models import Exhibit, Filing
+from filings_orchestrator.log_events import emit
 
 # Inline HTML elements: their text continues a line of prose and must not
 # be separated from surrounding text by newlines. Filings sometimes wrap
@@ -80,23 +81,54 @@ class ItemSection(BaseModel):
 
 
 class FilingDocument(BaseModel):
-    """A filing with its body text and per-Item sections."""
+    """A filing with its body text, per-Item sections, and EX-99 exhibits."""
 
     filing: Filing
     text: str
     items: list[ItemSection] = Field(default_factory=list)
+    exhibits: list[Exhibit] = Field(default_factory=list)
     raw_size_bytes: int
 
 
 def fetch_filing_document(filing: Filing, client: EdgarClient) -> FilingDocument:
-    """Fetch the primary document for a filing and return parsed text."""
+    """Fetch the primary document and EX-99 exhibits, return parsed text.
+
+    Each exhibit on `filing.exhibits` (a fetch target from the resolver) is
+    fetched and parsed into plain text. An exhibit fetch failure is logged and
+    skipped, not raised: exhibits are supplemental context, so one missing
+    attachment must not abort ingestion of the filing itself.
+    """
     raw_html = client.get_text(filing.primary_document_url)
     text = _extract_plain_text(raw_html)
     items = _split_into_item_sections(text)
+
+    exhibits: list[Exhibit] = []
+    for ref in filing.exhibits:
+        try:
+            exhibit_html = client.get_text(ref.url)
+        except Exception as exc:  # supplemental — skip this one, keep the filing
+            emit(
+                "exhibit_fetch_failed",
+                accession_number=filing.accession_number,
+                exhibit_type=ref.exhibit_type,
+                url=ref.url,
+                error_class=type(exc).__name__,
+            )
+            continue
+        exhibits.append(
+            Exhibit(
+                exhibit_type=ref.exhibit_type,
+                document=ref.document,
+                url=ref.url,
+                text=_extract_plain_text(exhibit_html),
+            )
+        )
+
     return FilingDocument(
         filing=filing,
         text=text,
         items=items,
+        exhibits=exhibits,
         raw_size_bytes=len(raw_html.encode("utf-8")),
     )
 

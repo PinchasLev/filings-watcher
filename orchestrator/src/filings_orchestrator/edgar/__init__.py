@@ -7,10 +7,11 @@ from filings_orchestrator.edgar.document import (
     fetch_filing_document,
 )
 from filings_orchestrator.edgar.filings import recent_8k_filings, ticker_to_cik
-from filings_orchestrator.edgar.models import Filing, FilingItem
+from filings_orchestrator.edgar.models import Exhibit, Filing, FilingItem
 
 __all__ = [
     "EdgarClient",
+    "Exhibit",
     "Filing",
     "FilingDocument",
     "FilingItem",

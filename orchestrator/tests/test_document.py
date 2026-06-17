@@ -17,7 +17,7 @@ from filings_orchestrator.edgar.document import (
     _extract_plain_text,
     _split_into_item_sections,
 )
-from filings_orchestrator.edgar.models import Filing
+from filings_orchestrator.edgar.models import Exhibit, Filing
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -180,3 +180,51 @@ def test_fetch_filing_document_end_to_end() -> None:
     assert document.raw_size_bytes > 0
     assert len(document.text) > 0
     assert [s.number for s in document.items] == ["2.02", "9.01"]
+
+
+def _filing_with_exhibits(*urls: str) -> Filing:
+    filing = _sample_filing()
+    filing.exhibits = [
+        Exhibit(exhibit_type=f"EX-99.{i + 1}", document=f"ex{i + 1}.htm", url=u)
+        for i, u in enumerate(urls)
+    ]
+    return filing
+
+
+def test_fetch_filing_document_fetches_and_parses_exhibits() -> None:
+    """Each EX-99 fetch target is fetched and parsed into the document's exhibits."""
+    body = (FIXTURES / "sample_8k.html").read_text()
+    ex_url = "https://www.sec.gov/Archives/edgar/data/320193/000032019326000045/ex_99_1.htm"
+    filing = _filing_with_exhibits(ex_url)
+
+    with respx.mock(assert_all_called=True) as mock:
+        mock.get(filing.primary_document_url).mock(return_value=httpx.Response(200, text=body))
+        mock.get(ex_url).mock(
+            return_value=httpx.Response(
+                200, text="<html><body><p>Press release text.</p></body></html>"
+            )
+        )
+        with EdgarClient(user_agent="filings-watcher tester@example.com") as client:
+            document = fetch_filing_document(filing, client)
+
+    assert [e.exhibit_type for e in document.exhibits] == ["EX-99.1"]
+    assert "Press release text." in document.exhibits[0].text
+
+
+def test_fetch_filing_document_skips_failed_exhibit_fetch() -> None:
+    """An exhibit that 404s is logged and skipped; the filing still ingests."""
+    body = (FIXTURES / "sample_8k.html").read_text()
+    good = "https://www.sec.gov/Archives/edgar/data/320193/000032019326000045/ex_99_1.htm"
+    bad = "https://www.sec.gov/Archives/edgar/data/320193/000032019326000045/ex_99_2.htm"
+    filing = _filing_with_exhibits(good, bad)
+
+    with respx.mock(assert_all_called=True) as mock:
+        mock.get(filing.primary_document_url).mock(return_value=httpx.Response(200, text=body))
+        mock.get(good).mock(return_value=httpx.Response(200, text="<p>Release.</p>"))
+        mock.get(bad).mock(return_value=httpx.Response(404))
+        with EdgarClient(user_agent="filings-watcher tester@example.com") as client:
+            document = fetch_filing_document(filing, client)
+
+    # Only the successful exhibit survives; the failed one is dropped, not fatal.
+    assert [e.exhibit_type for e in document.exhibits] == ["EX-99.1"]
+    assert len(document.text) > 0

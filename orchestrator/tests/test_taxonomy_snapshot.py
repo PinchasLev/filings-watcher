@@ -133,6 +133,29 @@ def test_ensure_aborts_on_snapshot_tamper_via_append() -> None:
 # --- append-only triggers ---
 
 
+def test_verify_taxonomy_passes_when_consistent() -> None:
+    from filings_orchestrator.cli._pipeline import verify_taxonomy
+
+    engine = _fresh_db()
+    verify_taxonomy(engine)  # cuts v1, no exit
+    verify_taxonomy(engine)  # verifies on the second call, still no exit
+
+
+def test_verify_taxonomy_exits_on_drift(monkeypatch: pytest.MonkeyPatch) -> None:
+    from filings_orchestrator.cli._pipeline import verify_taxonomy
+
+    engine = _fresh_db()
+    verify_taxonomy(engine)  # cut with the real hash
+
+    monkeypatch.setattr(
+        "filings_orchestrator.persistence.taxonomy_snapshot.taxonomy_content_hash",
+        lambda: "deadbeefdeadbeef",
+    )
+    with pytest.raises(SystemExit) as exc:
+        verify_taxonomy(engine)
+    assert exc.value.code == 2
+
+
 @pytest.mark.parametrize("table", ["taxonomy_versions", "taxonomy_domains", "taxonomy_leaves"])
 def test_update_and_delete_are_blocked(table: str) -> None:
     engine = _fresh_db()

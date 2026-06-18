@@ -43,7 +43,7 @@ from datetime import UTC, datetime, timedelta
 
 from filings_orchestrator.alerting import ALERT, INFO, emit_alert
 from filings_orchestrator.classify.retry import is_retryable_error
-from filings_orchestrator.cli._pipeline import classify_and_reduce
+from filings_orchestrator.cli._pipeline import classify_and_reduce, verify_taxonomy
 from filings_orchestrator.config import (
     MissingConfigError,
     get_config_float,
@@ -146,6 +146,11 @@ def main() -> None:
         if orphans:
             sys.exit(1)
         return
+
+    # The heal path classifies, so verify the taxonomy snapshot before doing any
+    # classification (ADR 0032) — aborts on drift. Placed after the dry-run return,
+    # which only counts orphans and does not classify.
+    verify_taxonomy(engine)
 
     # The heal path classifies, so it needs the Anthropic credential. ChatAnthropic
     # reads it from the environment; mirror the other CLIs and set it explicitly.

@@ -151,26 +151,50 @@ difference or confirm a match — but cannot reproduce it. That is below the aud
 and reproducibility bar of ADR 0011 ("what did the system say about filing X on
 date D, and under what options").
 
-So each taxonomy version is also persisted as a durable, queryable snapshot, keyed
-by `taxonomy_version`, in two tables mirroring the two tiers:
+So each taxonomy version is also persisted as a durable, queryable snapshot. This
+ADR introduces three new auxiliary tables that mirror the two tiers:
 
-- a **coarse table** keyed by `(taxonomy_version, domain)` — each domain and its
-  description, the versioned tier-1 contract (and the home of the per-domain
-  catch-alls);
-- a **leaf table** keyed by `(taxonomy_version, leaf)` — each leaf, its description,
-  and the domain it rolls up to (a foreign key into the coarse table).
+- **`taxonomy_versions`** — one row per cut version (PK `taxonomy_version`), the
+  anchor that marks a version as created and carries its metadata (the `major` /
+  `minor` split, the cut timestamp).
+- **`taxonomy_domains`** — the tier-1 contract, PK `(taxonomy_version, domain)`:
+  each domain and its description (and the per-domain catch-alls), FK to
+  `taxonomy_versions`.
+- **`taxonomy_leaves`** — the tier-2 menu, PK `(taxonomy_version, leaf)`: each leaf,
+  its description, and the domain it rolls up to (FK to `taxonomy_domains`), FK to
+  `taxonomy_versions`.
 
 A historical classification carries `taxonomy_version`, the leaf, and the
-`event_category` domain, so the exact menu it faced is a join away —
-reproducibly, without git archaeology or trusting manual version bumps. Each
-version stores its full leaf+domain set (not a delta), so every version is
-self-contained; the volume is trivial (versions × leaves). The in-code taxonomy
-stays the authoring surface; the snapshot is written from it, idempotently, when a
-version is cut (at migrate time), so editing the taxonomy is unchanged and the
-database gains the as-of record. This is the concrete form of the "versioned
-artifact" in §1. It captures the choice-set; the surrounding non-taxonomy prompt
-framing remains fingerprinted by `classifier_version`, and can itself be snapshotted
-later if full verbatim-prompt reproduction is ever required.
+`event_category` domain, so the exact menu it faced is a join away — reproducibly,
+without git archaeology or trusting manual version bumps. **Classifications
+reference these snapshots by natural key** — the `(taxonomy_version, event_type)`
+value already on the row — **never a surrogate id.** A classification is an
+immutable as-of record (the reference-data vs. transaction-data distinction), so it
+stores the tag as a *value* and joins to the snapshot for descriptions, rather than
+depending on a mutable id that a rename could silently re-point. Each version stores
+its full leaf+domain set (not a delta), so every version is self-contained; the
+volume is trivial (versions × leaves). The in-code taxonomy stays the authoring
+surface; the snapshot is written from it, idempotently, when a version is cut (at
+migrate time), so editing the taxonomy is unchanged and the database gains the as-of
+record. This is the concrete form of the "versioned artifact" in §1. It captures the
+choice-set; the surrounding non-taxonomy prompt framing remains fingerprinted by
+`classifier_version`, and can itself be snapshotted later if full verbatim-prompt
+reproduction is ever required.
+
+**Immutability and atomic creation.** A version's snapshot is frozen once cut.
+Cutting a version writes its `taxonomy_versions` anchor plus all of its domain and
+leaf rows in a *single transaction*, so creation is atomic — a version exists in
+full or not at all. `UPDATE` and `DELETE` on the three tables are blocked, so a
+label once recorded under a version can never be changed or deleted (the audit
+guarantee). SQLite has no role-based `REVOKE`, so this is enforced with
+`BEFORE UPDATE`/`BEFORE DELETE` triggers that abort; on Postgres it would be a
+`REVOKE`. Appending a leaf to an already-cut version is prevented by the single,
+write-once-per-version populate path; a trigger rejecting inserts against an
+existing anchor is an optional belt-and-suspenders, adopted only if that discipline
+proves insufficient. The `classifications` table is already append-only by design
+(ADR 0011 — re-classification appends a new row, latest wins); the same
+`UPDATE`/`DELETE` block should be applied to it as well, after a write-path audit
+confirms nothing legitimately mutates a classification.
 
 ### 6. Expansion is data-driven, from the catch-all
 
@@ -239,7 +263,11 @@ ones.
   churn.
 - Persisting each taxonomy version as a snapshot makes historical classifications
   fully reproducible — any past row can be joined to the exact choice-set it faced
-  — at the cost of a small write per version cut and two new tables to maintain.
+  — at the cost of a small write per version cut and three new tables to maintain.
+- Enforcing append-only immutability on the snapshot (and classifications) commits
+  us to trigger-based protection on SQLite (no role-based `REVOKE`), which is
+  backend-specific and must be re-expressed if we ever move to Postgres. We accept
+  that for the guarantee that a recorded label is never silently changed or deleted.
 - We commit to A/B-gating taxonomy changes (real evaluation cost and a human review
   step) and to maintaining the per-domain catch-alls and the rollup map as
   first-class taxonomy elements.

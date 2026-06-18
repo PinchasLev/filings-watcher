@@ -155,6 +155,7 @@ def test_apply_migrations_creates_tables_and_records_version() -> None:
         "008_alerts_outbox",
         "009_exhibits",
         "010_taxonomy_snapshots",
+        "011_classifications_append_only",
     ]
 
     with engine.begin() as conn:
@@ -296,6 +297,26 @@ def test_insert_classifications_same_version_is_idempotent() -> None:
 
     assert first == 1
     assert second == 0
+
+
+def test_classifications_update_and_delete_are_blocked() -> None:
+    """Classifications are append-only (ADR 0011/0032): UPDATE and DELETE abort,
+    while the normal INSERT path is unaffected."""
+    engine = _fresh_db()
+    upsert_filing(engine, _filing())
+    assert insert_classifications(engine, _classification_result()) == 1  # INSERT still works
+
+    with pytest.raises(Exception, match="append-only"):
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE classifications SET confidence = 0.1"))
+    with pytest.raises(Exception, match="append-only"):
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM classifications"))
+
+    # The row is untouched by the rejected mutations.
+    rows = latest_classifications_for_filing(engine, "0000320193-26-000045")
+    assert len(rows) == 1
+    assert rows[0]["confidence"] == 0.95
 
     rows = latest_classifications_for_filing(engine, "0000320193-26-000045")
     assert len(rows) == 1

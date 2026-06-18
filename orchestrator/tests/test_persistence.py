@@ -116,6 +116,31 @@ def test_default_migrations_dir_resolves_to_real_directory() -> None:
     assert (resolved / "001_initial_schema.sql").exists()
 
 
+def test_split_statements_keeps_trigger_body_intact() -> None:
+    """A CREATE TRIGGER with `;`-terminated body statements is one statement.
+
+    Guards the migration runner's BEGIN/END-aware splitter — a naive split(';')
+    would tear the trigger into fragments.
+    """
+    from filings_orchestrator.persistence.migrations import _split_statements
+
+    sql = (
+        "CREATE TABLE t (a INTEGER);\n"
+        "CREATE TRIGGER t_no_update BEFORE UPDATE ON t\n"
+        "BEGIN\n"
+        "    SELECT RAISE(ABORT, 'append-only');\n"
+        "END;\n"
+        "CREATE INDEX t_idx ON t (a);"
+    )
+    statements = _split_statements(sql)
+    assert len(statements) == 3
+    assert statements[0].startswith("CREATE TABLE")
+    assert statements[1].startswith("CREATE TRIGGER")
+    assert "RAISE(ABORT, 'append-only')" in statements[1]
+    assert statements[1].rstrip().endswith("END")
+    assert statements[2].startswith("CREATE INDEX")
+
+
 def test_apply_migrations_creates_tables_and_records_version() -> None:
     engine = open_engine(":memory:")
     applied = apply_migrations(engine, migrations_dir=MIGRATIONS_DIR)
@@ -129,6 +154,7 @@ def test_apply_migrations_creates_tables_and_records_version() -> None:
         "007_classify_attempts",
         "008_alerts_outbox",
         "009_exhibits",
+        "010_taxonomy_snapshots",
     ]
 
     with engine.begin() as conn:
@@ -146,6 +172,9 @@ def test_apply_migrations_creates_tables_and_records_version() -> None:
         "event_classifications",
         "llm_calls",
         "alerts_outbox",
+        "taxonomy_versions",
+        "taxonomy_domains",
+        "taxonomy_leaves",
         "schema_versions",
     }.issubset(tables)
 

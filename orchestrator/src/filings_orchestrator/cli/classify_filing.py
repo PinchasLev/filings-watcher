@@ -13,6 +13,7 @@ import os
 import sys
 
 from filings_orchestrator.classify import classify_filing
+from filings_orchestrator.cli._pipeline import verify_taxonomy
 from filings_orchestrator.config import MissingConfigError, load_config
 from filings_orchestrator.cost import db_llm_call_sink, set_cost_sink
 from filings_orchestrator.edgar import EdgarClient, fetch_filing_document, recent_8k_filings
@@ -78,6 +79,10 @@ def main() -> None:
     # classification is ephemeral and no per-call rows are written.
     engine = open_engine(config.filings_db_path) if args.save else None
     if engine is not None:
+        # A persisted classification must match the stored taxonomy snapshot
+        # (ADR 0032) — verify before classifying; aborts on drift. The ephemeral
+        # no-DB path has nothing to verify against and is left as-is.
+        verify_taxonomy(engine)
         set_cost_sink(db_llm_call_sink(engine))
 
     result = classify_filing(document)

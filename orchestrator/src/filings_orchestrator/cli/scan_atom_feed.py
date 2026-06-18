@@ -28,7 +28,7 @@ from datetime import UTC, datetime
 
 from opentelemetry import trace
 
-from filings_orchestrator.cli._pipeline import process_one
+from filings_orchestrator.cli._pipeline import process_one, verify_taxonomy
 from filings_orchestrator.config import MissingConfigError, load_config
 from filings_orchestrator.cost import db_llm_call_sink, set_cost_sink
 from filings_orchestrator.edgar import EdgarClient
@@ -76,6 +76,7 @@ def main() -> None:
         emit("tick_started", started_at=tick_started_at.isoformat(), source="atom_feed")
 
         engine = open_engine(config.filings_db_path)
+        verify_taxonomy(engine)
 
         # Pre-tick spend cap check (ADR 0029). The latency reduction of the
         # Atom path makes the cap deploy-gating, not eventual — a runaway

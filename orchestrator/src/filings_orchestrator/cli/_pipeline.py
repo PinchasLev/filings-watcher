@@ -11,6 +11,8 @@ is the strictly per-filing slice that both paths share.
 
 from __future__ import annotations
 
+import sys
+
 from sqlalchemy import Engine
 
 from filings_orchestrator.alerting import ALERT, emit_alert
@@ -33,6 +35,27 @@ from filings_orchestrator.persistence.repository import (
     lookup_ticker_by_cik,
     upsert_filing_document,
 )
+from filings_orchestrator.persistence.taxonomy_snapshot import (
+    TaxonomyIntegrityError,
+    ensure_taxonomy_snapshot,
+)
+
+
+def verify_taxonomy(engine: Engine) -> None:
+    """Reconcile the taxonomy snapshot at classify-CLI startup (ADR 0032).
+
+    Cuts the current `TAXONOMY_VERSION` if unseen, else verifies the in-code and
+    stored-row hashes against its anchor. Aborts the process (exit 2) on drift, so
+    a classify run cannot proceed against a taxonomy whose version label no longer
+    matches its choice-set — the same guard `migrate-db` applies, now also
+    enforced at classify startup (outside a deploy). Call once per process, after
+    `open_engine`, before classifying.
+    """
+    try:
+        ensure_taxonomy_snapshot(engine)
+    except TaxonomyIntegrityError as exc:
+        emit("taxonomy_integrity_failed", message=str(exc))
+        sys.exit(2)
 
 
 def process_one(

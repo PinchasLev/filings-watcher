@@ -17,7 +17,10 @@ are skipped at the caller, not represented in the taxonomy.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from enum import StrEnum
+from typing import NamedTuple
 
 # Bump this every time the EventType enum, EVENT_TYPE_DESCRIPTIONS, or
 # EVENT_TO_DOMAIN mapping changes. Persisted classifications carry this
@@ -205,3 +208,83 @@ def domain_for(event_type: EventType) -> EventDomain:
     against by the taxonomy-coverage test.
     """
     return EVENT_TO_DOMAIN[event_type]
+
+
+# --- Taxonomy snapshot + content hash (ADR 0032) --------------------------
+#
+# The full definition of the taxonomy at a point in time, used both to populate
+# the per-version snapshot tables and to compute the content hash that binds a
+# `taxonomy_version` to its choice-set (so a content change cannot ship under an
+# unchanged label). The hash is over the content only — never the version
+# string — so two versions with identical content hash identically.
+
+
+class TaxonomyDomainDef(NamedTuple):
+    """One tier-1 domain in the taxonomy definition."""
+
+    domain: str
+    description: str | None
+
+
+class TaxonomyLeafDef(NamedTuple):
+    """One tier-2 leaf, with its description and the domain it rolls up to."""
+
+    leaf: str
+    description: str
+    domain: str
+
+
+class TaxonomyDefinition(NamedTuple):
+    """The full taxonomy definition for the current in-code `TAXONOMY_VERSION`."""
+
+    version: str
+    domains: list[TaxonomyDomainDef]
+    leaves: list[TaxonomyLeafDef]
+
+
+def taxonomy_definition() -> TaxonomyDefinition:
+    """Return the current in-code taxonomy as a structured definition.
+
+    Domains carry no descriptions today (the `EventDomain` enum has none); the
+    field is present so descriptions can be added later as an additive change.
+    """
+    domains = [TaxonomyDomainDef(domain=d.value, description=None) for d in EventDomain]
+    leaves = [
+        TaxonomyLeafDef(
+            leaf=event_type.value,
+            description=EVENT_TYPE_DESCRIPTIONS[event_type],
+            domain=domain_for(event_type).value,
+        )
+        for event_type in EventType
+    ]
+    return TaxonomyDefinition(version=TAXONOMY_VERSION, domains=domains, leaves=leaves)
+
+
+def hash_taxonomy_content(
+    domains: list[tuple[str, str | None]],
+    leaves: list[tuple[str, str, str]],
+) -> str:
+    """SHA-256 of a taxonomy's content from raw domain/leaf tuples.
+
+    Canonical and order-independent: domains and leaves are sorted before
+    hashing, so the hash depends only on the *content*, not on declaration or row
+    order. The version string is deliberately excluded — the hash answers "is this
+    the same choice-set?", which the version label is then bound to. Shared by the
+    in-code hash and the stored-snapshot verification so both canonicalize
+    identically (ADR 0032).
+    """
+    canonical = {
+        "domains": sorted([domain, description or ""] for domain, description in domains),
+        "leaves": sorted([leaf, description, domain] for leaf, description, domain in leaves),
+    }
+    payload = json.dumps(canonical, sort_keys=True, ensure_ascii=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def taxonomy_content_hash() -> str:
+    """SHA-256 of the current in-code taxonomy's content."""
+    definition = taxonomy_definition()
+    return hash_taxonomy_content(
+        [(d.domain, d.description) for d in definition.domains],
+        [(leaf.leaf, leaf.description, leaf.domain) for leaf in definition.leaves],
+    )

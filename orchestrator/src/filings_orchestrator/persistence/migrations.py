@@ -15,6 +15,7 @@ run identically on SQLite and on Postgres. No ORM, no engine-specific SQL.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
@@ -78,9 +79,43 @@ def _strip_line_comments(sql_text: str) -> str:
     return "\n".join(lines)
 
 
+_BEGIN_END_OR_SEMI = re.compile(r"(\bBEGIN\b|\bEND\b|;)", re.IGNORECASE)
+
+
 def _split_statements(sql_text: str) -> list[str]:
+    """Split a migration into individual statements, splitting on `;`.
+
+    `CREATE TRIGGER` bodies contain their own `;`-terminated statements inside a
+    `BEGIN ... END` block, so a naive `split(";")` would tear a trigger apart. We
+    track `BEGIN`/`END` nesting (word-boundary matched, so `APPEND` etc. are safe)
+    and split only on semicolons at depth 0. Plain DDL has no `BEGIN`/`END`, so it
+    is unaffected.
+    """
     cleaned = _strip_line_comments(sql_text)
-    return [s.strip() for s in cleaned.split(";") if s.strip()]
+    statements: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    for tok in _BEGIN_END_OR_SEMI.split(cleaned):
+        if not tok:
+            continue
+        upper = tok.upper()
+        if upper == "BEGIN":
+            depth += 1
+            buf.append(tok)
+        elif upper == "END":
+            depth = max(0, depth - 1)
+            buf.append(tok)
+        elif tok == ";" and depth == 0:
+            stmt = "".join(buf).strip()
+            if stmt:
+                statements.append(stmt)
+            buf = []
+        else:
+            buf.append(tok)
+    tail = "".join(buf).strip()
+    if tail:
+        statements.append(tail)
+    return statements
 
 
 def _apply_one(engine: Engine, version: str, sql_text: str) -> None:

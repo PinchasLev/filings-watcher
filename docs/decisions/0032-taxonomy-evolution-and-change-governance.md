@@ -66,6 +66,16 @@ bump and the replay policy:
 `TAXONOMY_VERSION` moves from an opaque `"v1"` to a two-part `major.minor` value so
 the class of every historical change is legible from the version alone.
 
+A taxonomy version must denote **exactly one choice-set**: the leaves, descriptions,
+and rollup offered under a version are identical across every classification that
+claims it. Because the `major.minor` bump is curated by hand, this is enforced
+mechanically by a content hash (§5) — the classifier refuses to run if the in-code
+taxonomy does not hash-match the snapshot recorded for the current version, so a
+content change can never ship silently under an unchanged label. This is the
+choice-set invariant. Model and prompt-framing drift across reclassifications of the
+same version is separate and expected — that variation is captured by
+`classifier_version`, not `taxonomy_version`.
+
 ### 3. Replay policy per change class
 
 - **Additive** changes default to **forward-only**: new classifications use the new
@@ -156,7 +166,7 @@ ADR introduces three new auxiliary tables that mirror the two tiers:
 
 - **`taxonomy_versions`** — one row per cut version (PK `taxonomy_version`), the
   anchor that marks a version as created and carries its metadata (the `major` /
-  `minor` split, the cut timestamp).
+  `minor` split, the cut timestamp, and the content hash described below).
 - **`taxonomy_domains`** — the tier-1 contract, PK `(taxonomy_version, domain)`:
   each domain and its description (and the per-domain catch-alls), FK to
   `taxonomy_versions`.
@@ -188,13 +198,34 @@ full or not at all. `UPDATE` and `DELETE` on the three tables are blocked, so a
 label once recorded under a version can never be changed or deleted (the audit
 guarantee). SQLite has no role-based `REVOKE`, so this is enforced with
 `BEFORE UPDATE`/`BEFORE DELETE` triggers that abort; on Postgres it would be a
-`REVOKE`. Appending a leaf to an already-cut version is prevented by the single,
-write-once-per-version populate path; a trigger rejecting inserts against an
-existing anchor is an optional belt-and-suspenders, adopted only if that discipline
-proves insufficient. The `classifications` table is already append-only by design
+`REVOKE`. Appending a leaf to an already-cut version — which the `UPDATE`/`DELETE`
+block does not prevent — is instead made *tamper-evident* by the content hash below:
+any change to a version's row-set breaks its recorded hash and is caught at the next
+integrity check, so no separate seal trigger is needed (the hash catches inserts,
+edits, and reorderings alike, where a trigger would catch only inserts). The
+`classifications` table is already append-only by design
 (ADR 0011 — re-classification appends a new row, latest wins); the same
 `UPDATE`/`DELETE` block should be applied to it as well, after a write-path audit
 confirms nothing legitimately mutates a classification.
+
+**Version integrity (content hash).** The `taxonomy_versions` anchor records a hash
+of the version's full definition (leaves + descriptions + domain rollup). The same
+hash is verified against *both* sources that could diverge from the version's
+identity: the **live in-code taxonomy** (so an edit to `taxonomy.py` without a bump
+is caught) and the **persisted snapshot rows** (so any post-cut addition or edit to
+a version's `taxonomy_domains` / `taxonomy_leaves` rows — including an appended
+choice — is caught). When the classifier starts (and at migrate time), it hashes the
+in-code taxonomy and reconciles against the current `TAXONOMY_VERSION`: if that
+version is not yet snapshotted it is cut (anchor + rows written, hash recorded); if
+it already exists, the in-code hash must equal the recorded one or the process
+aborts. This makes the
+hand-curated `major.minor` bump *enforced* rather than trusted — a content change
+that forgets to bump cannot ship, and every classification stamped with a version
+was provably produced against that version's exact choice-set. It is the taxonomy
+counterpart to the prompt hash in `classifier_version`, and the mechanism behind the
+choice-set invariant in §2. Immutability and the hash reinforce each other: because
+a cut snapshot is frozen, the only way to clear a hash mismatch is to bump the
+version — which is the intended outcome.
 
 ### 6. Expansion is data-driven, from the catch-all
 
@@ -268,6 +299,10 @@ ones.
   us to trigger-based protection on SQLite (no role-based `REVOKE`), which is
   backend-specific and must be re-expressed if we ever move to Postgres. We accept
   that for the guarantee that a recorded label is never silently changed or deleted.
+- The content-hash check makes `taxonomy_version` a trustworthy identifier of the
+  choice-set, at the cost that the classifier will refuse to run after a taxonomy
+  edit until the version is bumped — a deliberate, loud failure that converts a
+  silent-drift class of bug into an unmissable one.
 - We commit to A/B-gating taxonomy changes (real evaluation cost and a human review
   step) and to maintaining the per-domain catch-alls and the rollup map as
   first-class taxonomy elements.

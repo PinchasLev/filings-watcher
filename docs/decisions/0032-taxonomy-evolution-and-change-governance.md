@@ -44,7 +44,9 @@ established, made explicit as the governing principle for change.
 
 The taxonomy *contents* — the `EventType` leaves, their descriptions, the
 `EventDomain` tier, and the `EVENT_TO_DOMAIN` rollup — are the versioned artifact.
-This ADR governs how they change; it does not enumerate them.
+This ADR governs how they change; it does not enumerate them. §5 persists each
+version of that artifact as a durable snapshot so every historical classification
+stays fully interpretable under the exact taxonomy it was made against.
 
 ### 2. Change classes and version semantics
 
@@ -119,16 +121,56 @@ governance protects.
   default; it is reserved for selective use where measurement shows a granular
   accuracy bottleneck (see §7).
 
-### 5. Schema: denormalize the domain onto the classification
+### 5. Schema: persist the coarse domain on the row, and each taxonomy version as a snapshot
 
-The `EventDomain` is derived on read today (`domain_for`), so coarse roll-ups
-cannot be expressed in portable SQL without applying the mapping in application
-code. Persist the rolled-up domain as an `event_category` column on the
-classification row, written at classification time alongside the leaf. This makes
+A classification row stores only the leaf today (`event_type`, e.g.
+`ma_activity`); the coarse domain (`operational`) is not stored but computed on
+demand by the `domain_for` lookup in application code. That has two costs. First,
+the database cannot answer a coarse question — "how many financial-domain events
+this month?" — with a plain `GROUP BY`, because the domain is not a column, so the
+mapping would have to be re-applied in code or hard-coded into each query. Second,
+because the leaf→domain map is itself part of the taxonomy and can change,
+recomputing an old row's domain under a newer map would silently re-label history.
+
+The decision: write the rolled-up domain into an `event_category` column on the
+row at classification time, alongside the leaf. This is a deliberate
+denormalization — the domain is derivable from the leaf, but storing it makes
 coarse aggregation a pure `GROUP BY` (which the future aggregation layer needs) and
-pins the domain *as decided* under the row's `taxonomy_version` — provenance that
-survives later changes to the rollup map. The column is an additive migration,
-backfilled for existing rows by applying `domain_for` under their recorded version.
+records the domain *as it was decided* under that row's `taxonomy_version`, so later
+edits to the map never retroactively change what a historical row meant. Additive
+migration; existing rows are backfilled by applying `domain_for` under their
+recorded version.
+
+Storing the leaf and its domain records *what was decided* — but not *what the
+classifier was allowed to choose from*, the set of leaves and descriptions it saw.
+Today that choice-set exists only in `taxonomy.py` at the commit a given
+`taxonomy_version` was current; reconstructing it for a historical row is git
+archaeology and assumes the version label was bumped faithfully on every edit. The
+`classifier_version` prompt hash *fingerprints* the choice-set — enough to detect a
+difference or confirm a match — but cannot reproduce it. That is below the audit
+and reproducibility bar of ADR 0011 ("what did the system say about filing X on
+date D, and under what options").
+
+So each taxonomy version is also persisted as a durable, queryable snapshot, keyed
+by `taxonomy_version`, in two tables mirroring the two tiers:
+
+- a **coarse table** keyed by `(taxonomy_version, domain)` — each domain and its
+  description, the versioned tier-1 contract (and the home of the per-domain
+  catch-alls);
+- a **leaf table** keyed by `(taxonomy_version, leaf)` — each leaf, its description,
+  and the domain it rolls up to (a foreign key into the coarse table).
+
+A historical classification carries `taxonomy_version`, the leaf, and the
+`event_category` domain, so the exact menu it faced is a join away —
+reproducibly, without git archaeology or trusting manual version bumps. Each
+version stores its full leaf+domain set (not a delta), so every version is
+self-contained; the volume is trivial (versions × leaves). The in-code taxonomy
+stays the authoring surface; the snapshot is written from it, idempotently, when a
+version is cut (at migrate time), so editing the taxonomy is unchanged and the
+database gains the as-of record. This is the concrete form of the "versioned
+artifact" in §1. It captures the choice-set; the surrounding non-taxonomy prompt
+framing remains fingerprinted by `classifier_version`, and can itself be snapshotted
+later if full verbatim-prompt reproduction is ever required.
 
 ### 6. Expansion is data-driven, from the catch-all
 
@@ -195,6 +237,9 @@ ones.
 - A stable coarse tier plus a persisted `event_category` gives the coming
   aggregation layer a durable contract to roll up against, insulated from tier-2
   churn.
+- Persisting each taxonomy version as a snapshot makes historical classifications
+  fully reproducible — any past row can be joined to the exact choice-set it faced
+  — at the cost of a small write per version cut and two new tables to maintain.
 - We commit to A/B-gating taxonomy changes (real evaluation cost and a human review
   step) and to maintaining the per-domain catch-alls and the rollup map as
   first-class taxonomy elements.
@@ -208,7 +253,9 @@ ones.
   evolves the domain layer by adding per-domain catch-all leaves and persisting the
   derived domain.
 - **ADR 0011** — keeps the versioning/history/reclassification model; adds the
-  change-class taxonomy, the `major.minor` version semantics, and the A/B gate.
+  change-class taxonomy, the `major.minor` version semantics, the A/B gate, and the
+  persisted per-version taxonomy snapshot that makes its audit/reproducibility goals
+  fully attainable.
 - **ADR 0028** — reuses run-based reprocessing as the replay mechanism for taxonomy
   migrations; adds the per-change replay policy.
 

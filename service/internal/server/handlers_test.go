@@ -9,13 +9,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/PinchasLev/filings-watcher/service/internal/server"
+	"github.com/PinchasLev/filings-watcher/service/internal/sqlutil"
 	"github.com/PinchasLev/filings-watcher/service/internal/store"
 )
 
@@ -201,25 +201,6 @@ func migrationsDir(t *testing.T) string {
 	return dir
 }
 
-func splitStatements(s string) []string {
-	var lines []string
-	for _, line := range strings.Split(s, "\n") {
-		if i := strings.Index(line, "--"); i >= 0 {
-			line = line[:i]
-		}
-		lines = append(lines, line)
-	}
-	cleaned := strings.Join(lines, "\n")
-	var out []string
-	for _, raw := range strings.Split(cleaned, ";") {
-		stmt := strings.TrimSpace(raw)
-		if stmt != "" {
-			out = append(out, stmt)
-		}
-	}
-	return out
-}
-
 // seededStore returns a fresh Store with one filing and one classification.
 func seededStore(t *testing.T) store.Store {
 	t.Helper()
@@ -238,7 +219,7 @@ func seededStore(t *testing.T) store.Store {
 		if err != nil {
 			t.Fatalf("read: %v", err)
 		}
-		for _, stmt := range splitStatements(string(body)) {
+		for _, stmt := range sqlutil.SplitStatements(string(body)) {
 			if _, err := raw.Exec(stmt); err != nil {
 				t.Fatalf("exec migration: %v", err)
 			}

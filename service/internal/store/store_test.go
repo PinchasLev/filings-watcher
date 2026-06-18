@@ -12,6 +12,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/PinchasLev/filings-watcher/service/internal/sqlutil"
 	"github.com/PinchasLev/filings-watcher/service/internal/store"
 )
 
@@ -44,31 +45,12 @@ func applyMigrations(t *testing.T, db *sql.DB, dir string) {
 		if err != nil {
 			t.Fatalf("read %s: %v", f, err)
 		}
-		for _, stmt := range splitStatements(string(raw)) {
+		for _, stmt := range sqlutil.SplitStatements(string(raw)) {
 			if _, err := db.Exec(stmt); err != nil {
 				t.Fatalf("exec %s: %v\nstmt: %s", f, err, stmt)
 			}
 		}
 	}
-}
-
-func splitStatements(sqlText string) []string {
-	var lines []string
-	for _, line := range strings.Split(sqlText, "\n") {
-		if i := strings.Index(line, "--"); i >= 0 {
-			line = line[:i]
-		}
-		lines = append(lines, line)
-	}
-	cleaned := strings.Join(lines, "\n")
-	var out []string
-	for _, raw := range strings.Split(cleaned, ";") {
-		stmt := strings.TrimSpace(raw)
-		if stmt != "" {
-			out = append(out, stmt)
-		}
-	}
-	return out
 }
 
 // seedFilingAndClassifications inserts a small fixture: one filing with

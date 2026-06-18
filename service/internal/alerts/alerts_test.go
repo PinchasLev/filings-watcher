@@ -14,6 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/PinchasLev/filings-watcher/service/internal/alerts"
+	"github.com/PinchasLev/filings-watcher/service/internal/sqlutil"
 )
 
 // migrationsDir resolves the shared schema (single source of truth, same dir
@@ -42,29 +43,12 @@ func applyMigrations(t *testing.T, db *sql.DB, dir string) {
 		if err != nil {
 			t.Fatalf("read %s: %v", f, err)
 		}
-		for _, stmt := range splitStatements(string(raw)) {
+		for _, stmt := range sqlutil.SplitStatements(string(raw)) {
 			if _, err := db.Exec(stmt); err != nil {
 				t.Fatalf("exec %s: %v", f, err)
 			}
 		}
 	}
-}
-
-func splitStatements(sqlText string) []string {
-	var lines []string
-	for _, line := range strings.Split(sqlText, "\n") {
-		if i := strings.Index(line, "--"); i >= 0 {
-			line = line[:i]
-		}
-		lines = append(lines, line)
-	}
-	var out []string
-	for _, raw := range strings.Split(strings.Join(lines, "\n"), ";") {
-		if stmt := strings.TrimSpace(raw); stmt != "" {
-			out = append(out, stmt)
-		}
-	}
-	return out
 }
 
 // freshWriter returns an alerts.Writer over a temp DB with the schema applied,

@@ -135,8 +135,13 @@ backfilled for existing rows by applying `domain_for` under their recorded versi
 New leaves are discovered, not guessed: periodically mine the global catch-all and
 the low-confidence / forced-fit classifications, cluster what lands there, and
 introduce leaves for the recurring patterns. The first `exhibit-ab` run already
-nominates `asset_sale/divestiture` and `debt/project_financing`. This keeps the
-taxonomy shaped by what filings actually disclose rather than by anticipation.
+nominates `asset_sale/divestiture` and `debt/project_financing`; issue #16
+(workforce reduction / restructuring under Item 2.05, parked since 2026-05-14
+pending recurrence evidence) is a pre-existing candidate of exactly this shape and
+becomes the inaugural case run through this process. This keeps the taxonomy shaped
+by what filings actually disclose rather than by anticipation. The bar for adopting
+a candidate is the §7 A/B gate rather than a fixed occurrence count — a measured
+improvement is a stronger test than a threshold.
 
 ### 7. Every taxonomy change is evaluated before adoption
 

@@ -596,6 +596,29 @@ def _subsuming_event(
     return None
 
 
+def list_exhibit_bearing_accessions(engine: Engine, *, limit: int | None = None) -> list[str]:
+    """Return accessions that have stored EX-99 exhibits and a reconstructable body.
+
+    The population for the exhibit A/B evaluation: filings whose `exhibits_json`
+    holds at least one exhibit (a non-empty JSON array) and whose `body_text` is
+    present, so `load_filing_document` can rebuild the document to classify both
+    with and without exhibits. Ordered newest-first; `limit` bounds the sample.
+    """
+    sql = """
+        SELECT accession_number
+          FROM filings
+         WHERE body_text IS NOT NULL
+           AND exhibits_json IS NOT NULL
+           AND exhibits_json NOT IN ('[]', '')
+         ORDER BY filing_date DESC, accession_number
+    """
+    if limit is not None:
+        sql += "\n         LIMIT :limit"
+    with engine.begin() as conn:
+        rows = conn.execute(text(sql), {"limit": limit} if limit is not None else {}).fetchall()
+    return [str(r[0]) for r in rows]
+
+
 def list_classified_accessions(engine: Engine) -> list[str]:
     """Return every accession number that has at least one classification.
 

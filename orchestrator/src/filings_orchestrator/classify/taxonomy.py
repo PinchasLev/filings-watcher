@@ -23,10 +23,12 @@ from enum import StrEnum
 from typing import NamedTuple
 
 # Bump this every time the EventType enum, EVENT_TYPE_DESCRIPTIONS, or
-# EVENT_TO_DOMAIN mapping changes. Persisted classifications carry this
-# value so historical rows remain interpretable under their original
-# taxonomy. See ADR 0011.
-TAXONOMY_VERSION = "v1"
+# EVENT_TO_DOMAIN mapping changes (major.minor: additive change → minor, breaking
+# rename/split/merge → major; ADR 0032). Persisted classifications carry this
+# value so historical rows remain interpretable under their original taxonomy
+# (ADR 0011), and a content hash binds it to the choice-set it names (ADR 0032).
+# v1.1: added the per-domain `*_other` catch-all leaves (additive).
+TAXONOMY_VERSION = "v1.1"
 
 
 class EventType(StrEnum):
@@ -53,6 +55,15 @@ class EventType(StrEnum):
     DILUTIVE_ISSUANCE = "dilutive_issuance"
     MATERIAL_LITIGATION = "material_litigation"
     OTHER_MATERIAL = "other_material"
+    # Per-domain catch-alls (ADR 0032, v1.1): a graceful "I know the domain but
+    # not the specific type" home, so a known-domain event is not forced into a
+    # wrong specific leaf or the global `other_material`. The global catch-all
+    # stays for events whose domain itself is unclear.
+    GOVERNANCE_OTHER = "governance_other"
+    FINANCIAL_OTHER = "financial_other"
+    OPERATIONAL_OTHER = "operational_other"
+    LEGAL_OTHER = "legal_other"
+    TERMINAL_OTHER = "terminal_other"
 
 
 EVENT_TYPE_DESCRIPTIONS: dict[EventType, str] = {
@@ -136,8 +147,42 @@ EVENT_TYPE_DESCRIPTIONS: dict[EventType, str] = {
         "under Item 8.01 (Other Events); no dedicated 8-K Item."
     ),
     EventType.OTHER_MATERIAL: (
-        "A material event that does not fit any of the more specific "
-        "categories above. Use this rather than guessing."
+        "A material event whose kind you cannot place in any domain above — you "
+        "cannot tell whether it is governance, financial, operational, legal, or "
+        "existential. Use this only when the domain itself is unclear; when the "
+        "domain is clear but no specific type fits, use that domain's "
+        "`*_other` category instead."
+    ),
+    EventType.GOVERNANCE_OTHER: (
+        "A governance event — leadership, board, auditor, or shareholder-vote "
+        "matter — that does not fit a specific governance category above. Use "
+        "when the event is clearly governance-related but not a named type; "
+        "prefer this over `other_material` whenever the domain is clear."
+    ),
+    EventType.FINANCIAL_OTHER: (
+        "A financial event — results, obligations, capital, or accounting — that "
+        "does not fit a specific financial category above (for example an asset "
+        "sale or divestiture, a debt or project financing, or a buyback or "
+        "dividend action). Use when the event is clearly financial but not a "
+        "named type; prefer this over `other_material` whenever the domain is clear."
+    ),
+    EventType.OPERATIONAL_OTHER: (
+        "An operational or strategic business event that does not fit a specific "
+        "operational category above (for example a material contract, "
+        "partnership, product or regulatory milestone, or restructuring). Use "
+        "when the event is clearly operational but not a named type; prefer this "
+        "over `other_material` whenever the domain is clear."
+    ),
+    EventType.LEGAL_OTHER: (
+        "A legal or regulatory event that does not fit a specific legal category "
+        "above. Use when the event is clearly legal or regulatory but not a named "
+        "type; prefer this over `other_material` whenever the domain is clear."
+    ),
+    EventType.TERMINAL_OTHER: (
+        "An event materially threatening the registrant's continued existence "
+        "that does not fit a specific terminal category above. Use when the event "
+        "is clearly existential but not a named type; prefer this over "
+        "`other_material` whenever the domain is clear."
     ),
 }
 
@@ -181,22 +226,27 @@ EVENT_TO_DOMAIN: dict[EventType, EventDomain] = {
     EventType.EXEC_COMPENSATION: EventDomain.GOVERNANCE,
     EventType.AUDITOR_CHANGE: EventDomain.GOVERNANCE,
     EventType.SHAREHOLDER_VOTE_RESULTS: EventDomain.GOVERNANCE,
+    EventType.GOVERNANCE_OTHER: EventDomain.GOVERNANCE,
     # Financial: the numbers, the obligations, the equity.
     EventType.EARNINGS_RELEASE: EventDomain.FINANCIAL,
     EventType.RESTATEMENT: EventDomain.FINANCIAL,
     EventType.MATERIAL_IMPAIRMENT: EventDomain.FINANCIAL,
     EventType.COVENANT_BREACH: EventDomain.FINANCIAL,
     EventType.DILUTIVE_ISSUANCE: EventDomain.FINANCIAL,
+    EventType.FINANCIAL_OTHER: EventDomain.FINANCIAL,
     # Operational: structural business changes.
     EventType.MA_ACTIVITY: EventDomain.OPERATIONAL,
+    EventType.OPERATIONAL_OTHER: EventDomain.OPERATIONAL,
     # Legal: external pressure or risk from courts, regulators, or attackers.
     EventType.MATERIAL_LITIGATION: EventDomain.LEGAL,
     EventType.CYBERSECURITY_INCIDENT: EventDomain.LEGAL,
+    EventType.LEGAL_OTHER: EventDomain.LEGAL,
     # Terminal: events that materially threaten the registrant's continuing existence.
     EventType.GOING_CONCERN: EventDomain.TERMINAL,
     EventType.DELISTING_RISK: EventDomain.TERMINAL,
     EventType.BANKRUPTCY_FILING: EventDomain.TERMINAL,
-    # Catch-all.
+    EventType.TERMINAL_OTHER: EventDomain.TERMINAL,
+    # Catch-all (domain itself unclear).
     EventType.OTHER_MATERIAL: EventDomain.CATCHALL,
 }
 

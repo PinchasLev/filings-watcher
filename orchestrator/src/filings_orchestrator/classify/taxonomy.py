@@ -28,7 +28,9 @@ from typing import NamedTuple
 # value so historical rows remain interpretable under their original taxonomy
 # (ADR 0011), and a content hash binds it to the choice-set it names (ADR 0032).
 # v1.1: added the per-domain `*_other` catch-all leaves (additive).
-TAXONOMY_VERSION = "v1.1"
+# v1.2: added specific leaves debt_issuance, dividend_distribution,
+# workforce_reduction (additive; data-driven from the v1.1 catch-all population).
+TAXONOMY_VERSION = "v1.2"
 
 
 class EventType(StrEnum):
@@ -54,6 +56,12 @@ class EventType(StrEnum):
     CYBERSECURITY_INCIDENT = "cybersecurity_incident"
     DILUTIVE_ISSUANCE = "dilutive_issuance"
     MATERIAL_LITIGATION = "material_litigation"
+    # Specific leaves added in v1.2 — data-driven from the v1.1 catch-all
+    # population (debt obligations and distributions dominated `financial_other`;
+    # workforce reductions are issue #16's Item 2.05 candidate).
+    DEBT_ISSUANCE = "debt_issuance"
+    DIVIDEND_DISTRIBUTION = "dividend_distribution"
+    WORKFORCE_REDUCTION = "workforce_reduction"
     OTHER_MATERIAL = "other_material"
     # Per-domain catch-alls (ADR 0032, v1.1): a graceful "I know the domain but
     # not the specific type" home, so a known-domain event is not forced into a
@@ -146,6 +154,22 @@ EVENT_TYPE_DESCRIPTIONS: dict[EventType, str] = {
         "or charges, large settlements or judgments. Typically disclosed "
         "under Item 8.01 (Other Events); no dedicated 8-K Item."
     ),
+    EventType.DEBT_ISSUANCE: (
+        "Creation of a new direct financial obligation — issuance of debt, notes, "
+        "or bonds; entry into or amendment of a credit facility or term loan; or a "
+        "debt tender offer (commonly Item 2.03). Distinct from `covenant_breach`, "
+        "which is trouble with *existing* debt."
+    ),
+    EventType.DIVIDEND_DISTRIBUTION: (
+        "Declaration or payment of a dividend, distribution, or return of capital "
+        "to holders — including regular or special dividends, trust and royalty "
+        "distributions, and share-repurchase programs."
+    ),
+    EventType.WORKFORCE_REDUCTION: (
+        "A workforce reduction, layoff, or operational restructuring, together with "
+        "the associated exit or disposal costs (commonly Item 2.05) — the "
+        "operational decision and any restructuring charge it carries."
+    ),
     EventType.OTHER_MATERIAL: (
         "A material event whose kind you cannot place in any domain above — you "
         "cannot tell whether it is governance, financial, operational, legal, or "
@@ -162,9 +186,10 @@ EVENT_TYPE_DESCRIPTIONS: dict[EventType, str] = {
     EventType.FINANCIAL_OTHER: (
         "A financial event — results, obligations, capital, or accounting — that "
         "does not fit a specific financial category above (for example an asset "
-        "sale or divestiture, a debt or project financing, or a buyback or "
-        "dividend action). Use when the event is clearly financial but not a "
-        "named type; prefer this over `other_material` whenever the domain is clear."
+        "sale or divestiture). Use when the event is clearly financial but no named "
+        "type fits; prefer a specific financial type (e.g. `debt_issuance`, "
+        "`dividend_distribution`) when one applies, and `other_material` only when "
+        "even the domain is unclear."
     ),
     EventType.OPERATIONAL_OTHER: (
         "An operational or strategic business event that does not fit a specific "
@@ -233,9 +258,12 @@ EVENT_TO_DOMAIN: dict[EventType, EventDomain] = {
     EventType.MATERIAL_IMPAIRMENT: EventDomain.FINANCIAL,
     EventType.COVENANT_BREACH: EventDomain.FINANCIAL,
     EventType.DILUTIVE_ISSUANCE: EventDomain.FINANCIAL,
+    EventType.DEBT_ISSUANCE: EventDomain.FINANCIAL,
+    EventType.DIVIDEND_DISTRIBUTION: EventDomain.FINANCIAL,
     EventType.FINANCIAL_OTHER: EventDomain.FINANCIAL,
     # Operational: structural business changes.
     EventType.MA_ACTIVITY: EventDomain.OPERATIONAL,
+    EventType.WORKFORCE_REDUCTION: EventDomain.OPERATIONAL,
     EventType.OPERATIONAL_OTHER: EventDomain.OPERATIONAL,
     # Legal: external pressure or risk from courts, regulators, or attackers.
     EventType.MATERIAL_LITIGATION: EventDomain.LEGAL,

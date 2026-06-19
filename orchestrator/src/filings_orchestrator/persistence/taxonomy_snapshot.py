@@ -41,6 +41,20 @@ def _parse_major_minor(version: str) -> tuple[int, int]:
     return major, minor
 
 
+def leaves_for_version(engine: Engine, version: str) -> list[str]:
+    """Return the leaf values recorded in the snapshot for `version`.
+
+    The choice-set that version offered the classifier — used by classify-ab to
+    classify a sample under a prior taxonomy version (the baseline arm).
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text("SELECT leaf FROM taxonomy_leaves WHERE taxonomy_version = :v ORDER BY leaf"),
+            {"v": version},
+        ).fetchall()
+    return [str(r[0]) for r in rows]
+
+
 def _recorded_hash(engine: Engine, version: str) -> str | None:
     with engine.begin() as conn:
         row = conn.execute(

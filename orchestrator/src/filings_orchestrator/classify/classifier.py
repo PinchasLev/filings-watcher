@@ -20,6 +20,7 @@ environment (loaded by `config.load_config()` at process startup).
 
 from __future__ import annotations
 
+import copy
 import hashlib
 from datetime import UTC, datetime
 from typing import Any, TypedDict
@@ -55,11 +56,21 @@ _MAX_SECTION_CHARS = 12_000
 class _State(TypedDict):
     document: FilingDocument
     model: str
+    # The leaves (EventType members) the classifier may choose from. None means
+    # the full in-code taxonomy — the production default. A subset is used to
+    # evaluate a taxonomy change (e.g. classify-ab) by offering one version's
+    # choice-set; the model is constrained to it via both the prompt and the
+    # tool-schema enum. See ADR 0032.
+    leaves: list[EventType] | None
     items: list[ItemClassification]
     whole_filing: Classification | None
 
 
-def _build_system_prompt() -> str:
+def _build_system_prompt(leaves: list[EventType] | None = None) -> str:
+    # `leaves is None` enumerates the full in-code taxonomy in declaration order
+    # — byte-identical to the production prompt, so the default `classifier_version`
+    # is unchanged. A subset offers only that version's choice-set.
+    event_types = leaves if leaves is not None else list(EventType)
     lines = [
         "You are an experienced securities analyst classifying SEC Form 8-K material event "
         "disclosures. You will be shown one section of an 8-K filing — typically a single "
@@ -71,7 +82,7 @@ def _build_system_prompt() -> str:
         "",
         "Event types:",
     ]
-    for event_type in EventType:
+    for event_type in event_types:
         lines.append(f"- {event_type.value}: {EVENT_TYPE_DESCRIPTIONS[event_type]}")
     lines.extend(
         [
@@ -118,7 +129,22 @@ def _build_user_message(
     )
 
 
-def _bind_classifier(model_name: str) -> Any:
+def _tool_input_schema(leaves: list[EventType] | None) -> dict[str, Any]:
+    """The Classification JSON schema, with event_type constrained to `leaves`.
+
+    `leaves is None` returns the schema unchanged (the full taxonomy). A subset
+    deep-copies the schema and narrows the `EventType` enum to those values, so
+    the model cannot return a leaf outside the offered choice-set — the
+    tool-schema counterpart to the prompt restriction.
+    """
+    schema = Classification.model_json_schema()
+    if leaves is not None:
+        schema = copy.deepcopy(schema)
+        schema["$defs"]["EventType"]["enum"] = [leaf.value for leaf in leaves]
+    return schema
+
+
+def _bind_classifier(model_name: str, leaves: list[EventType] | None = None) -> Any:
     """Build a Claude model bound to the Classification tool, forced to call it."""
     model = ChatAnthropic(model_name=model_name, timeout=60, stop=None, temperature=0)
     tool_spec = {
@@ -126,7 +152,7 @@ def _bind_classifier(model_name: str) -> Any:
         "description": (
             "Submit the classification for the section. Must be called exactly once per request."
         ),
-        "input_schema": Classification.model_json_schema(),
+        "input_schema": _tool_input_schema(leaves),
     }
     return model.bind_tools(
         [tool_spec],
@@ -176,8 +202,9 @@ def _classify_node(state: _State) -> _State:
     """
     document = state["document"]
     model_name = state["model"]
-    model = _bind_classifier(model_name)
-    system = _build_system_prompt()
+    leaves = state["leaves"]
+    model = _bind_classifier(model_name, leaves)
+    system = _build_system_prompt(leaves)
     accession_number = document.filing.accession_number
 
     # Render the EX-99 exhibit context once and share it across every item's
@@ -229,15 +256,18 @@ def _build_graph() -> Any:
     return graph.compile()
 
 
-def classifier_version(model_name: str = DEFAULT_MODEL) -> str:
+def classifier_version(
+    model_name: str = DEFAULT_MODEL, leaves: list[EventType] | None = None
+) -> str:
     """Compose the classifier_version string for persistence.
 
     Combines the model name with a short hash of the system prompt. Any
     change to the prompt or the chosen model produces a new version string,
     which the persistence layer uses to keep classifications immutable and
-    version-tagged. See ADR 0011.
+    version-tagged. See ADR 0011. The `leaves` subset (if given) changes the
+    prompt, so each A/B arm gets a distinct version automatically.
     """
-    prompt = _build_system_prompt()
+    prompt = _build_system_prompt(leaves)
     prompt_sha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:8]
     return f"{model_name}+prompt-{prompt_sha}"
 
@@ -245,17 +275,23 @@ def classifier_version(model_name: str = DEFAULT_MODEL) -> str:
 def classify_filing(
     document: FilingDocument,
     model_name: str = DEFAULT_MODEL,
+    leaves: list[EventType] | None = None,
 ) -> FilingClassification:
     """Classify every substantive Item in `document` via Claude tool-use.
 
     Returns a `FilingClassification` carrying per-Item results when items
     were extractable, or a single whole-filing classification when they
     were not. Tracing is automatic if LangSmith env vars are set.
+
+    `leaves` restricts the offered choice-set to a subset of the taxonomy
+    (default `None` = the full in-code taxonomy, the production behavior); used
+    to classify a sample under a specific taxonomy version for evaluation.
     """
     graph = _build_graph()
     initial: _State = {
         "document": document,
         "model": model_name,
+        "leaves": leaves,
         "items": [],
         "whole_filing": None,
     }
@@ -269,6 +305,6 @@ def classify_filing(
         whole_filing=result["whole_filing"],
         classified_at=datetime.now(UTC),
         model=model_name,
-        classifier_version=classifier_version(model_name),
+        classifier_version=classifier_version(model_name, leaves),
         taxonomy_version=TAXONOMY_VERSION,
     )

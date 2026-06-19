@@ -21,8 +21,8 @@ The harness reconstructs each document from stored data (no EDGAR re-fetch). It
 doubles classify cost on the sample, so it is cost-cap gated (ADR 0029) and stops
 cleanly at the cap; `--limit` bounds spend. One-off operator tool — never timered.
 
-The diff/aggregate core (`_diff_filing`, `_summarize`) is kept generic so a later
-prompt/model A/B reuses it; only the with/without-exhibit toggle is specific here.
+The diff/aggregate core lives in `cli/_eval.py` (baseline vs candidate) and is
+shared with `classify-ab`; only the with/without-exhibit toggle is specific here.
 """
 
 from __future__ import annotations
@@ -33,8 +33,9 @@ import sys
 from datetime import UTC, datetime
 from functools import partial
 
-from filings_orchestrator.classify import FilingClassification, classify_filing
+from filings_orchestrator.classify import classify_filing
 from filings_orchestrator.classify.retry import with_retries
+from filings_orchestrator.cli._eval import diff_filing, summarize
 from filings_orchestrator.config import (
     MissingConfigError,
     get_config_float,
@@ -51,105 +52,6 @@ from filings_orchestrator.persistence.repository import (
 )
 
 _DEFAULT_DAILY_COST_CAP_USD = 5.00
-
-# Sentinel key for the whole-filing classification (filings with no extractable
-# Item sections), so it diffs alongside per-Item units.
-_WHOLE = "__whole_filing__"
-
-
-def _units(classification: FilingClassification) -> dict[str, tuple[str, bool, float]]:
-    """Flatten a FilingClassification to {unit_key: (event_type, is_material, confidence)}.
-
-    A unit is one Item (keyed by item_number) or the whole-filing fallback. This
-    is the comparable shape the with/without runs are diffed on.
-    """
-    out: dict[str, tuple[str, bool, float]] = {}
-    for item in classification.items:
-        c = item.classification
-        out[item.item_number] = (c.event_type.value, c.is_material, c.confidence)
-    if classification.whole_filing is not None:
-        c = classification.whole_filing
-        out[_WHOLE] = (c.event_type.value, c.is_material, c.confidence)
-    return out
-
-
-def _diff_filing(
-    accession: str,
-    with_ex: FilingClassification,
-    without_ex: FilingClassification,
-) -> dict[str, object]:
-    """Diff the two classifications of one filing, unit by unit.
-
-    Returns a structured per-filing record: each unit's event_type and
-    confidence under both arms, whether the event_type flipped, and the
-    confidence delta (with minus without). Units present in only one arm (rare —
-    item splitting is deterministic on the same body) are reported as such.
-    """
-    a = _units(with_ex)  # with exhibits
-    b = _units(without_ex)  # without exhibits
-    units: list[dict[str, object]] = []
-    for key in sorted(set(a) | set(b)):
-        wa = a.get(key)
-        wo = b.get(key)
-        if wa is None or wo is None:
-            units.append({"unit": key, "present_in": "with" if wa else "without"})
-            continue
-        units.append(
-            {
-                "unit": key,
-                "with_event_type": wa[0],
-                "without_event_type": wo[0],
-                "event_type_changed": wa[0] != wo[0],
-                "with_is_material": wa[1],
-                "without_is_material": wo[1],
-                "is_material_changed": wa[1] != wo[1],
-                "with_confidence": round(wa[2], 4),
-                "without_confidence": round(wo[2], 4),
-                "confidence_delta": round(wa[2] - wo[2], 4),
-            }
-        )
-    return {"accession": accession, "units": units}
-
-
-def _summarize(results: list[dict[str, object]]) -> dict[str, object]:
-    """Aggregate per-filing diffs into the headline A/B numbers.
-
-    Counts comparable units, how many flipped event_type, how many changed
-    materiality, the mean confidence delta, and the net change in `other_material`
-    assignments (the share this feature is meant to reduce). Computed in code —
-    never asked of the model (see the bounded-operator principle).
-    """
-    comparable = 0
-    event_changed = 0
-    material_changed = 0
-    delta_sum = 0.0
-    other_material_with = 0
-    other_material_without = 0
-    for r in results:
-        for u in r["units"]:  # type: ignore[attr-defined]
-            if "confidence_delta" not in u:
-                continue
-            comparable += 1
-            if u["event_type_changed"]:
-                event_changed += 1
-            if u["is_material_changed"]:
-                material_changed += 1
-            delta_sum += float(u["confidence_delta"])
-            if u["with_event_type"] == "other_material":
-                other_material_with += 1
-            if u["without_event_type"] == "other_material":
-                other_material_without += 1
-    return {
-        "filings": len(results),
-        "comparable_units": comparable,
-        "event_type_changed": event_changed,
-        "event_type_changed_pct": round(100 * event_changed / comparable, 2) if comparable else 0,
-        "is_material_changed": material_changed,
-        "mean_confidence_delta": round(delta_sum / comparable, 4) if comparable else 0,
-        "other_material_with_exhibits": other_material_with,
-        "other_material_without_exhibits": other_material_without,
-        "other_material_reduction": other_material_without - other_material_with,
-    }
 
 
 def main() -> None:
@@ -214,7 +116,8 @@ def main() -> None:
             skipped += 1
             continue
 
-        diff = _diff_filing(accession, with_ex, without_ex)
+        # Baseline = body-only (the prior behavior); candidate = with exhibits.
+        diff = diff_filing(accession, baseline=without_ex, candidate=with_ex)
         results.append(diff)
         emit("exhibit_ab_result", **diff)
 
@@ -222,7 +125,7 @@ def main() -> None:
         "exhibit_ab_summary",
         skipped=skipped,
         stopped_at_cap=stopped_at_cap,
-        **_summarize(results),
+        **summarize(results),
     )
 
 

@@ -7,9 +7,15 @@ sample of filings, classify each one under two choice-sets — a **baseline**
 the same model and the same documents; only the offered leaf-set differs, so the
 difference is the taxonomy change's effect.
 
-    uv run classify-ab --baseline-version v1               # all classified filings
-    uv run classify-ab --baseline-version v1 --limit 50    # bound the sample
-    uv run classify-ab --baseline-version v1 --accession X # one filing
+    uv run classify-ab --baseline-version v1                  # all classified filings
+    uv run classify-ab --baseline-version v1 --limit 50       # bound the sample
+    uv run classify-ab --baseline-version v1 --accession X    # one filing
+    uv run classify-ab --baseline-version v1 --reuse-baseline # ~half cost (reuse stored baseline)
+
+`--reuse-baseline` skips re-classifying the baseline arm for any filing whose
+stored classification was produced under the same config (matching
+`classifier_version` — i.e. the baseline version is the deployed one), reusing it
+instead. Roughly halves the LLM cost when the baseline is the live taxonomy.
 
 This is the second use of the offline-eval core (`cli/_eval.py`), shared with
 exhibit-ab. Per-filing diffs and an aggregate summary go to stdout as JSON lines
@@ -28,6 +34,7 @@ from datetime import UTC, datetime
 from functools import partial
 
 from filings_orchestrator.classify import FilingClassification, classify_filing
+from filings_orchestrator.classify.classifier import DEFAULT_MODEL, classifier_version
 from filings_orchestrator.classify.retry import with_retries
 from filings_orchestrator.classify.taxonomy import EventType
 from filings_orchestrator.cli._eval import diff_filing, summarize
@@ -44,6 +51,7 @@ from filings_orchestrator.persistence.repository import (
     daily_cost_usd,
     list_classified_accessions,
     load_filing_document,
+    load_latest_filing_classification,
 )
 from filings_orchestrator.persistence.taxonomy_snapshot import leaves_for_version
 
@@ -75,6 +83,12 @@ def main() -> None:
     )
     parser.add_argument("--limit", type=int, default=None, help="Max filings to evaluate.")
     parser.add_argument("--accession", default=None, help="Evaluate a single accession number.")
+    parser.add_argument(
+        "--reuse-baseline",
+        action="store_true",
+        help="Reuse a filing's stored classification for the baseline arm when it was produced "
+        "under the same config (classifier_version) — skips re-classifying it, ~halving cost.",
+    )
     args = parser.parse_args()
 
     db_path = get_config_str("FILINGS_DB_PATH", default="/var/lib/filings-watcher/filings.db")
@@ -89,6 +103,11 @@ def main() -> None:
         )
         sys.exit(2)
 
+    # The classifier_version the baseline arm would produce. A stored classification
+    # with this exact value was made under the same model + prompt (= same leaf-set),
+    # so it equals a fresh baseline run and can be reused (--reuse-baseline).
+    baseline_cv = classifier_version(DEFAULT_MODEL, baseline_leaves)
+
     if args.accession:
         sample = [args.accession]
     else:
@@ -102,6 +121,7 @@ def main() -> None:
         baseline_leaf_count=len(baseline_leaves),
         candidate_leaf_count=len(list(EventType)),
         sample_size=len(sample),
+        reuse_baseline=args.reuse_baseline,
     )
     if not sample:
         emit("classify_ab_completed", filings=0, note="no classified filings found")
@@ -117,6 +137,7 @@ def main() -> None:
 
     results: list[dict[str, object]] = []
     skipped = 0
+    reused = 0
     stopped_at_cap = False
     for accession in sample:
         if daily_cost_usd(engine, datetime.now(UTC).date().isoformat()) >= cap_usd:
@@ -130,11 +151,18 @@ def main() -> None:
             skipped += 1
             continue
 
+        # Baseline arm: reuse the stored classification when it was produced under
+        # the baseline config (matching classifier_version), else classify fresh.
+        baseline: FilingClassification | None = None
+        if args.reuse_baseline:
+            stored = load_latest_filing_classification(engine, accession)
+            if stored is not None and stored.classifier_version == baseline_cv:
+                baseline = stored
+                reused += 1
+
         try:
-            # Baseline = the prior version's leaf-set; candidate = in-code (None).
-            baseline: FilingClassification = with_retries(
-                partial(classify_filing, document, leaves=baseline_leaves)
-            )
+            if baseline is None:
+                baseline = with_retries(partial(classify_filing, document, leaves=baseline_leaves))
             candidate: FilingClassification = with_retries(partial(classify_filing, document))
         except Exception as exc:  # keep going; report this one
             emit(
@@ -154,6 +182,7 @@ def main() -> None:
         "classify_ab_summary",
         baseline_version=args.baseline_version,
         skipped=skipped,
+        baseline_reused=reused,
         stopped_at_cap=stopped_at_cap,
         **summarize(results),
     )

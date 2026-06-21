@@ -77,4 +77,3 @@ change migration-free. A rename can be a later, isolated refactor if a third for
   quality, the multi-exhibit bundling rate, and any 6-K-specific taxonomy gaps
   (half-year/interim results vs `earnings_release`, AGM/proxy-style notices, foreign
   buyback returns), iterating the taxonomy data-driven under ADR 0032 if warranted.
-```

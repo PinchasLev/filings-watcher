@@ -53,7 +53,10 @@ from filings_orchestrator.persistence.repository import (
     load_filing_document,
     load_latest_filing_classification,
 )
-from filings_orchestrator.persistence.taxonomy_snapshot import leaves_for_version
+from filings_orchestrator.persistence.taxonomy_snapshot import (
+    leaf_descriptions_for_version,
+    leaves_for_version,
+)
 
 _DEFAULT_DAILY_COST_CAP_USD = 5.00
 
@@ -102,11 +105,17 @@ def main() -> None:
             baseline_version=args.baseline_version,
         )
         sys.exit(2)
+    # The baseline version's *exact* descriptions from its snapshot, so the
+    # baseline arm reproduces that version's prompt faithfully even when a
+    # description was later edited in code (ADR 0032).
+    baseline_descriptions = leaf_descriptions_for_version(engine, args.baseline_version)
 
-    # The classifier_version the baseline arm would produce. A stored classification
-    # with this exact value was made under the same model + prompt (= same leaf-set),
-    # so it equals a fresh baseline run and can be reused (--reuse-baseline).
-    baseline_cv = classifier_version(DEFAULT_MODEL, baseline_leaves)
+    # The classifier_version the baseline arm produces. A stored classification with
+    # this exact value was made under the same model + prompt (= same leaf-set AND
+    # descriptions), so it equals a fresh baseline run and can be reused
+    # (--reuse-baseline). Including descriptions is what makes the match hold across
+    # a version whose descriptions changed.
+    baseline_cv = classifier_version(DEFAULT_MODEL, baseline_leaves, baseline_descriptions)
 
     if args.accession:
         sample = [args.accession]
@@ -162,7 +171,14 @@ def main() -> None:
 
         try:
             if baseline is None:
-                baseline = with_retries(partial(classify_filing, document, leaves=baseline_leaves))
+                baseline = with_retries(
+                    partial(
+                        classify_filing,
+                        document,
+                        leaves=baseline_leaves,
+                        descriptions=baseline_descriptions,
+                    )
+                )
             candidate: FilingClassification = with_retries(partial(classify_filing, document))
         except Exception as exc:  # keep going; report this one
             emit(

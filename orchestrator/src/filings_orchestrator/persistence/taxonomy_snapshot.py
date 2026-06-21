@@ -55,6 +55,22 @@ def leaves_for_version(engine: Engine, version: str) -> list[str]:
     return [str(r[0]) for r in rows]
 
 
+def leaf_descriptions_for_version(engine: Engine, version: str) -> dict[str, str]:
+    """Return {leaf: description} recorded in the snapshot for `version`.
+
+    The prior version's *exact* descriptions, so classify-ab's baseline arm
+    reproduces that version's prompt faithfully — even when a description was
+    later edited in code (ADR 0032). This is what makes the baseline a true
+    reproduction and lets `--reuse-baseline` match the stored classifier_version.
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text("SELECT leaf, description FROM taxonomy_leaves WHERE taxonomy_version = :v"),
+            {"v": version},
+        ).fetchall()
+    return {str(r[0]): str(r[1]) for r in rows}
+
+
 def _recorded_hash(engine: Engine, version: str) -> str | None:
     with engine.begin() as conn:
         row = conn.execute(

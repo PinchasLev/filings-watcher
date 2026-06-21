@@ -69,11 +69,18 @@ change migration-free. A rename can be a later, isolated refactor if a third for
 - **Harder / watch:** 6-K adds meaningful filing volume and LLM cost. The existing daily
   cost cap (ADR 0029) guards spend; actual 6-K volume/cost is measured from real ticks and
   the cap tuned after, rather than predicted up front.
-- **Accepted limitation:** the truncation red-flag tripwire (ADR 0031) still measures
-  against the 8-K exhibit-context budget, not the 6-K per-section budget; a long 6-K
-  exhibit can be truncated for the classifier without a dropped-tail scan. Acceptable for
-  v1, flagged for the measure-first follow-up.
+- **Section budget:** a 6-K exhibit gets a dedicated, larger per-section cap (50k chars
+  vs the 8-K Item's 12k) because the exhibit *is* the content, not supplemental — local
+  verification showed the 12k cap dropping ~87% of a real exhibit and missing most of its
+  disclosure. Outlier annual-report-length exhibits still truncate, and the per-section
+  red-flag scan (ADR 0031) over any dropped tail remains a deferred follow-up.
+- **Image/scanned exhibits:** some exhibits (seen with foreign filers) are page images in
+  an HTML wrapper and extract to ~no text, so the classifier can't read them. The pipeline
+  degrades gracefully (low confidence, dropped or low-signal in reduce) and emits an
+  `exhibit_no_extractable_text` signal so the unread content is visible. OCR is deferred;
+  the signal is the measure-first step toward sizing how often it matters.
 - **Follow-up:** an offline-eval/A-B sample over real 6-Ks to measure classification
-  quality, the multi-exhibit bundling rate, and any 6-K-specific taxonomy gaps
-  (half-year/interim results vs `earnings_release`, AGM/proxy-style notices, foreign
-  buyback returns), iterating the taxonomy data-driven under ADR 0032 if warranted.
+  quality, the multi-exhibit bundling rate, the `exhibit_no_extractable_text` rate, and any
+  6-K-specific taxonomy gaps (half-year/interim results vs `earnings_release`,
+  AGM/proxy-style notices, foreign buyback returns, going-concern buried in an AGM notice),
+  iterating the taxonomy data-driven under ADR 0032 if warranted.

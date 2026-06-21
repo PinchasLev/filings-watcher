@@ -49,8 +49,18 @@ DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 # Cap per-section text to keep tokens (and cost) bounded even on outlier
 # filings. 12,000 chars ≈ 3,000 tokens on prose; comfortably under any
 # context budget while preserving the substantive disclosure in every 8-K
-# we have observed in development.
+# we have observed in development. This caps an 8-K Item section, where the
+# exhibit (the bulk of the prose) is supplemental context, not the section.
 _MAX_SECTION_CHARS = 12_000
+
+# A 6-K section IS a furnished exhibit — the primary content, not supplemental
+# (ADR 0033) — so it gets a much larger budget than an 8-K Item. A 6-K exhibit
+# is commonly a full results announcement or half-year report; the 12k Item cap
+# would drop most of it. 50,000 chars ≈ 12,500 tokens captures the substantive
+# disclosure of nearly every real exhibit while still bounding outlier
+# annual-report-length attachments. Tunable; the per-section red-flag scan over
+# any dropped tail remains a deferred follow-up (ADR 0033).
+_MAX_6K_SECTION_CHARS = 50_000
 
 
 class _State(TypedDict):
@@ -166,14 +176,16 @@ def _build_user_message(
     # 6-K sections are the furnished exhibits, so label them "Exhibit"; 8-K (and
     # any Item-bearing form) labels them "Item". The unit key (item.number) holds
     # the Item number for 8-K and the exhibit label (e.g. "EX-99.1") for 6-K.
+    # A 6-K exhibit is the primary content, so it gets the larger section budget.
     unit = "Exhibit" if filing.form == "6-K" else "Item"
+    cap = _MAX_6K_SECTION_CHARS if filing.form == "6-K" else _MAX_SECTION_CHARS
     if item is not None:
-        body = item.text[:_MAX_SECTION_CHARS]
+        body = item.text[:cap]
         section_header = f"{unit} {item.number}"
         if item.title:
             section_header += f": {item.title}"
         return f"{header}\nSection under classification: {section_header}\n\n{body}{suffix}"
-    body = document.text[:_MAX_SECTION_CHARS]
+    body = document.text[:cap]
     no_sections = (
         "No exhibits were furnished. Classify the body of the report:"
         if filing.form == "6-K"

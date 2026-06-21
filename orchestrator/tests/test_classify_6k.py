@@ -15,6 +15,8 @@ from unittest.mock import patch
 
 from filings_orchestrator.classify import Classification, EventType, classify_filing
 from filings_orchestrator.classify.classifier import (
+    _MAX_6K_SECTION_CHARS,
+    _MAX_SECTION_CHARS,
     _build_system_prompt,
     _build_user_message,
     _sections_for,
@@ -164,6 +166,19 @@ def test_build_user_message_labels_6k_section_as_exhibit() -> None:
     assert "Exhibit EX-99.1: pr.htm" in user
     assert "Form: 6-K" in user
     assert "Item EX-99.1" not in user
+
+
+def test_6k_section_uses_larger_char_budget() -> None:
+    """A 6-K exhibit is the primary content, so its section budget exceeds the 8-K
+    Item cap, and a long exhibit reaches the classifier well past 12k chars."""
+    assert _MAX_6K_SECTION_CHARS > _MAX_SECTION_CHARS
+    long_text = "X" * (_MAX_SECTION_CHARS + 20_000)
+    doc = _document_6k([_exhibit("EX-99.1", "results.htm", long_text)])
+    section = ItemSection(number="EX-99.1", title="results.htm", text=long_text)
+    user = _build_user_message(doc, section)
+    # Body included beyond the 8-K cap but bounded by the 6-K cap.
+    assert user.count("X") > _MAX_SECTION_CHARS
+    assert user.count("X") <= _MAX_6K_SECTION_CHARS
 
 
 def test_6k_prompt_and_version_differ_from_8k() -> None:

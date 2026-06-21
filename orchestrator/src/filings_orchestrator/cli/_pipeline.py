@@ -41,6 +41,12 @@ from filings_orchestrator.persistence.taxonomy_snapshot import (
     ensure_taxonomy_snapshot,
 )
 
+# Below this many characters of extracted text, an exhibit is treated as carrying
+# no readable content — almost always an image/scanned attachment (page images in
+# an HTML wrapper) rather than prose. Not zero: titles, page numbers, and other
+# boilerplate survive extraction even on an all-image exhibit. See ADR 0033.
+_MIN_EXHIBIT_TEXT_CHARS = 200
+
 
 def verify_taxonomy(engine: Engine) -> None:
     """Reconcile the taxonomy snapshot at classify-CLI startup (ADR 0032).
@@ -172,6 +178,26 @@ def classify_and_reduce(engine: Engine, document: FilingDocument) -> int:
                     terms=", ".join(flags),
                     dropped_chars=rendered.dropped_chars,
                 )
+
+        # Image/scanned exhibits (e.g. a press release furnished as page images
+        # wrapped in HTML) extract to ~no text, so the classifier can't read them.
+        # OCR is deferred (ADR 0033); for now emit a measure-first signal so we can
+        # see how often a filing's content — especially a 6-K's, where the exhibit
+        # IS the content — is locked in images a human should open instead.
+        image_only = [
+            ex.exhibit_type
+            for ex in document.exhibits
+            if len(ex.text.strip()) < _MIN_EXHIBIT_TEXT_CHARS
+        ]
+        if image_only:
+            emit(
+                "exhibit_no_extractable_text",
+                accession_number=accession_number,
+                cik=cik,
+                form=document.filing.form,
+                exhibits=image_only,
+                count=len(image_only),
+            )
 
     try:
         result = with_retries(

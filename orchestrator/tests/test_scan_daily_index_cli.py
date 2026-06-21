@@ -289,6 +289,13 @@ def test_scan_daily_index_idempotent_on_already_seen_filing(
     # No new filings processed on the second pass.
     assert completed["new_filings_count"] == 0
     assert "filing_fetched" not in [e["event"] for e in events]
+    # But the cursor still advances to the date's high-water entry even though
+    # every entry was a duplicate — otherwise it freezes whenever another path
+    # (the atom feed) front-runs the daily index, and _dates_to_scan re-fetches
+    # an ever-growing span every tick.
+    assert "cursor_advanced" in [e["event"] for e in events]
+    engine = open_engine(str(configured_env))
+    assert read_ingest_cursor(engine) == ("0001171843-26-003455", "20260515")
 
 
 @pytest.mark.parametrize("status", [403, 404])

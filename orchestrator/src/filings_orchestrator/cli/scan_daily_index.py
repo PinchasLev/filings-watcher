@@ -189,12 +189,6 @@ def main() -> None:
                             form=entry.form,
                             filed_at=entry.filed_at,
                         )
-                        advance_ingest_cursor(engine, entry.accession_number, entry.filed_at)
-                        emit(
-                            "cursor_advanced",
-                            accession_number=entry.accession_number,
-                            filed_at=entry.filed_at,
-                        )
                         new_filings_count += 1
                     except Exception as exc:
                         errors_count += 1
@@ -207,6 +201,22 @@ def main() -> None:
                             errors_count=errors_count,
                         )
                         return
+
+                # This date's index is now fully accounted for — every 8-K is
+                # ingested, whether we just processed it or the atom path got there
+                # first. Advance the cursor to the date's high-water entry so a day
+                # of pure duplicates still moves us forward. Advancing inside the
+                # loop above would freeze the cursor whenever atom front-runs the
+                # daily index (new_entries empty), leaving _dates_to_scan to
+                # re-fetch an ever-growing span every tick.
+                if entries:
+                    high_water = max(entries, key=lambda e: (e.filed_at, e.accession_number))
+                    advance_ingest_cursor(engine, high_water.accession_number, high_water.filed_at)
+                    emit(
+                        "cursor_advanced",
+                        accession_number=high_water.accession_number,
+                        filed_at=high_water.filed_at,
+                    )
 
         # ADR 0029: if today's file was missing at or after the cluster's
         # last invocation window (23:00 ET), emit the publication-missing

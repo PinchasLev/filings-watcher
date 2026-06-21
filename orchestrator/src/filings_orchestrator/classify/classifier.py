@@ -62,14 +62,23 @@ class _State(TypedDict):
     # choice-set; the model is constrained to it via both the prompt and the
     # tool-schema enum. See ADR 0032.
     leaves: list[EventType] | None
+    # Per-leaf descriptions (keyed by leaf value) to render in the prompt. None
+    # uses the in-code `EVENT_TYPE_DESCRIPTIONS`. A prior version's snapshot
+    # descriptions are passed here so the baseline arm reproduces that version's
+    # *exact* prompt — faithful even when a description later changed. See ADR 0032.
+    descriptions: dict[str, str] | None
     items: list[ItemClassification]
     whole_filing: Classification | None
 
 
-def _build_system_prompt(leaves: list[EventType] | None = None) -> str:
+def _build_system_prompt(
+    leaves: list[EventType] | None = None,
+    descriptions: dict[str, str] | None = None,
+) -> str:
     # `leaves is None` enumerates the full in-code taxonomy in declaration order
     # — byte-identical to the production prompt, so the default `classifier_version`
-    # is unchanged. A subset offers only that version's choice-set.
+    # is unchanged. A subset offers only that version's choice-set. `descriptions`
+    # (None = in-code) lets a baseline arm render a prior version's exact text.
     event_types = leaves if leaves is not None else list(EventType)
     lines = [
         "You are an experienced securities analyst classifying SEC Form 8-K material event "
@@ -83,7 +92,12 @@ def _build_system_prompt(leaves: list[EventType] | None = None) -> str:
         "Event types:",
     ]
     for event_type in event_types:
-        lines.append(f"- {event_type.value}: {EVENT_TYPE_DESCRIPTIONS[event_type]}")
+        desc = (
+            descriptions[event_type.value]
+            if descriptions is not None
+            else EVENT_TYPE_DESCRIPTIONS[event_type]
+        )
+        lines.append(f"- {event_type.value}: {desc}")
     lines.extend(
         [
             "",
@@ -203,8 +217,9 @@ def _classify_node(state: _State) -> _State:
     document = state["document"]
     model_name = state["model"]
     leaves = state["leaves"]
+    descriptions = state["descriptions"]
     model = _bind_classifier(model_name, leaves)
-    system = _build_system_prompt(leaves)
+    system = _build_system_prompt(leaves, descriptions)
     accession_number = document.filing.accession_number
 
     # Render the EX-99 exhibit context once and share it across every item's
@@ -257,17 +272,20 @@ def _build_graph() -> Any:
 
 
 def classifier_version(
-    model_name: str = DEFAULT_MODEL, leaves: list[EventType] | None = None
+    model_name: str = DEFAULT_MODEL,
+    leaves: list[EventType] | None = None,
+    descriptions: dict[str, str] | None = None,
 ) -> str:
     """Compose the classifier_version string for persistence.
 
     Combines the model name with a short hash of the system prompt. Any
     change to the prompt or the chosen model produces a new version string,
     which the persistence layer uses to keep classifications immutable and
-    version-tagged. See ADR 0011. The `leaves` subset (if given) changes the
-    prompt, so each A/B arm gets a distinct version automatically.
+    version-tagged. See ADR 0011. The `leaves` subset and `descriptions` (if
+    given) change the prompt, so each A/B arm — including a faithful prior-version
+    baseline reconstructed from its snapshot — gets the matching version string.
     """
-    prompt = _build_system_prompt(leaves)
+    prompt = _build_system_prompt(leaves, descriptions)
     prompt_sha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:8]
     return f"{model_name}+prompt-{prompt_sha}"
 
@@ -276,6 +294,7 @@ def classify_filing(
     document: FilingDocument,
     model_name: str = DEFAULT_MODEL,
     leaves: list[EventType] | None = None,
+    descriptions: dict[str, str] | None = None,
 ) -> FilingClassification:
     """Classify every substantive Item in `document` via Claude tool-use.
 
@@ -283,15 +302,18 @@ def classify_filing(
     were extractable, or a single whole-filing classification when they
     were not. Tracing is automatic if LangSmith env vars are set.
 
-    `leaves` restricts the offered choice-set to a subset of the taxonomy
-    (default `None` = the full in-code taxonomy, the production behavior); used
-    to classify a sample under a specific taxonomy version for evaluation.
+    `leaves` restricts the offered choice-set to a subset of the taxonomy and
+    `descriptions` overrides the per-leaf prompt text (default `None`/`None` = the
+    full in-code taxonomy, the production behavior). Together they reproduce a
+    specific taxonomy version — including a prior version's *exact* descriptions
+    from its snapshot — for evaluation.
     """
     graph = _build_graph()
     initial: _State = {
         "document": document,
         "model": model_name,
         "leaves": leaves,
+        "descriptions": descriptions,
         "items": [],
         "whole_filing": None,
     }
@@ -305,6 +327,6 @@ def classify_filing(
         whole_filing=result["whole_filing"],
         classified_at=datetime.now(UTC),
         model=model_name,
-        classifier_version=classifier_version(model_name, leaves),
+        classifier_version=classifier_version(model_name, leaves, descriptions),
         taxonomy_version=TAXONOMY_VERSION,
     )

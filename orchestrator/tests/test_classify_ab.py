@@ -12,11 +12,16 @@ from pathlib import Path
 import pytest
 from sqlalchemy import Engine
 
-from filings_orchestrator.classify.taxonomy import TAXONOMY_VERSION, EventType
+from filings_orchestrator.classify.taxonomy import (
+    EVENT_TYPE_DESCRIPTIONS,
+    TAXONOMY_VERSION,
+    EventType,
+)
 from filings_orchestrator.cli.classify_ab import _baseline_leaves
 from filings_orchestrator.persistence import apply_migrations, open_engine
 from filings_orchestrator.persistence.taxonomy_snapshot import (
     ensure_taxonomy_snapshot,
+    leaf_descriptions_for_version,
     leaves_for_version,
 )
 
@@ -34,6 +39,15 @@ def test_leaves_for_version_returns_the_snapshot_leaves() -> None:
     engine = _fresh_db()
     leaves = set(leaves_for_version(engine, TAXONOMY_VERSION))
     assert leaves == {e.value for e in EventType}  # current version == full in-code taxonomy
+
+
+def test_leaf_descriptions_for_version_returns_the_snapshot_descriptions() -> None:
+    engine = _fresh_db()
+    descriptions = leaf_descriptions_for_version(engine, TAXONOMY_VERSION)
+    # The current version's snapshot records the in-code descriptions verbatim,
+    # keyed by leaf value. This is what the baseline arm replays so its prompt
+    # reproduces the version faithfully even after a description is edited in code.
+    assert descriptions == {e.value: EVENT_TYPE_DESCRIPTIONS[e] for e in EventType}
 
 
 def test_baseline_leaves_are_eventtypes_in_declaration_order() -> None:

@@ -39,11 +39,11 @@ def _fresh_db() -> Engine:
     return engine
 
 
-def _doc(*exhibits: Exhibit) -> FilingDocument:
+def _doc(*exhibits: Exhibit, form: str = "8-K") -> FilingDocument:
     filing = Filing(
         cik="0000000005",
         company_name="Test Co",
-        form="8-K",
+        form=form,
         accession_number="0000000005-26-000001",
         filing_date=date(2026, 6, 16),
         primary_document="f.htm",
@@ -132,6 +132,59 @@ def test_red_flag_in_truncated_tail_raises_alert(capsys: pytest.CaptureFixture[s
     assert len(flag_alerts) == 1
     assert flag_alerts[0].severity == "alert"
     assert "going concern" in flag_alerts[0].fields["terms"]
+
+
+def test_6k_truncation_does_not_alert_but_is_recorded(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A 6-K exhibit larger than the 50k per-section cap, with an adverse term in
+    the genuinely-unseen tail, must NOT raise a Discord alert (truncation is the
+    6-K steady state — telemetry only, ADR 0033), but the exhibit_context event
+    must still record the truncation against the 50k basis."""
+    from filings_orchestrator.classify.classifier import _MAX_6K_SECTION_CHARS
+
+    tail = " the company disclosed a going concern doubt."
+    text = ("A" * (_MAX_6K_SECTION_CHARS + 5_000)) + tail  # adverse term past 50k
+    doc = _doc(Exhibit(exhibit_type="EX-99.1", document="rpt.htm", url="u", text=text), form="6-K")
+
+    with (
+        patch(_CLASSIFY, return_value=_stub_classification(doc.filing.accession_number)),
+        patch(_REDUCE, return_value=[]),
+    ):
+        classify_and_reduce(engine := _fresh_db(), doc)
+
+    titles = [a.title for a in fetch_undelivered_alerts(engine)]
+    assert "Adverse content truncated from exhibit" not in titles
+
+    ctx = next(e for e in _events(capsys) if e["event"] == "exhibit_context")
+    assert ctx["form"] == "6-K"
+    assert ctx["truncated"] is True
+    # dropped_chars measured against the 50k window, not the 16k context budget.
+    assert ctx["dropped_chars"] == len(text) - _MAX_6K_SECTION_CHARS
+
+
+def test_6k_fully_read_exhibit_is_not_truncated(capsys: pytest.CaptureFixture[str]) -> None:
+    """A 6-K exhibit under the 50k cap is fully read, so it is NOT flagged
+    truncated even if it contains adverse terms — the Robot-style false positive
+    the 16k basis produced."""
+    from filings_orchestrator.classify.classifier import _MAX_6K_SECTION_CHARS
+
+    text = "Going concern is discussed here. " * 1_000  # ~33k chars, < 50k
+    assert len(text) < _MAX_6K_SECTION_CHARS
+    doc = _doc(Exhibit(exhibit_type="EX-99.1", document="pr.htm", url="u", text=text), form="6-K")
+
+    with (
+        patch(_CLASSIFY, return_value=_stub_classification(doc.filing.accession_number)),
+        patch(_REDUCE, return_value=[]),
+    ):
+        classify_and_reduce(engine := _fresh_db(), doc)
+
+    assert "Adverse content truncated from exhibit" not in [
+        a.title for a in fetch_undelivered_alerts(engine)
+    ]
+    ctx = next(e for e in _events(capsys) if e["event"] == "exhibit_context")
+    assert ctx["truncated"] is False
+    assert ctx["dropped_chars"] == 0
 
 
 def test_image_only_exhibit_emits_no_extractable_text_signal(

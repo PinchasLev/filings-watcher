@@ -60,6 +60,13 @@ _EDGAR_RATE_LIMIT_PER_SEC = 2
 
 _EASTERN = ZoneInfo("America/New_York")
 
+# Forms ingested from the daily index. 8-K (domestic current reports) and 6-K
+# (foreign private issuer reports) share the entire downstream pipeline — resolve,
+# fetch, classify, reduce — differing only in how the classifier sections a filing
+# (8-K by Item, 6-K by furnished exhibit). Amendments (8-K/A, 6-K/A) are excluded
+# by the exact-match filter, consistent with prior behavior. See ADR 0033.
+_INGEST_FORMS = ("8-K", "6-K")
+
 
 def main() -> None:
     setup_otel()
@@ -159,7 +166,7 @@ def main() -> None:
                     return
 
                 all_entries = parse_daily_index(index_text)
-                entries = filter_form(all_entries, "8-K")
+                entries = [e for form in _INGEST_FORMS for e in filter_form(all_entries, form)]
                 if target == today_et:
                     # ADR 0029: heartbeat that EDGAR's daily-index publication
                     # for today has been detected. Multiple cluster invocations
@@ -170,7 +177,8 @@ def main() -> None:
                         "daily_index_published",
                         date=target.isoformat(),
                         total_entries=len(all_entries),
-                        eight_k_entries=len(entries),
+                        eight_k_entries=len(filter_form(all_entries, "8-K")),
+                        six_k_entries=len(filter_form(all_entries, "6-K")),
                     )
                 seen = select_seen_accessions(engine, [e.accession_number for e in entries])
                 new_entries = sorted(

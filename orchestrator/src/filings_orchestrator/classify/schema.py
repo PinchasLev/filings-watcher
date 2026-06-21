@@ -71,6 +71,10 @@ class FilingClassification(BaseModel):
     cik: str
     company_name: str
     filing_date: str
+    # The SEC form this classification is for. Selects the form-specific reduce
+    # prompt and version; defaults to "8-K" so existing 8-K rows/fixtures are
+    # unaffected. For a 6-K the per-section keys are exhibit labels (e.g. "EX-99.1").
+    form: str = "8-K"
     items: list[ItemClassification] = Field(default_factory=list)
     whole_filing: Classification | None = None
     classified_at: datetime

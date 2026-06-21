@@ -294,3 +294,79 @@ def test_reducer_version_format_and_stability() -> None:
     assert v1 == v2
     assert v1.startswith("haiku-4.5+reduce-")
     assert len(v1.rsplit("-", 1)[1]) == 8  # 8-char sha prefix
+
+
+def test_reducer_version_differs_by_form() -> None:
+    """The reduce prompt is form-specific, so 6-K carries a distinct version, and
+    the 8-K default is unchanged."""
+    assert reducer_version("haiku-4.5", form="6-K") != reducer_version("haiku-4.5", form="8-K")
+    assert reducer_version("haiku-4.5") == reducer_version("haiku-4.5", form="8-K")
+
+
+def _classification_6k(items: list[ItemClassification]) -> FilingClassification:
+    return FilingClassification(
+        accession_number="0001234567-26-000001",
+        cik="0001234567",
+        company_name="Foreign Issuer PLC",
+        filing_date="2026-06-01",
+        form="6-K",
+        items=items,
+        whole_filing=None,
+        classified_at=datetime(2026, 6, 2, tzinfo=UTC),
+        model="haiku-4.5",
+        classifier_version="haiku-4.5+prompt-bbbb2222",
+        taxonomy_version="v1",
+    )
+
+
+def test_reduce_6k_collates_exhibit_sections_into_events() -> None:
+    """A 6-K's per-exhibit classifications reduce into events anchored on the
+    exhibit labels; the grounding logic accepts exhibit keys unchanged."""
+    classification = _classification_6k(
+        [
+            _item("EX-99.1", "earnings_release", True, "Half-year results."),
+            _item("EX-99.2", "dividend_distribution", True, "Dividend declaration."),
+        ]
+    )
+    output = ReduceOutput(
+        events=[
+            ReducedEvent(
+                event_type=EventType("earnings_release"),
+                is_material=True,
+                confidence=0.9,
+                summary="Half-year results.",
+                anchor_item_number="EX-99.1",
+                contributing_item_numbers=["EX-99.1"],
+            ),
+            ReducedEvent(
+                event_type=EventType("dividend_distribution"),
+                is_material=True,
+                confidence=0.88,
+                summary="Dividend declaration.",
+                anchor_item_number="EX-99.2",
+                contributing_item_numbers=["EX-99.2"],
+            ),
+        ]
+    )
+    result = _patched_reduce(classification, output)
+    anchors = {e.anchor_item_number for e in result.events}
+    assert anchors == {"EX-99.1", "EX-99.2"}
+
+
+def test_reduce_6k_user_message_labels_exhibits() -> None:
+    """The 6-K reduce prompt frames sections as exhibits, not Items."""
+    from filings_orchestrator.classify.reducer import (
+        _build_reduce_system_prompt,
+        _build_reduce_user_message,
+    )
+
+    classification = _classification_6k(
+        [_item("EX-99.1", "earnings_release", True, "Half-year results.")]
+    )
+    user = _build_reduce_user_message(classification)
+    assert "Per-exhibit classifications:" in user
+    assert "Exhibit EX-99.1" in user
+    assert "Form: 6-K" in user
+    system = _build_reduce_system_prompt("6-K")
+    assert "per-exhibit" in system
+    assert _build_reduce_system_prompt("6-K") != _build_reduce_system_prompt("8-K")

@@ -134,6 +134,44 @@ def test_red_flag_in_truncated_tail_raises_alert(capsys: pytest.CaptureFixture[s
     assert "going concern" in flag_alerts[0].fields["terms"]
 
 
+def test_image_only_exhibit_emits_no_extractable_text_signal(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An exhibit that extracts to ~no text (an image/scanned attachment) emits the
+    measure-first `exhibit_no_extractable_text` signal so its unread content is
+    visible. A text-bearing exhibit alongside it must not be flagged."""
+    engine = _fresh_db()
+    doc = _doc(
+        Exhibit(exhibit_type="EX-99.1", document="ex1.htm", url="u", text="A real release. " * 30),
+        Exhibit(exhibit_type="EX-99.2", document="ex2.htm", url="u", text="  "),  # image-only
+    )
+
+    with (
+        patch(_CLASSIFY, return_value=_stub_classification(doc.filing.accession_number)),
+        patch(_REDUCE, return_value=[]),
+    ):
+        classify_and_reduce(engine, doc)
+
+    signal = next(e for e in _events(capsys) if e["event"] == "exhibit_no_extractable_text")
+    assert signal["exhibits"] == ["EX-99.2"]
+    assert signal["count"] == 1
+
+
+def test_no_extractable_text_signal_absent_when_all_exhibits_have_text(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    engine = _fresh_db()
+    doc = _doc(Exhibit(exhibit_type="EX-99.1", document="ex1.htm", url="u", text="Release. " * 40))
+
+    with (
+        patch(_CLASSIFY, return_value=_stub_classification(doc.filing.accession_number)),
+        patch(_REDUCE, return_value=[]),
+    ):
+        classify_and_reduce(engine, doc)
+
+    assert "exhibit_no_extractable_text" not in [e["event"] for e in _events(capsys)]
+
+
 def test_no_alert_when_truncated_tail_is_clean(capsys: pytest.CaptureFixture[str]) -> None:
     engine = _fresh_db()
     text = "Routine quarterly update with no adverse terms whatsoever. " * 5

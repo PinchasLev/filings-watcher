@@ -16,7 +16,7 @@
     {{if .SubmittedAt -}}
     <time class="submitted-at" datetime="{{ derefStr .SubmittedAt }}">{{utcDateTime .SubmittedAt}}</time>
     {{- end}}
-    {{if .AnchorItemNumber}}<span>Item {{ derefStr .AnchorItemNumber }}</span>{{end}}
+    {{if .AnchorItemNumber}}<span>{{ anchorLabel .AnchorItemNumber }}</span>{{end}}
   </div>
   <p class="reasoning">{{.Summary}}</p>
   <small><a href="{{edgarURL .AccessionNumber}}" rel="noopener" target="_blank">View raw filing on EDGAR &rarr;</a></small>
@@ -33,7 +33,7 @@
 </nav>
 
 <p class="intro">
-  Material 8-K events ordered by the time EDGAR accepted them. New filings appear at the top automatically — no refresh needed. Only filings ingested in near-real-time appear here; the daily-index reconciliation backstop fills in the catalog overnight, but those rows don't carry a sub-day timestamp and land on the <a href="/">Latest</a> view instead.
+  Material 8-K and 6-K events ordered by the time EDGAR accepted them. New filings appear at the top automatically — no refresh needed. Only filings ingested in near-real-time appear here; the daily-index reconciliation backstop fills in the catalog overnight, but those rows don't carry a sub-day timestamp and land on the <a href="/">Latest</a> view instead.
 </p>
 
 <section id="live-tape">

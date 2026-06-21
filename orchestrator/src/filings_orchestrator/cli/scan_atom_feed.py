@@ -33,6 +33,7 @@ from filings_orchestrator.config import MissingConfigError, load_config
 from filings_orchestrator.cost import db_llm_call_sink, set_cost_sink
 from filings_orchestrator.edgar import EdgarClient
 from filings_orchestrator.edgar.atom_feed import (
+    AtomEntry,
     fetch_atom_feed,
     filter_form,
     parse_atom_feed,
@@ -54,6 +55,12 @@ _EDGAR_RATE_LIMIT_PER_SEC = 2
 # starting tunable — comfortable headroom against the rate at which entries
 # roll off the snapshot tail at observed 8-K volume.
 _ATOM_FEED_COUNT = 100
+
+# Forms polled from the near-real-time Atom feed. The `getcurrent` snapshot is
+# per-form, so each form is fetched separately; the entries are then merged and
+# deduped against the filings PK like the single-form path. Mirrors
+# `scan_daily_index._INGEST_FORMS`.
+_INGEST_FORMS = ("8-K", "6-K")
 
 
 def main() -> None:
@@ -111,8 +118,10 @@ def main() -> None:
             user_agent=config.edgar_user_agent,
             rate_limit_per_second=_EDGAR_RATE_LIMIT_PER_SEC,
         ) as client:
-            atom_xml = fetch_atom_feed(client, form="8-K", count=_ATOM_FEED_COUNT)
-            entries = filter_form(parse_atom_feed(atom_xml), "8-K")
+            entries: list[AtomEntry] = []
+            for form in _INGEST_FORMS:
+                atom_xml = fetch_atom_feed(client, form=form, count=_ATOM_FEED_COUNT)
+                entries.extend(filter_form(parse_atom_feed(atom_xml), form))
             seen = select_seen_accessions(engine, [e.accession_number for e in entries])
             new_entries = sorted(
                 (e for e in entries if e.accession_number not in seen),

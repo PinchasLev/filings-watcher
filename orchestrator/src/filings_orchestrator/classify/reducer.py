@@ -33,8 +33,46 @@ from filings_orchestrator.classify.taxonomy import EVENT_TYPE_DESCRIPTIONS, Even
 from filings_orchestrator.cost import emit_llm_call
 
 
-def _build_reduce_system_prompt() -> str:
-    lines = [
+def _reduce_prompt_body(form: str) -> list[str]:
+    """The form-specific instructions of the reduce system prompt.
+
+    8-K (the default) returns the original wording verbatim, so the 8-K
+    `reducer_version` hash is unchanged. 6-K collates per-exhibit classifications
+    instead of per-Item: each furnished exhibit is usually its own announcement
+    and its own event, and only co-describing exhibits (a release plus its
+    financial tables, or two-language pairs) merge. The shared event-types block
+    is appended by the caller.
+    """
+    if form == "6-K":
+        return [
+            "You are an experienced securities analyst. You are given the per-exhibit "
+            "classifications of a single SEC Form 6-K furnished by a foreign private "
+            "issuer — for each furnished exhibit, its label, the assigned event type, "
+            "whether it was judged material, and the 1-3 sentence reasoning behind it. "
+            "You will NOT see the raw exhibit text; work from these classifications.",
+            "",
+            "Collate the exhibits into the distinct real-world events the report "
+            "discloses. A single 6-K commonly furnishes several unrelated announcements, "
+            "each its own exhibit and its own event; but sometimes several exhibits "
+            "describe one event (a press release alongside its supporting financial "
+            "tables, or the same announcement in two languages). Group every exhibit "
+            "that describes the same event together, and keep genuinely distinct "
+            "announcements separate.",
+            "",
+            "For each event:",
+            "- Choose an anchor: the single primary exhibit the event centers on. "
+            "Supporting tables, translations, and duplicate attachments are never anchors.",
+            "- List every contributing exhibit, including the anchor.",
+            "- Assign the event_type that best fits the consolidated event; it may "
+            "differ from any single exhibit's type.",
+            "- Write a 1-3 sentence summary of the consolidated event.",
+            "- Set materiality, and a confidence reflecting genuine uncertainty.",
+            "",
+            "Merge conservatively: combine exhibits only when they clearly describe one "
+            "event; keep genuinely distinct events separate. Every exhibit must belong "
+            "to exactly one event.",
+        ]
+    return [
         "You are an experienced securities analyst. You are given the per-Item "
         "classifications of a single SEC Form 8-K filing — for each Item, its "
         "number, the assigned event type, whether it was judged material, and the "
@@ -62,9 +100,11 @@ def _build_reduce_system_prompt() -> str:
         "Merge conservatively: combine Items only when they clearly describe one "
         "event; keep genuinely distinct events separate. Every Item must belong to "
         "exactly one event.",
-        "",
-        "Event types:",
     ]
+
+
+def _build_reduce_system_prompt(form: str = "8-K") -> str:
+    lines = [*_reduce_prompt_body(form), "", "Event types:"]
     lines.extend(
         f"- {event_type.value}: {EVENT_TYPE_DESCRIPTIONS[event_type]}" for event_type in EventType
     )
@@ -72,18 +112,22 @@ def _build_reduce_system_prompt() -> str:
 
 
 def _build_reduce_user_message(classification: FilingClassification) -> str:
+    # 6-K sections are furnished exhibits (item_number holds the exhibit label);
+    # 8-K sections are Items. Label both the heading and each row accordingly.
+    unit = "Exhibit" if classification.form == "6-K" else "Item"
     header = (
         f"Company: {classification.company_name} (CIK {classification.cik})\n"
         f"Filing date: {classification.filing_date}\n"
-        f"Form: 8-K\n"
+        f"Form: {classification.form}\n"
     )
-    lines = [header, "Per-Item classifications:"]
+    heading = "Per-exhibit classifications:" if unit == "Exhibit" else "Per-Item classifications:"
+    lines = [header, heading]
     for item in classification.items:
         c = item.classification
         title = f" ({item.item_title})" if item.item_title else ""
         materiality = "material" if c.is_material else "non-material"
         lines.append(
-            f"\nItem {item.item_number}{title} — {c.event_type.value}, {materiality}, "
+            f"\n{unit} {item.item_number}{title} — {c.event_type.value}, {materiality}, "
             f"confidence {c.confidence:.2f}\n  {c.reasoning}"
         )
     return "\n".join(lines)
@@ -131,14 +175,18 @@ def _call_reducer(
     return ReduceOutput.model_validate(tool_calls[0]["args"])
 
 
-def reducer_version(model_name: str = DEFAULT_MODEL) -> str:
+def reducer_version(model_name: str = DEFAULT_MODEL, *, form: str = "8-K") -> str:
     """Compose the reducer_version string (model + reduce-prompt hash).
 
     Mirrors classifier_version: any change to the reduce prompt or the chosen
     model yields a new version string. It is recorded as run metadata, not row
     identity — every deliberate re-run is a new run regardless (ADR 0028).
+
+    `form` selects the form-specific reduce prompt, so a 6-K reduce run carries a
+    distinct version from an 8-K one. Keyword-only, defaulting to "8-K", so the
+    existing 8-K version string is unchanged.
     """
-    prompt_sha = hashlib.sha256(_build_reduce_system_prompt().encode("utf-8")).hexdigest()[:8]
+    prompt_sha = hashlib.sha256(_build_reduce_system_prompt(form).encode("utf-8")).hexdigest()[:8]
     return f"{model_name}+reduce-{prompt_sha}"
 
 
@@ -191,7 +239,7 @@ def reduce_filing(
             ],
         )
 
-    system = _build_reduce_system_prompt()
+    system = _build_reduce_system_prompt(classification.form)
     user = _build_reduce_user_message(classification)
     output = _call_reducer(
         _bind_reducer(model_name),

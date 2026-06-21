@@ -24,7 +24,7 @@
         <div class="filing-meta">
           <span>filed {{.FilingDate}}</span>
           <span>confidence {{printf "%.0f" (mul .Confidence 100.0)}}%</span>
-          {{if .AnchorItemNumber}}<span>Item {{ derefStr .AnchorItemNumber }}</span>{{end}}
+          {{if .AnchorItemNumber}}<span>{{ anchorLabel .AnchorItemNumber }}</span>{{end}}
         </div>
         <p class="reasoning">{{.Summary}}</p>
         <small><a href="{{edgarURL .AccessionNumber}}" rel="noopener" target="_blank">View raw filing on EDGAR &rarr;</a></small>

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 
+from anthropic import AuthenticationError, BadRequestError, PermissionDeniedError
 from sqlalchemy import Engine
 
 from filings_orchestrator.alerting import ALERT, emit_alert
@@ -23,7 +24,7 @@ from filings_orchestrator.classify import (
     reducer_version,
 )
 from filings_orchestrator.classify.exhibits import render_exhibits, scan_red_flags
-from filings_orchestrator.classify.retry import with_retries
+from filings_orchestrator.classify.retry import is_retryable_error, with_retries
 from filings_orchestrator.edgar import EdgarClient, FilingDocument, fetch_filing_document
 from filings_orchestrator.edgar.filing_resolver import resolve_filing
 from filings_orchestrator.log_events import emit
@@ -172,13 +173,24 @@ def classify_and_reduce(engine: Engine, document: FilingDocument) -> int:
                     dropped_chars=rendered.dropped_chars,
                 )
 
-    result = with_retries(
-        lambda: classify_filing(document),
-        log_context={
-            "accession_number": accession_number,
-            "cik": cik,
-        },
-    )
+    try:
+        result = with_retries(
+            lambda: classify_filing(document),
+            log_context={
+                "accession_number": accession_number,
+                "cik": cik,
+            },
+        )
+    except Exception as exc:
+        # A classify call that propagates here has already exhausted in-call
+        # retries, so the condition is sustained, not a blip — and the only
+        # record of it otherwise is a `tick_failed` structured log, which never
+        # reaches Discord. Raise an operator ALERT so a halted pipeline (drained
+        # credit, bad key, upstream outage) is visible. The per-cause dedup_key
+        # lets the drainer page once and re-page only once per repeat window
+        # while it keeps firing, so a multi-day outage doesn't spam.
+        _alert_on_classify_failure(engine, exc, accession_number=accession_number)
+        raise
     inserted = insert_classifications(engine, result)
 
     emit(
@@ -191,6 +203,64 @@ def classify_and_reduce(engine: Engine, document: FilingDocument) -> int:
     )
 
     return _reduce_one(engine, result)
+
+
+def _classify_failure_alert_params(exc: BaseException) -> tuple[str, str, str]:
+    """Map a propagated classify failure to (cause, title, body) for an alert.
+
+    The cause becomes the per-cause dedup_key suffix; the operator acts on each
+    category differently. A drained credit balance and an auth/permission failure
+    both halt classification until a human intervenes (top up / fix the key). A
+    sustained upstream outage — retryable errors (rate-limit / 5xx / network)
+    that still propagated after in-call retries — resolves on its own. Anything
+    else is an unexpected failure worth eyes on the logs.
+    """
+    message = str(exc).lower()
+    if isinstance(exc, BadRequestError) and "credit balance" in message:
+        return (
+            "anthropic_credit_exhausted",
+            "Anthropic credit exhausted — classification halted",
+            "A classification call was rejected because the Anthropic account's credit "
+            "balance is too low. New filings will not be classified until the balance is "
+            "topped up at console.anthropic.com; the next tick then resumes automatically.",
+        )
+    if isinstance(exc, AuthenticationError | PermissionDeniedError):
+        return (
+            "anthropic_auth_failed",
+            "Anthropic auth failed — classification halted",
+            "A classification call was rejected with an authentication or permission error. "
+            "Check ANTHROPIC_API_KEY on the host; classification stays halted until it is fixed.",
+        )
+    if is_retryable_error(exc):
+        return (
+            "anthropic_upstream_outage",
+            "Classification failing — Anthropic API outage",
+            "Classification calls are still failing after in-call retries (rate limits, 5xx, "
+            "or network). This is most likely a transient Anthropic outage and should resume "
+            "on its own once upstream recovers.",
+        )
+    return (
+        "classify_unexpected_error",
+        "Classification failing — unexpected error",
+        "A classification call failed with an unexpected error and the tick has stopped; "
+        "filings are not being classified. Check the orchestrator logs.",
+    )
+
+
+def _alert_on_classify_failure(
+    engine: Engine, exc: BaseException, *, accession_number: str
+) -> None:
+    """Raise the operator ALERT for a halted/failing classification pipeline."""
+    cause, title, body = _classify_failure_alert_params(exc)
+    emit_alert(
+        engine,
+        ALERT,
+        title,
+        body=body,
+        dedup_key=f"classify_failure:{cause}",
+        accession_number=accession_number,
+        error_class=type(exc).__name__,
+    )
 
 
 def _reduce_one(engine: Engine, classification: FilingClassification) -> int:

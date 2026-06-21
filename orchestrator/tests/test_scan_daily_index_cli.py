@@ -571,3 +571,82 @@ def test_scan_daily_index_emits_cost_warning_between_warn_and_cap(
     # The tick still completed — the warning does not block work.
     assert "tick_completed" in [e["event"] for e in events]
     assert "tick_failed" not in [e["event"] for e in events]
+
+
+# A minimal daily-index body with a single 6-K row. The accession is embedded in
+# the file path so the parser can extract it; the form is "6-K" so the ingest
+# form filter selects it alongside 8-K.
+_MASTER_IDX_6K = (
+    "CIK|Company Name|Form Type|Date Filed|File Name\n"
+    "--------------------------------------------------------------------------------\n"
+    "1234567|Foreign Issuer PLC|6-K|20260515|edgar/data/1234567/0001234567-26-000001.txt\n"
+)
+
+# Filing-index page for the 6-K: a Document Format Files table whose primary row
+# Type is "6-K" (resolved as the primary document) plus an EX-99.1 exhibit row
+# (resolved as a fetch target and, for a 6-K, classified as its own section).
+_FILING_INDEX_6K = """<html><body>
+<table summary="Document Format Files">
+<tr><th>Seq</th><th>Description</th><th>Document</th><th>Type</th><th>Size</th></tr>
+<tr><td>1</td><td>FORM 6-K</td>
+  <td><a href="/Archives/edgar/data/1234567/000123456726000001/form6k.htm">form6k.htm</a></td>
+  <td>6-K</td><td>1000</td></tr>
+<tr><td>2</td><td>PRESS RELEASE</td>
+  <td><a href="/Archives/edgar/data/1234567/000123456726000001/ex99-1.htm">ex99-1.htm</a></td>
+  <td>EX-99.1</td><td>2000</td></tr>
+</table>
+</body></html>
+"""
+
+_FORM_6K_COVER = "<html><body><p>Report of foreign private issuer.</p></body></html>"
+_EX99_BODY = "<html><body><p>Half-year results announcement.</p></body></html>"
+
+
+def test_scan_daily_index_ingests_6k(
+    configured_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A 6-K in the daily index is resolved, fetched (cover + EX-99 exhibit),
+    classified, and persisted — and the publication heartbeat counts it."""
+    monkeypatch.setattr(
+        "filings_orchestrator.cli._pipeline.classify_filing",
+        _stub_classify_filing,
+    )
+    fixed_now = datetime(2026, 5, 15, 16, 0, 0, tzinfo=UTC)
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:  # type: ignore[override]
+            return fixed_now if tz is None else fixed_now.astimezone(tz)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("filings_orchestrator.cli.scan_daily_index.datetime", _FixedDateTime)
+
+    base = "https://www.sec.gov/Archives/edgar/data/1234567/000123456726000001"
+    with respx.mock(assert_all_called=True) as mock:
+        mock.get(
+            "https://www.sec.gov/Archives/edgar/daily-index/2026/QTR2/master.20260515.idx"
+        ).mock(return_value=httpx.Response(200, text=_MASTER_IDX_6K))
+        mock.get(f"{base}/0001234567-26-000001-index.html").mock(
+            return_value=httpx.Response(200, text=_FILING_INDEX_6K)
+        )
+        mock.get(f"{base}/form6k.htm").mock(return_value=httpx.Response(200, text=_FORM_6K_COVER))
+        mock.get(f"{base}/ex99-1.htm").mock(return_value=httpx.Response(200, text=_EX99_BODY))
+
+        main()
+
+    events = _read_jsonl(capsys.readouterr().out)
+    fetched = next(e for e in events if e["event"] == "filing_fetched")
+    assert fetched["accession_number"] == "0001234567-26-000001"
+    assert fetched["form"] == "6-K"
+
+    published = next(e for e in events if e["event"] == "daily_index_published")
+    assert published["six_k_entries"] == 1
+    assert published["eight_k_entries"] == 0
+
+    engine = open_engine(str(configured_env))
+    with engine.begin() as conn:
+        rows = conn.execute(text("SELECT accession_number, form FROM filings")).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "0001234567-26-000001"
+    assert rows[0][1] == "6-K"

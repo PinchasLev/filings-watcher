@@ -275,7 +275,7 @@ def _reduce_one(engine: Engine, classification: FilingClassification) -> int:
     run_id = create_run(
         engine,
         stage="reduce",
-        config_version=reducer_version(),
+        config_version=reducer_version(form=classification.form),
         taxonomy_version=classification.taxonomy_version,
     )
     try:

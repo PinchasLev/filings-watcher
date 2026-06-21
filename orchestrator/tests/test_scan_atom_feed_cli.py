@@ -42,6 +42,16 @@ _FILING_BODY_HTML = """<html><body>
 _ATOM_URL = (
     "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&output=atom&count=100"
 )
+# The atom path now polls 6-K alongside 8-K (one fetch per form). These tests
+# exercise the 8-K entry; the 6-K feed is mocked empty so the per-form fetch is
+# satisfied without adding a second filing to the assertions.
+_ATOM_URL_6K = (
+    "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=6-K&output=atom&count=100"
+)
+_ATOM_BODY_EMPTY = (
+    '<?xml version="1.0" encoding="ISO-8859-1" ?>\n'
+    '<feed xmlns="http://www.w3.org/2005/Atom"></feed>\n'
+)
 
 
 @pytest.fixture
@@ -102,6 +112,7 @@ def test_scan_atom_feed_classifies_new_8k_without_advancing_cursor(
 
     with respx.mock(assert_all_called=True) as mock:
         mock.get(_ATOM_URL).mock(return_value=httpx.Response(200, text=_ATOM_BODY))
+        mock.get(_ATOM_URL_6K).mock(return_value=httpx.Response(200, text=_ATOM_BODY_EMPTY))
         mock.get(
             "https://www.sec.gov/Archives/edgar/data/101295/000117184326003455/"
             "0001171843-26-003455-index.html"
@@ -186,9 +197,10 @@ def test_scan_atom_feed_dedups_against_already_seen_accession(
     )
 
     with respx.mock(assert_all_called=True) as mock:
-        # Only the Atom poll happens; no filing-index or body fetch because
-        # the only entry is already in the DB.
+        # Only the Atom polls happen (8-K + the empty 6-K feed); no filing-index
+        # or body fetch because the only entry is already in the DB.
         mock.get(_ATOM_URL).mock(return_value=httpx.Response(200, text=_ATOM_BODY))
+        mock.get(_ATOM_URL_6K).mock(return_value=httpx.Response(200, text=_ATOM_BODY_EMPTY))
 
         main()
 

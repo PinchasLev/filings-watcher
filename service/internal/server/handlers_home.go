@@ -41,6 +41,7 @@ var templateFS embed.FS
 var templateFuncs = template.FuncMap{
 	"eventLabel":    eventLabel,
 	"derefStr":      derefStr,
+	"anchorLabel":   anchorLabel,
 	"edgarURL":      edgarFilingURL,
 	"mul":           func(a, b float64) float64 { return a * b },
 	"liveWindowURL": liveWindowURL,
@@ -287,6 +288,20 @@ func derefStr(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// anchorLabel renders an event's anchor for display. The anchor key is an 8-K
+// Item number (e.g. "5.02") or a 6-K exhibit label (e.g. "EX-99.1"); 8-K Items
+// get an "Item " prefix while exhibit labels — which a 6-K event anchors on,
+// since a 6-K has no Item structure — are shown verbatim. nil renders empty.
+func anchorLabel(anchor *string) string {
+	if anchor == nil || *anchor == "" {
+		return ""
+	}
+	if strings.HasPrefix(*anchor, "EX-") {
+		return *anchor
+	}
+	return "Item " + *anchor
 }
 
 // edgarFilingURL builds the canonical EDGAR filing-index URL from an

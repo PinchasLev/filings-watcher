@@ -776,7 +776,10 @@ def load_latest_filing_classification(
     """
     with engine.begin() as conn:
         filing = conn.execute(
-            text("SELECT cik, company_name, filing_date FROM filings WHERE accession_number = :a"),
+            text(
+                "SELECT cik, company_name, filing_date, form "
+                "FROM filings WHERE accession_number = :a"
+            ),
             {"a": accession_number},
         ).fetchone()
         if filing is None:
@@ -836,6 +839,7 @@ def load_latest_filing_classification(
         cik=str(filing._mapping["cik"]),
         company_name=str(filing._mapping["company_name"]),
         filing_date=str(filing._mapping["filing_date"]),
+        form=str(filing._mapping["form"]),
         items=items,
         whole_filing=whole_filing,
         classified_at=classified_at,

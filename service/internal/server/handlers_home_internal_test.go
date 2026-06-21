@@ -32,3 +32,24 @@ func TestEdgarFilingURL(t *testing.T) {
 		}
 	}
 }
+
+func TestAnchorLabel(t *testing.T) {
+	item := "5.02"
+	exhibit := "EX-99.1"
+	empty := ""
+	tests := []struct {
+		name   string
+		anchor *string
+		want   string
+	}{
+		{name: "8-K item gets Item prefix", anchor: &item, want: "Item 5.02"},
+		{name: "6-K exhibit label shown verbatim", anchor: &exhibit, want: "EX-99.1"},
+		{name: "nil renders empty", anchor: nil, want: ""},
+		{name: "empty string renders empty", anchor: &empty, want: ""},
+	}
+	for _, tt := range tests {
+		if got := anchorLabel(tt.anchor); got != tt.want {
+			t.Errorf("%s: anchorLabel() = %q; want %q", tt.name, got, tt.want)
+		}
+	}
+}

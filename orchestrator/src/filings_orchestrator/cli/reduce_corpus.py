@@ -71,8 +71,14 @@ def main() -> None:
     else:
         accessions = list_classified_accessions(engine)
 
-    config_version = reducer_version()
-    emit("reduce_corpus_started", filings=len(accessions), reducer_version=config_version)
+    # The reduce prompt — and therefore reducer_version — is form-specific, so the
+    # version is computed per filing inside the loop. The 8-K version is reported
+    # here as the representative label for the sweep.
+    emit(
+        "reduce_corpus_started",
+        filings=len(accessions),
+        reducer_version=reducer_version(),
+    )
 
     reduced = 0
     events_written = 0
@@ -89,7 +95,7 @@ def main() -> None:
         run_id = create_run(
             engine,
             stage="reduce",
-            config_version=config_version,
+            config_version=reducer_version(form=classification.form),
             taxonomy_version=classification.taxonomy_version,
         )
         try:

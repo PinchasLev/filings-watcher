@@ -71,7 +71,46 @@ class _State(TypedDict):
     whole_filing: Classification | None
 
 
+def _prompt_lead_in(form: str) -> list[str]:
+    """The form-specific opening of the classify system prompt.
+
+    8-K (the default) returns the original two paragraphs verbatim, so the
+    8-K `classifier_version` hash is byte-identical to before this became
+    form-aware. 6-K substitutes a foreign-private-issuer framing: a 6-K has no
+    standardized Item structure, so the unit shown is one furnished exhibit,
+    and many 6-K furnishings are routine foreign-market compliance disclosures
+    that are not material. The shared materiality/confidence guidance below is
+    identical across forms.
+    """
+    if form == "6-K":
+        return [
+            "You are an experienced securities analyst classifying disclosures in an SEC "
+            "Form 6-K — a report furnished by a foreign private issuer. Unlike a domestic "
+            "8-K, a 6-K has no standardized Item structure; its substance is carried in the "
+            "exhibits it furnishes (press releases, interim or half-year results, "
+            "announcements, circulars). You will be shown one such exhibit and must classify "
+            "what it discloses into the taxonomy below using the provided tool.",
+            "",
+            "Classify based on what the exhibit actually discloses. A single 6-K often "
+            "bundles several unrelated announcements across separate exhibits; judge this "
+            "exhibit on its own content. Many 6-K furnishings are routine foreign-market "
+            "compliance disclosures — annual-meeting notices, monthly share-buyback returns, "
+            "administrative circulars — that are not material; reserve is_material for "
+            "disclosures that would affect a reasonable investor's assessment.",
+        ]
+    return [
+        "You are an experienced securities analyst classifying SEC Form 8-K material event "
+        "disclosures. You will be shown one section of an 8-K filing — typically a single "
+        "Item — and must classify it into the taxonomy below using the provided tool.",
+        "",
+        "Classify based on what the prose actually discloses, not on the Item number alone. "
+        "An Item 5.02 filing may be a departure, an appointment, or both — choose the most "
+        "salient event the prose centers on.",
+    ]
+
+
 def _build_system_prompt(
+    form: str = "8-K",
     leaves: list[EventType] | None = None,
     descriptions: dict[str, str] | None = None,
 ) -> str:
@@ -81,13 +120,7 @@ def _build_system_prompt(
     # (None = in-code) lets a baseline arm render a prior version's exact text.
     event_types = leaves if leaves is not None else list(EventType)
     lines = [
-        "You are an experienced securities analyst classifying SEC Form 8-K material event "
-        "disclosures. You will be shown one section of an 8-K filing — typically a single "
-        "Item — and must classify it into the taxonomy below using the provided tool.",
-        "",
-        "Classify based on what the prose actually discloses, not on the Item number alone. "
-        "An Item 5.02 filing may be a departure, an appointment, or both — choose the most "
-        "salient event the prose centers on.",
+        *_prompt_lead_in(form),
         "",
         "Event types:",
     ]
@@ -130,17 +163,23 @@ def _build_user_message(
     # the same block is appended to every item's prompt and to the whole-filing
     # fallback. Empty when the filing has no EX-99 exhibits.
     suffix = f"\n\n{exhibit_block}" if exhibit_block else ""
+    # 6-K sections are the furnished exhibits, so label them "Exhibit"; 8-K (and
+    # any Item-bearing form) labels them "Item". The unit key (item.number) holds
+    # the Item number for 8-K and the exhibit label (e.g. "EX-99.1") for 6-K.
+    unit = "Exhibit" if filing.form == "6-K" else "Item"
     if item is not None:
         body = item.text[:_MAX_SECTION_CHARS]
-        section_header = f"Item {item.number}"
+        section_header = f"{unit} {item.number}"
         if item.title:
             section_header += f": {item.title}"
         return f"{header}\nSection under classification: {section_header}\n\n{body}{suffix}"
     body = document.text[:_MAX_SECTION_CHARS]
-    return (
-        f"{header}\nNo Item sections were extractable. Classify the whole filing body:"
-        f"\n\n{body}{suffix}"
+    no_sections = (
+        "No exhibits were furnished. Classify the body of the report:"
+        if filing.form == "6-K"
+        else "No Item sections were extractable. Classify the whole filing body:"
     )
+    return f"{header}\n{no_sections}\n\n{body}{suffix}"
 
 
 def _tool_input_schema(leaves: list[EventType] | None) -> dict[str, Any]:
@@ -207,11 +246,56 @@ def _call_classifier(
     return Classification.model_validate(args)
 
 
-def _classify_node(state: _State) -> _State:
-    """One LangGraph node that classifies every substantive Item.
+def _exhibit_sections(document: FilingDocument) -> list[ItemSection]:
+    """Map a 6-K's furnished EX-99 exhibits to classification sections.
 
-    Keeping the graph single-node keeps the LangSmith trace easy to read.
-    Concurrent per-item classification can replace this with parallel
+    For a 6-K the substance lives in the exhibits, not a cover Item structure, so
+    each exhibit becomes one section the classifier labels independently — the
+    direct analogue of an 8-K Item. The section key reuses `ItemClassification`'s
+    `item_number` slot and carries the exhibit label (e.g. "EX-99.1"); the rare
+    case of two exhibits sharing a type is disambiguated with a "#n" suffix so the
+    `(accession, item_number, classifier_version)` key stays unique.
+    """
+    sections: list[ItemSection] = []
+    seen: dict[str, int] = {}
+    for exhibit in document.exhibits:
+        key = exhibit.exhibit_type
+        occurrence = seen.get(key, 0)
+        seen[key] = occurrence + 1
+        if occurrence:
+            key = f"{key}#{occurrence + 1}"
+        sections.append(ItemSection(number=key, title=exhibit.document, text=exhibit.text))
+    return sections
+
+
+def _sections_for(document: FilingDocument) -> tuple[list[ItemSection], str]:
+    """Pick the classification sections and shared context block, by form.
+
+    - 6-K: the furnished EX-99 exhibits are the sections themselves; there is no
+      separate context block (the exhibits are the body, not supplemental).
+    - 8-K (and any Item-bearing form): the substantive Items are the sections, and
+      the EX-99 exhibits are rendered once as shared supporting context.
+
+    Either way an empty section list routes the caller to the whole-filing
+    fallback — a 6-K with no exhibits classifies its cover body, an 8-K with no
+    extractable Items classifies its whole body with the exhibit context.
+
+    See ADR 0033.
+    """
+    if document.filing.form == "6-K":
+        return _exhibit_sections(document), ""
+    substantive_items = [
+        item for item in document.items if item.number not in NON_SUBSTANTIVE_ITEMS
+    ]
+    return substantive_items, render_exhibits(document).block
+
+
+def _classify_node(state: _State) -> _State:
+    """One LangGraph node that classifies every section of a filing.
+
+    A "section" is an 8-K substantive Item or a 6-K furnished exhibit (see
+    `_sections_for`). Keeping the graph single-node keeps the LangSmith trace easy
+    to read. Concurrent per-section classification can replace this with parallel
     edges later if classifier latency dominates wall-clock time.
     """
     document = state["document"]
@@ -219,23 +303,17 @@ def _classify_node(state: _State) -> _State:
     leaves = state["leaves"]
     descriptions = state["descriptions"]
     model = _bind_classifier(model_name, leaves)
-    system = _build_system_prompt(leaves, descriptions)
+    system = _build_system_prompt(document.filing.form, leaves, descriptions)
     accession_number = document.filing.accession_number
 
-    # Render the EX-99 exhibit context once and share it across every item's
-    # prompt (and the whole-filing fallback). Empty string when no exhibits.
-    exhibit_block = render_exhibits(document).block
-
-    substantive_items = [
-        item for item in document.items if item.number not in NON_SUBSTANTIVE_ITEMS
-    ]
+    sections, context_block = _sections_for(document)
 
     items: list[ItemClassification] = []
     whole_filing: Classification | None = None
 
-    if substantive_items:
-        for item in substantive_items:
-            user = _build_user_message(document, item, exhibit_block)
+    if sections:
+        for section in sections:
+            user = _build_user_message(document, section, context_block)
             classification = _call_classifier(
                 model,
                 system,
@@ -245,13 +323,13 @@ def _classify_node(state: _State) -> _State:
             )
             items.append(
                 ItemClassification(
-                    item_number=item.number,
-                    item_title=item.title,
+                    item_number=section.number,
+                    item_title=section.title,
                     classification=classification,
                 )
             )
     else:
-        user = _build_user_message(document, None, exhibit_block)
+        user = _build_user_message(document, None, context_block)
         whole_filing = _call_classifier(
             model,
             system,
@@ -275,6 +353,8 @@ def classifier_version(
     model_name: str = DEFAULT_MODEL,
     leaves: list[EventType] | None = None,
     descriptions: dict[str, str] | None = None,
+    *,
+    form: str = "8-K",
 ) -> str:
     """Compose the classifier_version string for persistence.
 
@@ -284,8 +364,12 @@ def classifier_version(
     version-tagged. See ADR 0011. The `leaves` subset and `descriptions` (if
     given) change the prompt, so each A/B arm — including a faithful prior-version
     baseline reconstructed from its snapshot — gets the matching version string.
+
+    `form` selects the form-specific prompt lead-in; a 6-K therefore carries a
+    distinct version from an 8-K classified by the same model. It is keyword-only
+    and defaults to "8-K" so the existing 8-K version string is unchanged.
     """
-    prompt = _build_system_prompt(leaves, descriptions)
+    prompt = _build_system_prompt(form, leaves, descriptions)
     prompt_sha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:8]
     return f"{model_name}+prompt-{prompt_sha}"
 
@@ -323,10 +407,13 @@ def classify_filing(
         cik=document.filing.cik,
         company_name=document.filing.company_name,
         filing_date=document.filing.filing_date.isoformat(),
+        form=document.filing.form,
         items=result["items"],
         whole_filing=result["whole_filing"],
         classified_at=datetime.now(UTC),
         model=model_name,
-        classifier_version=classifier_version(model_name, leaves, descriptions),
+        classifier_version=classifier_version(
+            model_name, leaves, descriptions, form=document.filing.form
+        ),
         taxonomy_version=TAXONOMY_VERSION,
     )

@@ -72,8 +72,17 @@ change migration-free. A rename can be a later, isolated refactor if a third for
 - **Section budget:** a 6-K exhibit gets a dedicated, larger per-section cap (50k chars
   vs the 8-K Item's 12k) because the exhibit *is* the content, not supplemental — local
   verification showed the 12k cap dropping ~87% of a real exhibit and missing most of its
-  disclosure. Outlier annual-report-length exhibits still truncate, and the per-section
-  red-flag scan (ADR 0031) over any dropped tail remains a deferred follow-up.
+  disclosure. Outlier annual-report-length exhibits still truncate.
+- **Truncation signal is form-aware, and the truncation ALERT is 8-K-only for now.**
+  Truncation is measured against the basis each form actually uses — the 16k shared
+  context budget for 8-K, the 50k per-section cap for 6-K — so 6-K telemetry reports what
+  the classifier truly missed (the original 16k basis overstated it into the 800k's and
+  fired on fully-read exhibits). Because large periodic-report exhibits make truncation the
+  *steady state* for 6-K, the red-flag truncation alert (ADR 0031) is suppressed for 6-K
+  (telemetry-only via `exhibit_context`) rather than routed to any Discord channel — it
+  would just relocate the flood. The forthcoming triage stage recognizes and defers those
+  periodic reports, after which a 6-K truncation alert can return, firing only on *event*
+  exhibits we genuinely tried to classify.
 - **Image/scanned exhibits:** some exhibits (seen with foreign filers) are page images in
   an HTML wrapper and extract to ~no text, so the classifier can't read them. The pipeline
   degrades gracefully (low confidence, dropped or low-signal in reduce) and emits an

@@ -23,6 +23,7 @@ from filings_orchestrator.classify import (
     reduce_filing,
     reducer_version,
 )
+from filings_orchestrator.classify.classifier import _MAX_6K_SECTION_CHARS
 from filings_orchestrator.classify.exhibits import render_exhibits, scan_red_flags
 from filings_orchestrator.classify.retry import is_retryable_error, with_retries
 from filings_orchestrator.edgar import EdgarClient, FilingDocument, fetch_filing_document
@@ -143,27 +144,53 @@ def classify_and_reduce(engine: Engine, document: FilingDocument) -> int:
     )
 
     # Exhibit instrumentation (ADR 0031, measure-first): record how much exhibit
-    # context the classifier received and whether the volume budget cut any of
-    # it. Emitted whenever the filing carries EX-99 exhibits, so we can later
-    # measure both how often we truncate and whether exhibits lift classification
-    # (joining this against the classification's confidence/event_type).
-    rendered = render_exhibits(document)
-    if rendered.exhibit_count:
+    # content the classifier actually saw and whether it was cut. The basis is
+    # form-specific (ADR 0033): an 8-K appends exhibits as one shared context
+    # block capped by render_exhibits (16k); a 6-K reads each exhibit as its own
+    # section up to the per-section cap (50k), so its unseen content is each
+    # exhibit beyond that cap. Measuring 6-K against the 8-K context budget
+    # overstated truncation (e.g. dropped_chars in the 800k's) and flagged
+    # exhibits the 6-K classifier had in fact read in full.
+    if document.filing.form == "6-K":
+        total_chars = sum(len(ex.text) for ex in document.exhibits)
+        used_chars = sum(min(len(ex.text), _MAX_6K_SECTION_CHARS) for ex in document.exhibits)
+        dropped_text = "\n".join(
+            ex.text[_MAX_6K_SECTION_CHARS:]
+            for ex in document.exhibits
+            if len(ex.text) > _MAX_6K_SECTION_CHARS
+        )
+        exhibit_count = len(document.exhibits)
+    else:
+        rendered = render_exhibits(document)
+        total_chars = rendered.total_chars
+        used_chars = rendered.used_chars
+        dropped_text = rendered.dropped_text if rendered.truncated else ""
+        exhibit_count = rendered.exhibit_count
+    dropped_chars = total_chars - used_chars
+    truncated = dropped_chars > 0
+
+    if exhibit_count:
         emit(
             "exhibit_context",
             accession_number=accession_number,
             cik=cik,
-            exhibit_count=rendered.exhibit_count,
-            total_chars=rendered.total_chars,
-            used_chars=rendered.used_chars,
-            truncated=rendered.truncated,
-            dropped_chars=rendered.dropped_chars,
+            form=document.filing.form,
+            exhibit_count=exhibit_count,
+            total_chars=total_chars,
+            used_chars=used_chars,
+            truncated=truncated,
+            dropped_chars=dropped_chars,
         )
-        # Don't let a filer bury bad news past the budget: scan the *dropped*
-        # tail for curated adverse terms and raise an ALERT if any are there —
-        # the classifier never saw that text, so it needs human eyes.
-        if rendered.truncated:
-            flags = scan_red_flags(rendered.dropped_text)
+        # Don't let a filer bury bad news past the budget: scan the *dropped* tail
+        # for curated adverse terms and raise an operator ALERT. 8-K only for now:
+        # for 6-K, truncation is the steady state (large periodic-report exhibits,
+        # which the upcoming triage stage recognizes and defers), so a per-filing
+        # alert — even at info severity — would just relocate the flood. The
+        # exhibit_context event above already captures 6-K truncation as queryable
+        # telemetry; triage will reintroduce a 6-K alert that fires only on event
+        # exhibits we actually tried to classify (ADR 0033).
+        if truncated and document.filing.form != "6-K":
+            flags = scan_red_flags(dropped_text)
             if flags:
                 emit_alert(
                     engine,
@@ -176,7 +203,7 @@ def classify_and_reduce(engine: Engine, document: FilingDocument) -> int:
                     dedup_key=f"exhibit_truncated_redflag:{accession_number}",
                     accession_number=accession_number,
                     terms=", ".join(flags),
-                    dropped_chars=rendered.dropped_chars,
+                    dropped_chars=dropped_chars,
                 )
 
         # Image/scanned exhibits (e.g. a press release furnished as page images

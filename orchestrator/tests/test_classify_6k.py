@@ -64,6 +64,15 @@ def _exhibit(exhibit_type: str, document: str, text: str) -> Exhibit:
     )
 
 
+def _long(text: str) -> str:
+    """Pad fixture exhibit text past the image-only skip threshold — real exhibits
+    are long, and `_exhibit_sections` drops ones with <200 chars of text. Tests
+    that want an empty/image-only exhibit pass the raw short text instead."""
+    while len(text) < 240:
+        text += " The filing provides further disclosure and supporting detail."
+    return text
+
+
 class _ToolCallResponse:
     def __init__(self, tool_args: dict[str, Any]) -> None:
         self.tool_calls = [
@@ -78,25 +87,34 @@ def _mock_invocations(responses: list[Classification]) -> Iterator[_ToolCallResp
 def test_sections_for_6k_uses_exhibits_not_items() -> None:
     """For a 6-K the sections are the furnished exhibits, keyed by exhibit label,
     and there is no separate shared context block."""
+    pr, div = _long("Half-year results announcement."), _long("Dividend declaration.")
     exhibits = [
-        _exhibit("EX-99.1", "pr.htm", "Half-year results announcement."),
-        _exhibit("EX-99.2", "div.htm", "Dividend declaration."),
+        _exhibit("EX-99.1", "pr.htm", pr),
+        _exhibit("EX-99.2", "div.htm", div),
     ]
     sections, context = _sections_for(_document_6k(exhibits))
     assert [s.number for s in sections] == ["EX-99.1", "EX-99.2"]
-    assert [s.text for s in sections] == [
-        "Half-year results announcement.",
-        "Dividend declaration.",
-    ]
+    assert [s.text for s in sections] == [pr, div]
     assert context == ""
+
+
+def test_sections_for_6k_skips_image_only_exhibits() -> None:
+    """An exhibit with no readable extracted text (image/scanned) is not made into
+    a section, so we don't spend a classify call on it (ADR 0034)."""
+    exhibits = [
+        _exhibit("EX-99.1", "press.htm", "A real press release with substance. " * 20),
+        _exhibit("EX-99.2", "scan.htm", "  "),  # image-only: no extractable text
+    ]
+    sections, _ = _sections_for(_document_6k(exhibits))
+    assert [s.number for s in sections] == ["EX-99.1"]
 
 
 def test_sections_for_6k_disambiguates_duplicate_exhibit_types() -> None:
     """Two exhibits sharing a type get unique section keys so the persistence
     key (accession, item_number, classifier_version) stays unique."""
     exhibits = [
-        _exhibit("EX-99", "a.htm", "Announcement A."),
-        _exhibit("EX-99", "b.htm", "Announcement B."),
+        _exhibit("EX-99", "a.htm", _long("Announcement A.")),
+        _exhibit("EX-99", "b.htm", _long("Announcement B.")),
     ]
     sections, _ = _sections_for(_document_6k(exhibits))
     assert [s.number for s in sections] == ["EX-99", "EX-99#2"]
@@ -106,8 +124,8 @@ def test_classify_6k_classifies_each_exhibit() -> None:
     """Each furnished exhibit gets its own classification call; the section key
     is the exhibit label."""
     exhibits = [
-        _exhibit("EX-99.1", "pr.htm", "Half-year results."),
-        _exhibit("EX-99.2", "div.htm", "Dividend declared."),
+        _exhibit("EX-99.1", "pr.htm", _long("Half-year results.")),
+        _exhibit("EX-99.2", "div.htm", _long("Dividend declared.")),
     ]
     doc = _document_6k(exhibits)
     responses = [
@@ -174,8 +192,8 @@ def test_classify_6k_classifies_periodic_exhibit_as_periodic_leaf() -> None:
     """The financials exhibit gets a periodic_* leaf (deferred); the press release
     stays an event (ADR 0034)."""
     exhibits = [
-        _exhibit("EX-99.1", "press.htm", "Q2 results press release."),
-        _exhibit("EX-99.2", "financials.htm", "Condensed consolidated statements ..."),
+        _exhibit("EX-99.1", "press.htm", _long("Q2 results press release.")),
+        _exhibit("EX-99.2", "financials.htm", _long("Condensed consolidated statements.")),
     ]
     doc = _document_6k(exhibits)
     responses = [
@@ -236,13 +254,15 @@ def test_6k_section_uses_larger_char_budget() -> None:
     """A 6-K exhibit is the primary content, so its section budget exceeds the 8-K
     Item cap, and a long exhibit reaches the classifier well past 12k chars."""
     assert _MAX_6K_SECTION_CHARS > _MAX_SECTION_CHARS
-    long_text = "X" * (_MAX_SECTION_CHARS + 20_000)
+    # Filler "Z" — absent from the metadata/section header (unlike "X", which the
+    # "EX-99.1" label contains) — so the count is exactly the included body length.
+    long_text = "Z" * (_MAX_SECTION_CHARS + 20_000)
     doc = _document_6k([_exhibit("EX-99.1", "results.htm", long_text)])
     section = ItemSection(number="EX-99.1", title="results.htm", text=long_text)
     user = _build_user_message(doc, section)
     # Body included beyond the 8-K cap but bounded by the 6-K cap.
-    assert user.count("X") > _MAX_SECTION_CHARS
-    assert user.count("X") <= _MAX_6K_SECTION_CHARS
+    assert user.count("Z") > _MAX_SECTION_CHARS
+    assert user.count("Z") <= _MAX_6K_SECTION_CHARS
 
 
 def test_6k_and_8k_classifier_versions_differ() -> None:

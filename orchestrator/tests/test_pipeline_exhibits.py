@@ -164,12 +164,12 @@ def test_6k_truncation_does_not_alert_but_is_recorded(
 
 
 def test_6k_fully_read_exhibit_is_not_truncated(capsys: pytest.CaptureFixture[str]) -> None:
-    """A 6-K exhibit under the 50k cap is fully read, so it is NOT flagged
+    """A 6-K exhibit under the per-section cap is fully read, so it is NOT flagged
     truncated even if it contains adverse terms — the Robot-style false positive
     the 16k basis produced."""
     from filings_orchestrator.classify.classifier import _MAX_6K_SECTION_CHARS
 
-    text = "Going concern is discussed here. " * 1_000  # ~33k chars, < 50k
+    text = "Going concern is discussed here. " * 400  # ~13k chars, under the cap
     assert len(text) < _MAX_6K_SECTION_CHARS
     doc = _doc(Exhibit(exhibit_type="EX-99.1", document="pr.htm", url="u", text=text), form="6-K")
 

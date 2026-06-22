@@ -23,7 +23,10 @@ from filings_orchestrator.classify import (
     reduce_filing,
     reducer_version,
 )
-from filings_orchestrator.classify.classifier import _MAX_6K_SECTION_CHARS
+from filings_orchestrator.classify.classifier import (
+    _MAX_6K_SECTION_CHARS,
+    _MIN_EXHIBIT_TEXT_CHARS,
+)
 from filings_orchestrator.classify.exhibits import render_exhibits, scan_red_flags
 from filings_orchestrator.classify.retry import is_retryable_error, with_retries
 from filings_orchestrator.edgar import EdgarClient, FilingDocument, fetch_filing_document
@@ -41,12 +44,6 @@ from filings_orchestrator.persistence.taxonomy_snapshot import (
     TaxonomyIntegrityError,
     ensure_taxonomy_snapshot,
 )
-
-# Below this many characters of extracted text, an exhibit is treated as carrying
-# no readable content — almost always an image/scanned attachment (page images in
-# an HTML wrapper) rather than prose. Not zero: titles, page numbers, and other
-# boilerplate survive extraction even on an all-image exhibit. See ADR 0033.
-_MIN_EXHIBIT_TEXT_CHARS = 200
 
 
 def verify_taxonomy(engine: Engine) -> None:

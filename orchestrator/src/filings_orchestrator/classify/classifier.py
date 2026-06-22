@@ -56,13 +56,21 @@ DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 _MAX_SECTION_CHARS = 12_000
 
 # A 6-K section IS a furnished exhibit — the primary content, not supplemental
-# (ADR 0033) — so it gets a much larger budget than an 8-K Item. A 6-K exhibit
-# is commonly a full results announcement or half-year report; the 12k Item cap
-# would drop most of it. 50,000 chars ≈ 12,500 tokens captures the substantive
-# disclosure of nearly every real exhibit while still bounding outlier
-# annual-report-length attachments. Tunable; the per-section red-flag scan over
-# any dropped tail remains a deferred follow-up (ADR 0033).
-_MAX_6K_SECTION_CHARS = 50_000
+# (ADR 0033). 20,000 chars (~5,000 tokens) captures the full text of ~84% of 6-K
+# exhibits (production distribution: median ~6.4k chars) and the material lede of
+# the larger ones; periodic financial reports only need their first pages to be
+# recognized and deferred (ADR 0034), so feeding more is waste. Sized down from an
+# initial 50k to keep daily Anthropic spend under the cap once 6-K roughly doubled
+# classify volume (2026-06-22 cost review). Tunable; truncated tails are captured
+# in the exhibit_context telemetry.
+_MAX_6K_SECTION_CHARS = 20_000
+
+# Below this many characters of extracted text an exhibit carries no readable
+# content — almost always an image/scanned attachment wrapped in HTML. The
+# classifier cannot read it, so no 6-K section is created for it (no wasted LLM
+# call); `_pipeline` still emits an `exhibit_no_extractable_text` signal recording
+# that it was seen but not classified (ADR 0034).
+_MIN_EXHIBIT_TEXT_CHARS = 200
 
 
 class _State(TypedDict):
@@ -272,10 +280,17 @@ def _exhibit_sections(document: FilingDocument) -> list[ItemSection]:
     `item_number` slot and carries the exhibit label (e.g. "EX-99.1"); the rare
     case of two exhibits sharing a type is disambiguated with a "#n" suffix so the
     `(accession, item_number, classifier_version)` key stays unique.
+
+    Exhibits with no readable extracted text (image/scanned attachments) are
+    skipped — classifying them wastes a call on content the model can't read; their
+    existence is still recorded via the pipeline's `exhibit_no_extractable_text`
+    signal (ADR 0034).
     """
     sections: list[ItemSection] = []
     seen: dict[str, int] = {}
     for exhibit in document.exhibits:
+        if len(exhibit.text.strip()) < _MIN_EXHIBIT_TEXT_CHARS:
+            continue
         key = exhibit.exhibit_type
         occurrence = seen.get(key, 0)
         seen[key] = occurrence + 1

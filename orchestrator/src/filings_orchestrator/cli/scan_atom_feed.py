@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 
 from opentelemetry import trace
 
+from filings_orchestrator.alerting import ALERT, emit_alert
 from filings_orchestrator.cli._pipeline import process_one, verify_taxonomy
 from filings_orchestrator.config import MissingConfigError, load_config
 from filings_orchestrator.cost import db_llm_call_sink, set_cost_sink
@@ -94,6 +95,26 @@ def main() -> None:
             emit(
                 "tick_failed",
                 error_class="cost_cap_exceeded",
+                daily_spend_usd=round(spend_today, 6),
+                cap_usd=config.anthropic_daily_cost_cap_usd,
+                day_utc=today_utc,
+            )
+            # Alert (ADR 0031): the cap exits before any classify call, so it never
+            # reaches the classify-failure alert path. Surface it once per UTC day
+            # (dedup per date) so a dark afternoon doesn't go unnoticed — the 30s
+            # atom cadence would otherwise just keep silently exiting.
+            emit_alert(
+                engine,
+                ALERT,
+                "Daily cost cap reached — classification paused",
+                body=(
+                    f"Today's Anthropic spend (${spend_today:.2f}) reached the daily cap "
+                    f"(${config.anthropic_daily_cost_cap_usd:.2f}). New filings will not be "
+                    f"classified until the cap resets at 00:00 UTC; the daily-index reconciler "
+                    f"backfills the gap. If this fires early in the day, reduce per-filing cost "
+                    f"or raise ANTHROPIC_DAILY_COST_CAP_USD."
+                ),
+                dedup_key=f"cost_cap:{today_utc}",
                 daily_spend_usd=round(spend_today, 6),
                 cap_usd=config.anthropic_daily_cost_cap_usd,
                 day_utc=today_utc,

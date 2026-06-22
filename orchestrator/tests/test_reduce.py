@@ -19,6 +19,7 @@ from filings_orchestrator.classify import (
     EventType,
     FilingClassification,
     ItemClassification,
+    SectionKind,
     reduce_filing,
     reducer_version,
 )
@@ -36,7 +37,13 @@ class _ToolCallResponse:
         self.tool_calls = [{"name": "submit_events", "args": tool_args, "id": "tc_test"}]
 
 
-def _item(number: str, event_value: str, material: bool, reasoning: str) -> ItemClassification:
+def _item(
+    number: str,
+    event_value: str,
+    material: bool,
+    reasoning: str,
+    section_kind: SectionKind = SectionKind.EVENT,
+) -> ItemClassification:
     return ItemClassification(
         item_number=number,
         item_title=None,
@@ -45,6 +52,7 @@ def _item(number: str, event_value: str, material: bool, reasoning: str) -> Item
             is_material=material,
             confidence=0.9,
             reasoning=reasoning,
+            section_kind=section_kind,
         ),
     )
 
@@ -370,3 +378,53 @@ def test_reduce_6k_user_message_labels_exhibits() -> None:
     system = _build_reduce_system_prompt("6-K")
     assert "per-exhibit" in system
     assert _build_reduce_system_prompt("6-K") != _build_reduce_system_prompt("8-K")
+
+
+def test_reduce_excludes_periodic_sections() -> None:
+    """A periodic_report section is deferred — not collated into events. A 6-K
+    with one event exhibit + one periodic exhibit reduces to just the event,
+    without a model call (only one event section remains)."""
+    classification = _classification_6k(
+        [
+            _item("EX-99.1", "earnings_release", True, "Earnings press release."),
+            _item(
+                "EX-99.2",
+                "other_material",
+                False,
+                "Interim financial statements.",
+                section_kind=SectionKind.PERIODIC_REPORT,
+            ),
+        ]
+    )
+    with patch(_REDUCER_PATCH) as mock_chat:
+        result = reduce_filing(classification)
+        # One event section left → single-section fast path, no model call.
+        mock_chat.return_value.bind_tools.return_value.invoke.assert_not_called()
+    assert [e.anchor_item_number for e in result.events] == ["EX-99.1"]
+    assert result.events[0].event_type == EventType("earnings_release")
+
+
+def test_reduce_all_periodic_filing_yields_zero_events() -> None:
+    """A 6-K whose only exhibits are periodic reports produces no events."""
+    classification = _classification_6k(
+        [
+            _item(
+                "EX-99.1",
+                "other_material",
+                False,
+                "Annual financial statements.",
+                section_kind=SectionKind.PERIODIC_REPORT,
+            ),
+            _item(
+                "EX-99.2",
+                "other_material",
+                False,
+                "MD&A.",
+                section_kind=SectionKind.PERIODIC_REPORT,
+            ),
+        ]
+    )
+    with patch(_REDUCER_PATCH) as mock_chat:
+        result = reduce_filing(classification)
+        mock_chat.return_value.bind_tools.return_value.invoke.assert_not_called()
+    assert result.events == []

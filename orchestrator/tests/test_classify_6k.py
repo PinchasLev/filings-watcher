@@ -13,7 +13,7 @@ from datetime import date
 from typing import Any
 from unittest.mock import patch
 
-from filings_orchestrator.classify import Classification, EventType, classify_filing
+from filings_orchestrator.classify import Classification, EventType, SectionKind, classify_filing
 from filings_orchestrator.classify.classifier import (
     _MAX_6K_SECTION_CHARS,
     _MAX_SECTION_CHARS,
@@ -166,6 +166,73 @@ def test_build_user_message_labels_6k_section_as_exhibit() -> None:
     assert "Exhibit EX-99.1: pr.htm" in user
     assert "Form: 6-K" in user
     assert "Item EX-99.1" not in user
+
+
+def test_classify_6k_propagates_periodic_section_kind() -> None:
+    """When the model marks an exhibit a periodic financial report, the
+    section_kind flows through to the persisted classification (ADR 0034)."""
+    exhibits = [
+        _exhibit("EX-99.1", "press.htm", "Q2 results press release."),
+        _exhibit("EX-99.2", "financials.htm", "Condensed consolidated statements ..."),
+    ]
+    doc = _document_6k(exhibits)
+    responses = [
+        Classification(
+            event_type=EventType.EARNINGS_RELEASE,
+            is_material=True,
+            confidence=0.9,
+            reasoning="Earnings press release.",
+            section_kind=SectionKind.EVENT,
+        ),
+        Classification(
+            event_type=EventType.OTHER_MATERIAL,
+            is_material=False,
+            confidence=0.4,
+            reasoning="Interim financial statements — periodic report.",
+            section_kind=SectionKind.PERIODIC_REPORT,
+        ),
+    ]
+    response_iter = _mock_invocations(responses)
+    with patch("filings_orchestrator.classify.classifier.ChatAnthropic") as mock_chat:
+        bound = mock_chat.return_value.bind_tools.return_value
+        bound.invoke.side_effect = lambda _messages: next(response_iter)
+        result = classify_filing(doc)
+
+    kinds = {ic.item_number: ic.classification.section_kind for ic in result.items}
+    assert kinds["EX-99.1"] == SectionKind.EVENT
+    assert kinds["EX-99.2"] == SectionKind.PERIODIC_REPORT
+
+
+def test_6k_prompt_instructs_periodic_recognition() -> None:
+    """The 6-K prompt tells the model to defer periodic financial reports; the
+    8-K prompt does not mention section_kind."""
+    assert "periodic_report" in _build_system_prompt("6-K")
+    assert "section_kind" in _build_system_prompt("6-K")
+    assert "periodic_report" not in _build_system_prompt("8-K")
+
+
+def test_periodic_signaled_via_event_type_is_routed() -> None:
+    """Robustness: the model often signals periodic by putting 'periodic_report' in
+    event_type (observed on real interim/annual 6-Ks). That out-of-taxonomy value is
+    routed to section_kind with a placeholder event_type instead of crashing validation."""
+    c = Classification.model_validate(
+        {
+            "event_type": "periodic_report",
+            "is_material": False,
+            "confidence": 0.6,
+            "reasoning": "Interim condensed consolidated financial statements.",
+        }
+    )
+    assert c.section_kind == SectionKind.PERIODIC_REPORT
+    assert c.event_type == EventType.OTHER_MATERIAL
+
+
+def test_section_kind_defaults_to_event() -> None:
+    """A classification with no explicit section_kind is an event (8-K + back-compat)."""
+    c = Classification(
+        event_type=EventType.EARNINGS_RELEASE, is_material=True, confidence=0.9, reasoning="x"
+    )
+    assert c.section_kind == SectionKind.EVENT
 
 
 def test_6k_section_uses_larger_char_budget() -> None:

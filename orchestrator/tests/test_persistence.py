@@ -18,6 +18,7 @@ from filings_orchestrator.classify import (
     EventType,
     FilingClassification,
     ItemClassification,
+    SectionKind,
 )
 from filings_orchestrator.edgar.document import FilingDocument, ItemSection
 from filings_orchestrator.edgar.models import Filing, FilingItem
@@ -26,6 +27,7 @@ from filings_orchestrator.persistence.repository import (
     advance_ingest_cursor,
     insert_classifications,
     latest_classifications_for_filing,
+    load_latest_filing_classification,
     read_ingest_cursor,
     upsert_filing,
     upsert_filing_document,
@@ -95,6 +97,54 @@ def _classification_result(
     )
 
 
+def test_section_kind_round_trips_through_insert_and_load() -> None:
+    """section_kind persists and reloads, so reduce-corpus replays deferral (ADR 0034)."""
+    engine = _fresh_db()
+    upsert_filing_document(engine, _filing_document())
+    result = FilingClassification(
+        accession_number="0000320193-26-000045",
+        cik="0000320193",
+        company_name="Apple Inc.",
+        filing_date="2026-04-30",
+        form="6-K",
+        items=[
+            ItemClassification(
+                item_number="EX-99.1",
+                item_title="press.htm",
+                classification=Classification(
+                    event_type=EventType.EARNINGS_RELEASE,
+                    is_material=True,
+                    confidence=0.9,
+                    reasoning="Earnings press release.",
+                    section_kind=SectionKind.EVENT,
+                ),
+            ),
+            ItemClassification(
+                item_number="EX-99.2",
+                item_title="financials.htm",
+                classification=Classification(
+                    event_type=EventType.OTHER_MATERIAL,
+                    is_material=False,
+                    confidence=0.4,
+                    reasoning="Interim financial statements.",
+                    section_kind=SectionKind.PERIODIC_REPORT,
+                ),
+            ),
+        ],
+        whole_filing=None,
+        classified_at=datetime(2026, 5, 14, 12, 0, 0, tzinfo=UTC),
+        model="haiku-4.5",
+        classifier_version="haiku-4.5+prompt-6kperiodic",
+        taxonomy_version="v1",
+    )
+    insert_classifications(engine, result)
+
+    loaded = load_latest_filing_classification(engine, "0000320193-26-000045")
+    assert loaded is not None
+    kinds = {ic.item_number: ic.classification.section_kind for ic in loaded.items}
+    assert kinds == {"EX-99.1": SectionKind.EVENT, "EX-99.2": SectionKind.PERIODIC_REPORT}
+
+
 def test_open_engine_enables_wal_journal_mode(tmp_path: Path) -> None:
     """WAL must be enabled on file-backed databases — required for concurrent
     reads from the Go service alongside the Python writer."""
@@ -156,6 +206,7 @@ def test_apply_migrations_creates_tables_and_records_version() -> None:
         "009_exhibits",
         "010_taxonomy_snapshots",
         "011_classifications_append_only",
+        "012_section_kind",
     ]
 
     with engine.begin() as conn:

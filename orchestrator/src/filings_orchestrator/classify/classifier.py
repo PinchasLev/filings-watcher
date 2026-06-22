@@ -107,6 +107,16 @@ def _prompt_lead_in(form: str) -> list[str]:
             "compliance disclosures — annual-meeting notices, monthly share-buyback returns, "
             "administrative circulars — that are not material; reserve is_material for "
             "disclosures that would affect a reasonable investor's assessment.",
+            "",
+            "Some exhibits are not discrete events but periodic financial reports — interim, "
+            "half-year, or annual financial statements, management's discussion and analysis, "
+            "or a full results filing (the foreign-issuer equivalent of a 10-Q or 10-K). For "
+            "those, set section_kind to 'periodic_report'; they are deferred for separate "
+            "processing rather than classified as an event. Distinguish carefully: a results "
+            "PRESS RELEASE announcing earnings is an event — classify it as earnings_release — "
+            "whereas the financial statements themselves are a periodic_report. Only choose "
+            "'periodic_report' when the exhibit clearly is the report itself; when unsure, "
+            "treat it as an event.",
         ]
     return [
         "You are an experienced securities analyst classifying SEC Form 8-K material event "

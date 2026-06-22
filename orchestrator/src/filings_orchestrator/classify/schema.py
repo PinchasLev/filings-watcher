@@ -9,10 +9,27 @@ those results with the source metadata they belong to.
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from filings_orchestrator.classify.taxonomy import EventType
+
+
+class SectionKind(StrEnum):
+    """The document class of a classified section — distinct from its event type.
+
+    A 6-K is a catch-all that carries both 8-K-equivalent events and the
+    10-Q/10-K-equivalent periodic financial reports we deliberately defer
+    (ADR 0033/0034). This is a document class, NOT a material-event type, so it
+    is kept out of `EventType`/the taxonomy. `PERIODIC_REPORT` sections are
+    recorded but not collated into events; they are the queryable hand-off for a
+    future periodic-content extraction pass.
+    """
+
+    EVENT = "event"
+    PERIODIC_REPORT = "periodic_report"
 
 
 class Classification(BaseModel):
@@ -24,7 +41,11 @@ class Classification(BaseModel):
     """
 
     event_type: EventType = Field(
-        description="The single best matching event type from the taxonomy."
+        description=(
+            "The single best matching event type from the taxonomy below. Always "
+            "one of the listed values — never 'periodic_report'; the periodic-vs-event "
+            "distinction belongs in the separate section_kind field."
+        )
     )
     is_material: bool = Field(
         description=(
@@ -49,6 +70,39 @@ class Classification(BaseModel):
             "filing where relevant."
         )
     )
+    section_kind: SectionKind = Field(
+        default=SectionKind.EVENT,
+        description=(
+            "The document class of this section, separate from event_type. Use "
+            "'periodic_report' ONLY when the section IS a periodic financial report — "
+            "interim, half-year, or annual financial statements, MD&A, or a full "
+            "results filing (the foreign-issuer equivalent of a 10-Q or 10-K). Such "
+            "reports are deferred, not classified as a discrete event. Use 'event' for "
+            "everything else, including a results press release (classify that as "
+            "earnings_release, not periodic_report). When in doubt, choose 'event'."
+        ),
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _route_periodic_event_type(cls, data: Any) -> Any:
+        """Route a periodic signal the model put in the wrong field.
+
+        On real interim/annual 6-K filings the model often signals a periodic
+        financial report by returning event_type='periodic_report' (an out-of-taxonomy
+        value that would otherwise fail validation and crash the classify call). Since
+        event_type only holds material-event taxonomy values, translate that into
+        section_kind and a placeholder event_type (ignored — periodic sections are
+        deferred, not collated into events; ADR 0034). A correctly-placed
+        section_kind='periodic_report' is left untouched.
+        """
+        if isinstance(data, dict) and data.get("event_type") == SectionKind.PERIODIC_REPORT.value:
+            data = {
+                **data,
+                "event_type": EventType.OTHER_MATERIAL.value,
+                "section_kind": SectionKind.PERIODIC_REPORT.value,
+            }
+        return data
 
 
 class ItemClassification(BaseModel):

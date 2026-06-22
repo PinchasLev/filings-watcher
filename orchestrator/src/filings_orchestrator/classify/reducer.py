@@ -29,9 +29,13 @@ from filings_orchestrator.classify.schema import (
     ItemClassification,
     ReducedEvent,
     ReduceOutput,
-    SectionKind,
 )
-from filings_orchestrator.classify.taxonomy import EVENT_TYPE_DESCRIPTIONS, EventType
+from filings_orchestrator.classify.taxonomy import (
+    EVENT_TYPE_DESCRIPTIONS,
+    EventDomain,
+    EventType,
+    domain_for,
+)
 from filings_orchestrator.cost import emit_llm_call
 
 
@@ -114,16 +118,18 @@ def _build_reduce_system_prompt(form: str = "8-K") -> str:
 
 
 def _event_items(classification: FilingClassification) -> list[ItemClassification]:
-    """The sections to collate into events: event-kind only.
+    """The sections to collate into events: everything outside the `periodic` domain.
 
-    `periodic_report` sections (6-K periodic financial reports, ADR 0034) are
+    6-K periodic financial reports (the `periodic` domain leaves, ADR 0034) are
     deferred — recorded but not events — so they are excluded from reduce here and
-    from the reduce prompt, leaving the event sections to consolidate.
+    from the reduce prompt, leaving the event sections to consolidate. Keying on the
+    domain (not specific leaves) makes any future deferred document class drop out of
+    the events layer automatically.
     """
     return [
         item
         for item in classification.items
-        if item.classification.section_kind == SectionKind.EVENT
+        if domain_for(item.classification.event_type) != EventDomain.PERIODIC
     ]
 
 

@@ -8,7 +8,6 @@ from filings_orchestrator.classify.schema import (
     FilingEvents,
     ItemClassification,
     ReducedEvent,
-    SectionKind,
 )
 from filings_orchestrator.classify.taxonomy import (
     EVENT_TO_DOMAIN,
@@ -26,7 +25,6 @@ __all__ = [
     "FilingEvents",
     "ItemClassification",
     "ReducedEvent",
-    "SectionKind",
     "classify_filing",
     "domain_for",
     "reduce_filing",

@@ -19,7 +19,6 @@ from filings_orchestrator.classify import (
     EventType,
     FilingClassification,
     ItemClassification,
-    SectionKind,
     reduce_filing,
     reducer_version,
 )
@@ -37,13 +36,7 @@ class _ToolCallResponse:
         self.tool_calls = [{"name": "submit_events", "args": tool_args, "id": "tc_test"}]
 
 
-def _item(
-    number: str,
-    event_value: str,
-    material: bool,
-    reasoning: str,
-    section_kind: SectionKind = SectionKind.EVENT,
-) -> ItemClassification:
+def _item(number: str, event_value: str, material: bool, reasoning: str) -> ItemClassification:
     return ItemClassification(
         item_number=number,
         item_title=None,
@@ -52,7 +45,6 @@ def _item(
             is_material=material,
             confidence=0.9,
             reasoning=reasoning,
-            section_kind=section_kind,
         ),
     )
 
@@ -381,19 +373,13 @@ def test_reduce_6k_user_message_labels_exhibits() -> None:
 
 
 def test_reduce_excludes_periodic_sections() -> None:
-    """A periodic_report section is deferred — not collated into events. A 6-K
-    with one event exhibit + one periodic exhibit reduces to just the event,
-    without a model call (only one event section remains)."""
+    """A periodic-domain section is deferred — not collated into events. A 6-K with
+    one event exhibit + one periodic exhibit reduces to just the event, without a
+    model call (only one event section remains)."""
     classification = _classification_6k(
         [
             _item("EX-99.1", "earnings_release", True, "Earnings press release."),
-            _item(
-                "EX-99.2",
-                "other_material",
-                False,
-                "Interim financial statements.",
-                section_kind=SectionKind.PERIODIC_REPORT,
-            ),
+            _item("EX-99.2", "periodic_interim", False, "Interim financial statements."),
         ]
     )
     with patch(_REDUCER_PATCH) as mock_chat:
@@ -408,20 +394,8 @@ def test_reduce_all_periodic_filing_yields_zero_events() -> None:
     """A 6-K whose only exhibits are periodic reports produces no events."""
     classification = _classification_6k(
         [
-            _item(
-                "EX-99.1",
-                "other_material",
-                False,
-                "Annual financial statements.",
-                section_kind=SectionKind.PERIODIC_REPORT,
-            ),
-            _item(
-                "EX-99.2",
-                "other_material",
-                False,
-                "MD&A.",
-                section_kind=SectionKind.PERIODIC_REPORT,
-            ),
+            _item("EX-99.1", "periodic_annual", False, "Annual financial statements."),
+            _item("EX-99.2", "periodic_report", False, "MD&A."),
         ]
     )
     with patch(_REDUCER_PATCH) as mock_chat:

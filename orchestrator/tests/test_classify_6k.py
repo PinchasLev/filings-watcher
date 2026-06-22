@@ -13,15 +13,17 @@ from datetime import date
 from typing import Any
 from unittest.mock import patch
 
-from filings_orchestrator.classify import Classification, EventType, SectionKind, classify_filing
+from filings_orchestrator.classify import Classification, EventType, classify_filing
 from filings_orchestrator.classify.classifier import (
     _MAX_6K_SECTION_CHARS,
     _MAX_SECTION_CHARS,
     _build_system_prompt,
     _build_user_message,
+    _default_leaves,
     _sections_for,
     classifier_version,
 )
+from filings_orchestrator.classify.taxonomy import EventDomain, domain_for
 from filings_orchestrator.edgar.document import FilingDocument, ItemSection
 from filings_orchestrator.edgar.models import Exhibit, Filing
 
@@ -168,9 +170,9 @@ def test_build_user_message_labels_6k_section_as_exhibit() -> None:
     assert "Item EX-99.1" not in user
 
 
-def test_classify_6k_propagates_periodic_section_kind() -> None:
-    """When the model marks an exhibit a periodic financial report, the
-    section_kind flows through to the persisted classification (ADR 0034)."""
+def test_classify_6k_classifies_periodic_exhibit_as_periodic_leaf() -> None:
+    """The financials exhibit gets a periodic_* leaf (deferred); the press release
+    stays an event (ADR 0034)."""
     exhibits = [
         _exhibit("EX-99.1", "press.htm", "Q2 results press release."),
         _exhibit("EX-99.2", "financials.htm", "Condensed consolidated statements ..."),
@@ -182,14 +184,12 @@ def test_classify_6k_propagates_periodic_section_kind() -> None:
             is_material=True,
             confidence=0.9,
             reasoning="Earnings press release.",
-            section_kind=SectionKind.EVENT,
         ),
         Classification(
-            event_type=EventType.OTHER_MATERIAL,
+            event_type=EventType.PERIODIC_INTERIM,
             is_material=False,
-            confidence=0.4,
-            reasoning="Interim financial statements — periodic report.",
-            section_kind=SectionKind.PERIODIC_REPORT,
+            confidence=0.8,
+            reasoning="Interim condensed consolidated financial statements.",
         ),
     ]
     response_iter = _mock_invocations(responses)
@@ -198,23 +198,16 @@ def test_classify_6k_propagates_periodic_section_kind() -> None:
         bound.invoke.side_effect = lambda _messages: next(response_iter)
         result = classify_filing(doc)
 
-    kinds = {ic.item_number: ic.classification.section_kind for ic in result.items}
-    assert kinds["EX-99.1"] == SectionKind.EVENT
-    assert kinds["EX-99.2"] == SectionKind.PERIODIC_REPORT
+    by_key = {ic.item_number: ic.classification.event_type for ic in result.items}
+    assert by_key["EX-99.1"] == EventType.EARNINGS_RELEASE
+    assert by_key["EX-99.2"] == EventType.PERIODIC_INTERIM
+    assert domain_for(by_key["EX-99.2"]) == EventDomain.PERIODIC
 
 
-def test_6k_prompt_instructs_periodic_recognition() -> None:
-    """The 6-K prompt tells the model to defer periodic financial reports; the
-    8-K prompt does not mention section_kind."""
-    assert "periodic_report" in _build_system_prompt("6-K")
-    assert "section_kind" in _build_system_prompt("6-K")
-    assert "periodic_report" not in _build_system_prompt("8-K")
-
-
-def test_periodic_signaled_via_event_type_is_routed() -> None:
-    """Robustness: the model often signals periodic by putting 'periodic_report' in
-    event_type (observed on real interim/annual 6-Ks). That out-of-taxonomy value is
-    routed to section_kind with a placeholder event_type instead of crashing validation."""
+def test_periodic_report_is_a_valid_leaf() -> None:
+    """The catch-all `periodic_report` — the value the model naturally reaches for on
+    a financial report — is a valid leaf, so it parses instead of crashing validation
+    (no field-routing validator needed)."""
     c = Classification.model_validate(
         {
             "event_type": "periodic_report",
@@ -223,16 +216,20 @@ def test_periodic_signaled_via_event_type_is_routed() -> None:
             "reasoning": "Interim condensed consolidated financial statements.",
         }
     )
-    assert c.section_kind == SectionKind.PERIODIC_REPORT
-    assert c.event_type == EventType.OTHER_MATERIAL
+    assert c.event_type == EventType.PERIODIC_REPORT
+    assert domain_for(c.event_type) == EventDomain.PERIODIC
 
 
-def test_section_kind_defaults_to_event() -> None:
-    """A classification with no explicit section_kind is an event (8-K + back-compat)."""
-    c = Classification(
-        event_type=EventType.EARNINGS_RELEASE, is_material=True, confidence=0.9, reasoning="x"
-    )
-    assert c.section_kind == SectionKind.EVENT
+def test_periodic_leaves_offered_to_6k_not_8k() -> None:
+    """The live choice-set offers periodic leaves to 6-K and withholds them from 8-K,
+    keeping the 8-K enumeration (and thus its classifier_version) periodic-free."""
+    six_k = _default_leaves("6-K")
+    eight_k = _default_leaves("8-K")
+    assert any(domain_for(leaf) == EventDomain.PERIODIC for leaf in six_k)
+    assert not any(domain_for(leaf) == EventDomain.PERIODIC for leaf in eight_k)
+    # The live 8-K prompt enumerates no periodic leaves; the 6-K one does.
+    assert "periodic_annual" in _build_system_prompt("6-K", six_k)
+    assert "periodic_annual" not in _build_system_prompt("8-K", eight_k)
 
 
 def test_6k_section_uses_larger_char_budget() -> None:
@@ -248,11 +245,8 @@ def test_6k_section_uses_larger_char_budget() -> None:
     assert user.count("X") <= _MAX_6K_SECTION_CHARS
 
 
-def test_6k_prompt_and_version_differ_from_8k() -> None:
-    """The form-specific prompt yields a distinct classifier_version, while the
-    8-K default is unchanged (byte-identical prompt)."""
+def test_6k_and_8k_classifier_versions_differ() -> None:
+    """6-K and 8-K carry distinct classifier_versions (different prompt lead-in)."""
     assert _build_system_prompt("6-K") != _build_system_prompt("8-K")
     assert "foreign private issuer" in _build_system_prompt("6-K")
     assert classifier_version(form="6-K") != classifier_version(form="8-K")
-    # The default (8-K) version is the production string — keyword default holds.
-    assert classifier_version() == classifier_version(form="8-K")

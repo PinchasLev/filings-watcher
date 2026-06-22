@@ -24,7 +24,6 @@ from filings_orchestrator.classify import (
     FilingClassification,
     FilingEvents,
     ItemClassification,
-    SectionKind,
     domain_for,
 )
 from filings_orchestrator.edgar.document import FilingDocument, ItemSection
@@ -129,12 +128,12 @@ def insert_classifications(engine: Engine, result: FilingClassification) -> int:
         INSERT OR IGNORE INTO classifications (
             accession_number, item_number, item_title,
             event_type, event_domain, is_material, confidence, reasoning,
-            section_kind, classifier_version, taxonomy_version, classified_at
+            classifier_version, taxonomy_version, classified_at
         )
         VALUES (
             :accession, :item_number, :item_title,
             :event_type, :event_domain, :is_material, :confidence, :reasoning,
-            :section_kind, :classifier_version, :taxonomy_version, :classified_at
+            :classifier_version, :taxonomy_version, :classified_at
         )
         """
     )
@@ -165,7 +164,6 @@ def _classification_rows(result: FilingClassification) -> list[dict[str, object]
             "is_material": 1 if classification.is_material else 0,
             "confidence": classification.confidence,
             "reasoning": classification.reasoning,
-            "section_kind": classification.section_kind.value,
             "classifier_version": result.classifier_version,
             "taxonomy_version": result.taxonomy_version,
             "classified_at": classified_at,
@@ -791,8 +789,8 @@ def load_latest_filing_classification(
                 """
                 WITH ranked AS (
                     SELECT item_number, item_title, event_type, is_material,
-                           confidence, reasoning, section_kind, classifier_version,
-                           taxonomy_version, classified_at,
+                           confidence, reasoning, classifier_version, taxonomy_version,
+                           classified_at,
                            ROW_NUMBER() OVER (
                                PARTITION BY COALESCE(item_number, '')
                                ORDER BY classified_at DESC, id DESC
@@ -821,7 +819,6 @@ def load_latest_filing_classification(
             is_material=bool(m["is_material"]),
             confidence=float(m["confidence"]),
             reasoning=str(m["reasoning"]),
-            section_kind=SectionKind(m["section_kind"]),
         )
         if m["item_number"] is None:
             whole_filing = classification

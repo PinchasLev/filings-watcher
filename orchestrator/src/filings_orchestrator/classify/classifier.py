@@ -39,7 +39,9 @@ from filings_orchestrator.classify.taxonomy import (
     EVENT_TYPE_DESCRIPTIONS,
     NON_SUBSTANTIVE_ITEMS,
     TAXONOMY_VERSION,
+    EventDomain,
     EventType,
+    domain_for,
 )
 from filings_orchestrator.cost import emit_llm_call
 from filings_orchestrator.edgar.document import FilingDocument, ItemSection
@@ -106,17 +108,10 @@ def _prompt_lead_in(form: str) -> list[str]:
             "exhibit on its own content. Many 6-K furnishings are routine foreign-market "
             "compliance disclosures — annual-meeting notices, monthly share-buyback returns, "
             "administrative circulars — that are not material; reserve is_material for "
-            "disclosures that would affect a reasonable investor's assessment.",
-            "",
-            "Some exhibits are not discrete events but periodic financial reports — interim, "
-            "half-year, or annual financial statements, management's discussion and analysis, "
-            "or a full results filing (the foreign-issuer equivalent of a 10-Q or 10-K). For "
-            "those, set section_kind to 'periodic_report'; they are deferred for separate "
-            "processing rather than classified as an event. Distinguish carefully: a results "
-            "PRESS RELEASE announcing earnings is an event — classify it as earnings_release — "
-            "whereas the financial statements themselves are a periodic_report. Only choose "
-            "'periodic_report' when the exhibit clearly is the report itself; when unsure, "
-            "treat it as an event.",
+            "disclosures that would affect a reasonable investor's assessment. Some exhibits "
+            "are not discrete events but periodic financial reports (the foreign-issuer "
+            "equivalent of a 10-Q or 10-K) — classify those with the matching `periodic_*` "
+            "type so they are deferred, never a results press release, which is an event.",
         ]
     return [
         "You are an experienced securities analyst classifying SEC Form 8-K material event "
@@ -396,6 +391,20 @@ def classifier_version(
     return f"{model_name}+prompt-{prompt_sha}"
 
 
+def _default_leaves(form: str) -> list[EventType]:
+    """The choice-set offered when the caller passes no explicit `leaves` (the live path).
+
+    The `periodic` document-class leaves are offered ONLY to 6-K. For every other form
+    they are excluded; because they are declared last in `EventType`, the excluded set
+    is byte-identical to the pre-v1.3 taxonomy in the same order — so 8-K's enumerated
+    prompt, and thus its `classifier_version`, are unchanged (ADR 0034). A/B callers that
+    pass an explicit `leaves` bypass this entirely.
+    """
+    if form == "6-K":
+        return list(EventType)
+    return [event for event in EventType if domain_for(event) != EventDomain.PERIODIC]
+
+
 def classify_filing(
     document: FilingDocument,
     model_name: str = DEFAULT_MODEL,
@@ -414,11 +423,16 @@ def classify_filing(
     specific taxonomy version — including a prior version's *exact* descriptions
     from its snapshot — for evaluation.
     """
+    # leaves=None means "the live default for this form": periodic leaves offered to
+    # 6-K, withheld from 8-K (ADR 0034). An explicit `leaves` (A/B evaluation) is honored
+    # as-is. The same effective set drives the prompt, the tool-schema enum, and the
+    # recorded classifier_version, so all three stay consistent.
+    effective_leaves = leaves if leaves is not None else _default_leaves(document.filing.form)
     graph = _build_graph()
     initial: _State = {
         "document": document,
         "model": model_name,
-        "leaves": leaves,
+        "leaves": effective_leaves,
         "descriptions": descriptions,
         "items": [],
         "whole_filing": None,
@@ -435,7 +449,7 @@ def classify_filing(
         classified_at=datetime.now(UTC),
         model=model_name,
         classifier_version=classifier_version(
-            model_name, leaves, descriptions, form=document.filing.form
+            model_name, effective_leaves, descriptions, form=document.filing.form
         ),
         taxonomy_version=TAXONOMY_VERSION,
     )

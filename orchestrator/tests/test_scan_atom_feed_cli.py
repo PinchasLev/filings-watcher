@@ -263,3 +263,13 @@ def test_scan_atom_feed_exits_when_daily_spend_at_cap(
     failed = next(e for e in events if e["event"] == "tick_failed")
     assert failed["error_class"] == "cost_cap_exceeded"
     assert "atom_feed_polled" not in names
+
+    # The cap-hit must raise an operator alert (ADR 0031) — it's otherwise silent,
+    # since the gate exits before the classify-failure alert path.
+    from filings_orchestrator.alerting.outbox import fetch_undelivered_alerts
+
+    alerts = fetch_undelivered_alerts(open_engine(str(configured_env)))
+    cap_alerts = [a for a in alerts if a.title == "Daily cost cap reached — classification paused"]
+    assert len(cap_alerts) == 1
+    assert cap_alerts[0].severity == "alert"
+    assert cap_alerts[0].dedup_key == f"cost_cap:{today_utc}"

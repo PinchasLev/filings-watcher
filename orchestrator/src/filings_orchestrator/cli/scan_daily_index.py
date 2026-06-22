@@ -105,6 +105,27 @@ def main() -> None:
                 cap_usd=config.anthropic_daily_cost_cap_usd,
                 day_utc=today_utc,
             )
+            # Alert (ADR 0031): the cap is a pre-tick gate that exits before any
+            # classify call, so it never reaches the classify-failure alert path —
+            # hitting it silently halts classification for the rest of the UTC day.
+            # Surface it once per day (dedup per date) so the operator knows the
+            # product has gone dark and can decide to economize or raise the cap.
+            emit_alert(
+                engine,
+                ALERT,
+                "Daily cost cap reached — classification paused",
+                body=(
+                    f"Today's Anthropic spend (${spend_today:.2f}) reached the daily cap "
+                    f"(${config.anthropic_daily_cost_cap_usd:.2f}). New filings will not be "
+                    f"classified until the cap resets at 00:00 UTC; the daily-index reconciler "
+                    f"backfills the gap. If this fires early in the day, reduce per-filing cost "
+                    f"or raise ANTHROPIC_DAILY_COST_CAP_USD."
+                ),
+                dedup_key=f"cost_cap:{today_utc}",
+                daily_spend_usd=round(spend_today, 6),
+                cap_usd=config.anthropic_daily_cost_cap_usd,
+                day_utc=today_utc,
+            )
             sys.exit(1)
         if spend_today >= config.anthropic_daily_cost_warn_usd:
             emit(

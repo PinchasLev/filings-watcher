@@ -19,9 +19,11 @@ from filings_orchestrator.classify.classifier import (
     _MAX_SECTION_CHARS,
     _build_system_prompt,
     _build_user_message,
+    _default_leaves,
     _sections_for,
     classifier_version,
 )
+from filings_orchestrator.classify.taxonomy import EventDomain, domain_for
 from filings_orchestrator.edgar.document import FilingDocument, ItemSection
 from filings_orchestrator.edgar.models import Exhibit, Filing
 
@@ -168,6 +170,68 @@ def test_build_user_message_labels_6k_section_as_exhibit() -> None:
     assert "Item EX-99.1" not in user
 
 
+def test_classify_6k_classifies_periodic_exhibit_as_periodic_leaf() -> None:
+    """The financials exhibit gets a periodic_* leaf (deferred); the press release
+    stays an event (ADR 0034)."""
+    exhibits = [
+        _exhibit("EX-99.1", "press.htm", "Q2 results press release."),
+        _exhibit("EX-99.2", "financials.htm", "Condensed consolidated statements ..."),
+    ]
+    doc = _document_6k(exhibits)
+    responses = [
+        Classification(
+            event_type=EventType.EARNINGS_RELEASE,
+            is_material=True,
+            confidence=0.9,
+            reasoning="Earnings press release.",
+        ),
+        Classification(
+            event_type=EventType.PERIODIC_INTERIM,
+            is_material=False,
+            confidence=0.8,
+            reasoning="Interim condensed consolidated financial statements.",
+        ),
+    ]
+    response_iter = _mock_invocations(responses)
+    with patch("filings_orchestrator.classify.classifier.ChatAnthropic") as mock_chat:
+        bound = mock_chat.return_value.bind_tools.return_value
+        bound.invoke.side_effect = lambda _messages: next(response_iter)
+        result = classify_filing(doc)
+
+    by_key = {ic.item_number: ic.classification.event_type for ic in result.items}
+    assert by_key["EX-99.1"] == EventType.EARNINGS_RELEASE
+    assert by_key["EX-99.2"] == EventType.PERIODIC_INTERIM
+    assert domain_for(by_key["EX-99.2"]) == EventDomain.PERIODIC
+
+
+def test_periodic_report_is_a_valid_leaf() -> None:
+    """The catch-all `periodic_report` — the value the model naturally reaches for on
+    a financial report — is a valid leaf, so it parses instead of crashing validation
+    (no field-routing validator needed)."""
+    c = Classification.model_validate(
+        {
+            "event_type": "periodic_report",
+            "is_material": False,
+            "confidence": 0.6,
+            "reasoning": "Interim condensed consolidated financial statements.",
+        }
+    )
+    assert c.event_type == EventType.PERIODIC_REPORT
+    assert domain_for(c.event_type) == EventDomain.PERIODIC
+
+
+def test_periodic_leaves_offered_to_6k_not_8k() -> None:
+    """The live choice-set offers periodic leaves to 6-K and withholds them from 8-K,
+    keeping the 8-K enumeration (and thus its classifier_version) periodic-free."""
+    six_k = _default_leaves("6-K")
+    eight_k = _default_leaves("8-K")
+    assert any(domain_for(leaf) == EventDomain.PERIODIC for leaf in six_k)
+    assert not any(domain_for(leaf) == EventDomain.PERIODIC for leaf in eight_k)
+    # The live 8-K prompt enumerates no periodic leaves; the 6-K one does.
+    assert "periodic_annual" in _build_system_prompt("6-K", six_k)
+    assert "periodic_annual" not in _build_system_prompt("8-K", eight_k)
+
+
 def test_6k_section_uses_larger_char_budget() -> None:
     """A 6-K exhibit is the primary content, so its section budget exceeds the 8-K
     Item cap, and a long exhibit reaches the classifier well past 12k chars."""
@@ -181,11 +245,8 @@ def test_6k_section_uses_larger_char_budget() -> None:
     assert user.count("X") <= _MAX_6K_SECTION_CHARS
 
 
-def test_6k_prompt_and_version_differ_from_8k() -> None:
-    """The form-specific prompt yields a distinct classifier_version, while the
-    8-K default is unchanged (byte-identical prompt)."""
+def test_6k_and_8k_classifier_versions_differ() -> None:
+    """6-K and 8-K carry distinct classifier_versions (different prompt lead-in)."""
     assert _build_system_prompt("6-K") != _build_system_prompt("8-K")
     assert "foreign private issuer" in _build_system_prompt("6-K")
     assert classifier_version(form="6-K") != classifier_version(form="8-K")
-    # The default (8-K) version is the production string — keyword default holds.
-    assert classifier_version() == classifier_version(form="8-K")

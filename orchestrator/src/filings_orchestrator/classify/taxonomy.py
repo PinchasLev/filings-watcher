@@ -30,7 +30,11 @@ from typing import NamedTuple
 # v1.1: added the per-domain `*_other` catch-all leaves (additive).
 # v1.2: added specific leaves debt_issuance, dividend_distribution,
 # workforce_reduction (additive; data-driven from the v1.1 catch-all population).
-TAXONOMY_VERSION = "v1.2"
+# v1.3: added the `periodic` domain + its leaves (periodic_annual/quarterly/interim
+# and the generic periodic_report) for 6-K periodic financial reports that are
+# recognized and deferred, not classified as events (ADR 0033/0034). Additive, and
+# offered only to 6-K via the per-call leaf set, so 8-K's choice-set is unchanged.
+TAXONOMY_VERSION = "v1.3"
 
 
 class EventType(StrEnum):
@@ -72,6 +76,18 @@ class EventType(StrEnum):
     OPERATIONAL_OTHER = "operational_other"
     LEGAL_OTHER = "legal_other"
     TERMINAL_OTHER = "terminal_other"
+    # Periodic document classes (ADR 0034, v1.3): a 6-K may carry a 10-Q/10-K-equivalent
+    # periodic financial report, which we recognize and DEFER rather than classify as a
+    # discrete event. These leaves are offered only to 6-K (via the per-call leaf set);
+    # the reduce stage drops the whole `periodic` domain from the events layer. They are
+    # appended LAST so the non-periodic subset offered to 8-K keeps its exact prior order
+    # (and thus 8-K's classifier_version). The cadence split is low-stakes metadata for a
+    # future periodic-content extraction pass; `periodic_report` is the catch-all when the
+    # period is unclear (and absorbs the value the model naturally reaches for).
+    PERIODIC_ANNUAL = "periodic_annual"
+    PERIODIC_QUARTERLY = "periodic_quarterly"
+    PERIODIC_INTERIM = "periodic_interim"
+    PERIODIC_REPORT = "periodic_report"
 
 
 EVENT_TYPE_DESCRIPTIONS: dict[EventType, str] = {
@@ -209,6 +225,31 @@ EVENT_TYPE_DESCRIPTIONS: dict[EventType, str] = {
         "is clearly existential but not a named type; prefer this over "
         "`other_material` whenever the domain is clear."
     ),
+    EventType.PERIODIC_ANNUAL: (
+        "A periodic ANNUAL financial report — full-year financial statements (the "
+        "foreign-issuer equivalent of a 10-K / Form 20-F annual report). This is the "
+        "report itself, which is deferred for separate processing, not a discrete "
+        "event. Do NOT use for a results press release announcing annual figures — "
+        "that is `earnings_release`."
+    ),
+    EventType.PERIODIC_QUARTERLY: (
+        "A periodic QUARTERLY financial report — quarterly financial statements (the "
+        "foreign-issuer equivalent of a 10-Q). The report itself, deferred, not a "
+        "discrete event. Not a results press release (that is `earnings_release`)."
+    ),
+    EventType.PERIODIC_INTERIM: (
+        "A periodic INTERIM or half-year financial report — interim/semi-annual "
+        "financial statements (common for foreign private issuers). The report itself, "
+        "deferred, not a discrete event. Not a results press release "
+        "(that is `earnings_release`)."
+    ),
+    EventType.PERIODIC_REPORT: (
+        "A periodic financial report whose period is unclear or unspecified — interim, "
+        "quarterly, or annual financial statements / a full results filing you cannot "
+        "place by cadence. The report itself, deferred, not a discrete event. Use when "
+        "it is clearly a periodic financial report but the period is ambiguous; never "
+        "for a results press release (that is `earnings_release`)."
+    ),
 }
 
 
@@ -242,6 +283,10 @@ class EventDomain(StrEnum):
     LEGAL = "legal"
     TERMINAL = "terminal"
     CATCHALL = "catchall"
+    # Deferred, non-event document classes (ADR 0034): periodic financial reports
+    # (10-Q/10-K-equivalent) a 6-K may carry. Recognized so they can be deferred;
+    # the reduce stage excludes this whole domain from the events layer.
+    PERIODIC = "periodic"
 
 
 EVENT_TO_DOMAIN: dict[EventType, EventDomain] = {
@@ -276,6 +321,11 @@ EVENT_TO_DOMAIN: dict[EventType, EventDomain] = {
     EventType.TERMINAL_OTHER: EventDomain.TERMINAL,
     # Catch-all (domain itself unclear).
     EventType.OTHER_MATERIAL: EventDomain.CATCHALL,
+    # Periodic: deferred 10-Q/10-K-equivalent reports, never collated into events.
+    EventType.PERIODIC_ANNUAL: EventDomain.PERIODIC,
+    EventType.PERIODIC_QUARTERLY: EventDomain.PERIODIC,
+    EventType.PERIODIC_INTERIM: EventDomain.PERIODIC,
+    EventType.PERIODIC_REPORT: EventDomain.PERIODIC,
 }
 
 

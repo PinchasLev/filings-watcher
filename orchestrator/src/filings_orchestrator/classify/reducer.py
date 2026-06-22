@@ -26,10 +26,16 @@ from filings_orchestrator.classify.classifier import DEFAULT_MODEL
 from filings_orchestrator.classify.schema import (
     FilingClassification,
     FilingEvents,
+    ItemClassification,
     ReducedEvent,
     ReduceOutput,
 )
-from filings_orchestrator.classify.taxonomy import EVENT_TYPE_DESCRIPTIONS, EventType
+from filings_orchestrator.classify.taxonomy import (
+    EVENT_TYPE_DESCRIPTIONS,
+    EventDomain,
+    EventType,
+    domain_for,
+)
 from filings_orchestrator.cost import emit_llm_call
 
 
@@ -111,6 +117,22 @@ def _build_reduce_system_prompt(form: str = "8-K") -> str:
     return "\n".join(lines)
 
 
+def _event_items(classification: FilingClassification) -> list[ItemClassification]:
+    """The sections to collate into events: everything outside the `periodic` domain.
+
+    6-K periodic financial reports (the `periodic` domain leaves, ADR 0034) are
+    deferred — recorded but not events — so they are excluded from reduce here and
+    from the reduce prompt, leaving the event sections to consolidate. Keying on the
+    domain (not specific leaves) makes any future deferred document class drop out of
+    the events layer automatically.
+    """
+    return [
+        item
+        for item in classification.items
+        if domain_for(item.classification.event_type) != EventDomain.PERIODIC
+    ]
+
+
 def _build_reduce_user_message(classification: FilingClassification) -> str:
     # 6-K sections are furnished exhibits (item_number holds the exhibit label);
     # 8-K sections are Items. Label both the heading and each row accordingly.
@@ -122,7 +144,7 @@ def _build_reduce_user_message(classification: FilingClassification) -> str:
     )
     heading = "Per-exhibit classifications:" if unit == "Exhibit" else "Per-Item classifications:"
     lines = [header, heading]
-    for item in classification.items:
+    for item in _event_items(classification):
         c = item.classification
         title = f" ({item.item_title})" if item.item_title else ""
         materiality = "material" if c.is_material else "non-material"
@@ -200,8 +222,12 @@ def reduce_filing(
     without a model call — there is nothing to merge. Otherwise one tool-use
     call collates the Items, and the result is grounded so anchor and
     contributing Item numbers refer only to Items that were actually classified.
+
+    Only event-kind sections are collated; `periodic_report` sections are deferred
+    (recorded, not events — ADR 0034), so a filing whose only sections are periodic
+    reduces to zero events.
     """
-    items = classification.items
+    items = _event_items(classification)
     accession = classification.accession_number
 
     if not items:

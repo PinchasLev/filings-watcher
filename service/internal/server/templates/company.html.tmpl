@@ -22,6 +22,7 @@
       <article class="filing-card">
         <h3><a href="/filings/{{.AccessionNumber}}">{{eventLabel .EventType}}</a></h3>
         <div class="filing-meta">
+          {{if .Form}}<span class="badge form">{{.Form}}</span>{{end}}
           <span>filed {{.FilingDate}}</span>
           <span>confidence {{printf "%.0f" (mul .Confidence 100.0)}}%</span>
           {{if .AnchorItemNumber}}<span>{{ anchorLabel .AnchorItemNumber }}</span>{{end}}

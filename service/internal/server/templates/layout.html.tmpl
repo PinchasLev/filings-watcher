@@ -95,6 +95,12 @@
     background: var(--pico-color-amber-100);
     color: var(--pico-color-amber-800);
   }
+  /* Form tag (8-K / 6-K) — preserve the exact form casing rather than lowercasing. */
+  .badge.form {
+    background: var(--pico-primary-background);
+    color: var(--pico-primary-inverse);
+    text-transform: none;
+  }
   .reasoning { font-size: 0.95rem; line-height: 1.5; }
   /* Ticker search (in the header, on every page). */
   .search { display: flex; gap: 0.5rem; margin-top: 1rem; max-width: 26rem; }

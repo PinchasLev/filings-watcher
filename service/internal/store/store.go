@@ -79,6 +79,9 @@ type Event struct {
 	CompanyName string  `json:"company_name"`
 	Ticker      *string `json:"ticker"`
 	FilingDate  string  `json:"filing_date"`
+	// Form is the SEC form (e.g. "8-K", "6-K"), denormalized from filings so list
+	// views can badge each card by form.
+	Form string `json:"form"`
 	// SubmittedAt is the precise EDGAR-side filing timestamp (ISO 8601
 	// with offset, e.g. "2026-06-05T09:05:09-04:00"). Populated for
 	// atom-feed-ingested filings; NULL for daily-index-ingested rows
@@ -650,7 +653,7 @@ func scanEvents(rows *sql.Rows) ([]Event, error) {
 		if err := rows.Scan(
 			&e.ID, &e.RunID, &e.AccessionNumber, &e.AnchorItemNumber,
 			&e.EventType, &e.EventDomain, &isMaterial, &e.Confidence, &e.Summary,
-			&e.CompanyName, &e.Ticker, &e.FilingDate, &e.SubmittedAt,
+			&e.CompanyName, &e.Ticker, &e.FilingDate, &e.SubmittedAt, &e.Form,
 		); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}
@@ -672,7 +675,7 @@ func (s *store) MaterialEvents(ctx context.Context, eventType string, limit, off
 		SELECT
 			e.id, e.run_id, e.accession_number, e.anchor_item_number,
 			e.event_type, e.event_domain, e.is_material, e.confidence, e.summary,
-			f.company_name, f.ticker, f.filing_date, f.submitted_at
+			f.company_name, f.ticker, f.filing_date, f.submitted_at, f.form
 		FROM events e
 		JOIN latest_run lr
 			ON lr.accession_number = e.accession_number AND lr.run_id = e.run_id
@@ -722,7 +725,7 @@ func (s *store) CompanyEvents(ctx context.Context, cik string, limit, offset int
 		SELECT
 			e.id, e.run_id, e.accession_number, e.anchor_item_number,
 			e.event_type, e.event_domain, e.is_material, e.confidence, e.summary,
-			f.company_name, f.ticker, f.filing_date, f.submitted_at
+			f.company_name, f.ticker, f.filing_date, f.submitted_at, f.form
 		FROM events e
 		JOIN latest_run lr
 			ON lr.accession_number = e.accession_number AND lr.run_id = e.run_id
@@ -785,7 +788,7 @@ func (s *store) ListLiveEventsSince(ctx context.Context, since time.Time, limit 
 		SELECT
 			e.id, e.run_id, e.accession_number, e.anchor_item_number,
 			e.event_type, e.event_domain, e.is_material, e.confidence, e.summary,
-			f.company_name, f.ticker, f.filing_date, f.submitted_at
+			f.company_name, f.ticker, f.filing_date, f.submitted_at, f.form
 		FROM events e
 		JOIN latest_run lr
 			ON lr.accession_number = e.accession_number AND lr.run_id = e.run_id
@@ -811,7 +814,7 @@ func (s *store) LiveEvents(ctx context.Context, since time.Time, limit, offset i
 		SELECT
 			e.id, e.run_id, e.accession_number, e.anchor_item_number,
 			e.event_type, e.event_domain, e.is_material, e.confidence, e.summary,
-			f.company_name, f.ticker, f.filing_date, f.submitted_at
+			f.company_name, f.ticker, f.filing_date, f.submitted_at, f.form
 		FROM events e
 		JOIN latest_run lr
 			ON lr.accession_number = e.accession_number AND lr.run_id = e.run_id
@@ -894,7 +897,7 @@ func (s *store) EventsByAccession(ctx context.Context, accession string) ([]Even
 		WITH latest AS (
 			SELECT e.id, e.run_id, e.accession_number, e.anchor_item_number,
 			       e.event_type, e.event_domain, e.is_material, e.confidence, e.summary,
-			       f.company_name, f.ticker, f.filing_date
+			       f.company_name, f.ticker, f.filing_date, f.form
 			  FROM events e
 			  JOIN filings f ON f.accession_number = e.accession_number
 			 WHERE e.accession_number = ?
@@ -903,7 +906,7 @@ func (s *store) EventsByAccession(ctx context.Context, accession string) ([]Even
 		SELECT
 			le.id, le.run_id, le.accession_number, le.anchor_item_number,
 			le.event_type, le.event_domain, le.is_material, le.confidence, le.summary,
-			le.company_name, le.ticker, le.filing_date,
+			le.company_name, le.ticker, le.filing_date, le.form,
 			c.id, c.item_number, c.item_title, c.event_type, c.event_domain,
 			c.is_material, c.confidence, c.reasoning, c.classifier_version,
 			c.taxonomy_version, c.classified_at
@@ -941,7 +944,7 @@ func (s *store) EventsByAccession(ctx context.Context, accession string) ([]Even
 		if err := rows.Scan(
 			&e.ID, &e.RunID, &e.AccessionNumber, &e.AnchorItemNumber,
 			&e.EventType, &e.EventDomain, &eMaterial, &e.Confidence, &e.Summary,
-			&e.CompanyName, &e.Ticker, &e.FilingDate,
+			&e.CompanyName, &e.Ticker, &e.FilingDate, &e.Form,
 			&cID, &cItemNumber, &cItemTitle, &cEventType, &cEventDomain,
 			&cMaterial, &cConfidence, &cReasoning, &cClassifier, &cTaxonomy, &cClassified,
 		); err != nil {

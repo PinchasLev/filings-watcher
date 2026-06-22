@@ -30,6 +30,7 @@
           {{if .Ticker}} <small>({{ derefStr .Ticker }})</small>{{end}}
         </h3>
         <div class="filing-meta">
+          {{if .Form}}<span class="badge form">{{.Form}}</span>{{end}}
           <span class="badge">{{eventLabel .EventType}}</span>
           <span>confidence {{printf "%.0f" (mul .Confidence 100.0)}}%</span>
           <span>filed {{.FilingDate}}</span>

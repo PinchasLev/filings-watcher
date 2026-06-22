@@ -12,7 +12,7 @@ import (
 
 func TestHandleHomeRendersFilings(t *testing.T) {
 	ticker := "ACME"
-	anchor := "2.02"
+	anchor := "EX-99.1"
 	fake := &fakeStore{
 		eventTypeCountResult: []store.EventTypeCount{
 			{EventType: "earnings_release", Count: 12},
@@ -31,6 +31,7 @@ func TestHandleHomeRendersFilings(t *testing.T) {
 				CompanyName:      "Acme Corp",
 				Ticker:           &ticker,
 				FilingDate:       "2026-05-20",
+				Form:             "6-K",
 			},
 		},
 		materialEventsTotal: 1,
@@ -57,6 +58,7 @@ func TestHandleHomeRendersFilings(t *testing.T) {
 		"Showing material events only",    // intro copy
 		"93%",                             // confidence formatted as percent
 		"Quarterly results press release", // reasoning text
+		`class="badge form">6-K</span>`,   // form badge, exact casing (not lowercased)
 		"https://www.sec.gov/Archives/edgar/data/", // EDGAR link prefix
 		"0001234567-26-000001-index.htm",           // EDGAR link suffix
 		"Open source on GitHub",                    // footer credit

@@ -90,3 +90,65 @@ resource "aws_cloudwatch_metric_alarm" "host_status_check_failed" {
     Name = "filings-watcher-host-status-check-failed"
   }
 }
+
+# Memory-pressure alarms (ADR 0035 follow-up). During the 2026-06-22 wedge we were
+# blind to memory and swap: default EC2 metrics are hypervisor-level and never
+# include guest memory/swap, and no CloudWatch agent is installed. The suspected
+# mechanism was memory pressure spilling into swap thrash, but it was never
+# confirmed (no OOM-killer in the kernel log; a later drain held flat at ~375 MB) —
+# so these metrics exist as much to CONFIRM OR REFUTE that next time as to alarm on
+# it. The host-heartbeat tick now emits SwapUsedPercent + MemAvailablePercent every
+# ~5 min (see ssm_install_orchestrate_timer.tf). treat_missing_data = notBreaching
+# on both: absence of the metric means the box/agent is down, which the
+# heartbeat-missing alarm owns.
+
+# Sustained swap use is the best leading indicator we have for host memory
+# pressure. The classifier slice runs with MemorySwapMax=0, so it cannot swap — any
+# sustained swap is HOST-level pressure (OS, Caddy, the Go server), the suspected
+# (unconfirmed) class of condition behind the 2026-06-22 wedge. 20% of the 2 GB
+# swap (~400 MB) held for ~10 min is well clear of the ~1% idle baseline.
+resource "aws_cloudwatch_metric_alarm" "host_swap_high" {
+  alarm_name        = "filings-watcher-host-swap-high"
+  alarm_description = "SwapUsedPercent >= 20% for ~10 min: the host is under memory pressure and spilling to swap — the suspected (but unconfirmed) class of condition behind the 2026-06-22 wedge. Investigate (a heavy filing, a leak, or load) before the box degrades."
+
+  namespace   = "filings-watcher"
+  metric_name = "SwapUsedPercent"
+  statistic   = "Average"
+  period      = 300
+
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 20
+  evaluation_periods  = 2
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = [aws_sns_topic.alarms.arn]
+  ok_actions    = [aws_sns_topic.alarms.arn]
+
+  tags = {
+    Name = "filings-watcher-host-swap-high"
+  }
+}
+
+# Complementary headroom gauge: available memory falling low means the box is
+# close to pressure even if swap has not moved yet.
+resource "aws_cloudwatch_metric_alarm" "host_memory_low" {
+  alarm_name        = "filings-watcher-host-memory-low"
+  alarm_description = "MemAvailablePercent <= 10% for ~10 min: very little free memory — the box is approaching the kind of memory pressure that can spill into swap and degrade it."
+
+  namespace   = "filings-watcher"
+  metric_name = "MemAvailablePercent"
+  statistic   = "Average"
+  period      = 300
+
+  comparison_operator = "LessThanOrEqualToThreshold"
+  threshold           = 10
+  evaluation_periods  = 2
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = [aws_sns_topic.alarms.arn]
+  ok_actions    = [aws_sns_topic.alarms.arn]
+
+  tags = {
+    Name = "filings-watcher-host-memory-low"
+  }
+}

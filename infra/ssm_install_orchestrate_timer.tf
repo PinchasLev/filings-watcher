@@ -1,5 +1,6 @@
 # SSM document that installs the periodic ingest under systemd: five
-# wrapper scripts, five oneshot service units, and five timers — the
+# wrapper scripts, five oneshot service units, five timers, and a shared
+# classifier resource slice (ADR 0035) — the
 # Atom feed (ADR 0029, near-real-time), the daily-index reconciliation
 # backstop (ADR 0021, evening cluster per ADR 0029), the classify
 # reconciler that heals orphaned filings (ADR 0030), the alarm drainer
@@ -48,6 +49,20 @@
 # without that, the timer would wait forever for the service to have
 # been "inactive" at least once. The daily-index timer uses OnCalendar
 # and needs no priming; it will fire at the next 22:15 ET window.
+#
+# Self-arming across reboots (ADR 0035): the OnUnitInactiveSec timers
+# (atom-feed, reclassify-orphans, alarm-drain, host-heartbeat) also carry
+# OnBootSec=, so they fire once shortly after every boot and re-acquire
+# their inactive reference. Without it, a plain reboot/stop-start leaves
+# them loaded-but-unscheduled until the install doc is re-run — which on
+# 2026-06-22 silently halted both ingestion AND the heartbeat (so the
+# dead-man's-switch could not even clear) after an instance stop/start.
+#
+# Resource isolation (ADR 0035): the three Anthropic-classifying ticks
+# run under a shared filings-classify.slice with MemoryMax + MemorySwapMax=0,
+# so a runaway tick is OOMKilled inside its own cgroup instead of swap-
+# thrashing the whole host into an unresponsive wedge (the 2026-06-22
+# incident: memory pressure with swap present => livelock, not a clean crash).
 #
 # Secrets are fetched from SSM Parameter Store inside each wrapper at
 # run time, matching the operator-seeded pattern from ADR 0020.
@@ -215,6 +230,24 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "chmod 0755 /usr/local/bin/filings-host-heartbeat-tick",
           "chown root:root /usr/local/bin/filings-host-heartbeat-tick",
           "install -d -o filings -g filings -m 0755 /var/lib/filings-watcher",
+          # --- Classifier resource slice (memory isolation, ADR 0035) ---
+          # All Anthropic-classifying ticks (daily-index, atom-feed, reclassify-
+          # orphans) run under this shared slice, so their TOTAL memory is bounded
+          # regardless of how many run at once. MemoryMax is a safety CEILING, not
+          # a target (a legitimate tick measures ~150-400MB); MemorySwapMax=0 makes
+          # a runaway OOMKill inside this cgroup rather than swap-thrash the host
+          # into a wedge. 2G leaves ~1.7GB host reserve (OS + Caddy + Go server +
+          # page cache + margin) on t4g.medium. Tune from `systemctl show -p
+          # MemoryPeak` once observed under load. The lightweight ticks (alarm-drain,
+          # host-heartbeat) are deliberately outside the slice — they never classify.
+          "cat > /etc/systemd/system/filings-classify.slice <<'SLICE_EOF'",
+          "[Unit]",
+          "Description=filings-watcher classifier resource slice (memory isolation, ADR 0035)",
+          "",
+          "[Slice]",
+          "MemoryMax=2G",
+          "MemorySwapMax=0",
+          "SLICE_EOF",
           # --- Daily-index service + timer ---
           "cat > /etc/systemd/system/filings-daily-index.service <<'SERVICE_EOF'",
           "[Unit]",
@@ -232,6 +265,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "StandardOutput=journal",
           "StandardError=journal",
           "SyslogIdentifier=filings-daily-index",
+          "Slice=filings-classify.slice",
           "NoNewPrivileges=true",
           "PrivateTmp=true",
           "SERVICE_EOF",
@@ -268,6 +302,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "StandardOutput=journal",
           "StandardError=journal",
           "SyslogIdentifier=filings-atom-feed",
+          "Slice=filings-classify.slice",
           "NoNewPrivileges=true",
           "PrivateTmp=true",
           "SERVICE_EOF",
@@ -279,6 +314,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "[Timer]",
           "Unit=filings-atom-feed.service",
           "OnUnitInactiveSec=30s",
+          "OnBootSec=1min",
           "",
           "[Install]",
           "WantedBy=timers.target",
@@ -305,6 +341,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "StandardOutput=journal",
           "StandardError=journal",
           "SyslogIdentifier=filings-reclassify-orphans",
+          "Slice=filings-classify.slice",
           "NoNewPrivileges=true",
           "PrivateTmp=true",
           "SERVICE_EOF",
@@ -316,6 +353,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "[Timer]",
           "Unit=filings-reclassify-orphans.service",
           "OnUnitInactiveSec=20min",
+          "OnBootSec=3min",
           "",
           "[Install]",
           "WantedBy=timers.target",
@@ -353,6 +391,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "[Timer]",
           "Unit=filings-alarm-drain.service",
           "OnUnitInactiveSec=2min",
+          "OnBootSec=90s",
           "",
           "[Install]",
           "WantedBy=timers.target",
@@ -386,6 +425,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "[Timer]",
           "Unit=filings-host-heartbeat.service",
           "OnUnitInactiveSec=5min",
+          "OnBootSec=1min",
           "",
           "[Install]",
           "WantedBy=timers.target",

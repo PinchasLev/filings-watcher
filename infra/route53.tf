@@ -44,3 +44,26 @@ resource "aws_route53_record" "caa" {
     "0 iodef \"mailto:${var.acme_email}\"",
   ]
 }
+
+# External liveness probe for the public web surface (ADR 0036). Route 53 checks
+# https://filingsradar.com/health every 30s from multiple AWS edge locations and
+# publishes HealthCheckStatus to CloudWatch; the alarm in cloudwatch.tf pages when
+# it goes unhealthy. This tests the whole user path end to end — DNS -> Caddy -> TLS
+# -> the Go app's /health handler — so it catches a web-service crash-loop, panic,
+# OOM, expired cert, or DNS/host failure, including the case the host heartbeat
+# cannot see: the app down while the box itself is healthy. /health is the Go
+# server's lightweight liveness endpoint (no DB query). enable_sni so Caddy serves
+# the apex cert.
+resource "aws_route53_health_check" "site" {
+  fqdn              = "filingsradar.com"
+  port              = 443
+  type              = "HTTPS"
+  resource_path     = "/health"
+  enable_sni        = true
+  request_interval  = 30
+  failure_threshold = 3
+
+  tags = {
+    Name = "filings-watcher-site-health"
+  }
+}

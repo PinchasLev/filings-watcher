@@ -222,10 +222,25 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           # tree, so it keeps signalling even if the app is wedged. If the box is
           # dead, unreachable, or its IAM/network to CloudWatch is broken, the
           # metric stops arriving and the heartbeat-missing alarm fires.
+          #
+          # It also emits host memory/swap utilization gauges (ADR 0035 follow-up)
+          # so CloudWatch can warn on memory-pressure buildup before it can degrade
+          # the host — the visibility gap that left us blind on 2026-06-22, when the
+          # box wedged for reasons we could not diagnose in the moment (default EC2
+          # metrics exclude guest memory/swap). HostHeartbeat is emitted FIRST
+          # and the resource pushes are best-effort (|| true), so a metric hiccup
+          # never suppresses the liveness signal; `set` omits -e for the same reason.
+          # Slice-level cgroup metrics are deliberately NOT emitted here: the
+          # classifier slice cgroup exists only while a tick runs, so it is usually
+          # absent at this 5-min cadence.
           "cat > /usr/local/bin/filings-host-heartbeat-tick <<'TICK_EOF'",
           "#!/bin/bash",
-          "set -euo pipefail",
-          "exec aws cloudwatch put-metric-data --namespace filings-watcher --metric-name HostHeartbeat --value 1 --region ${var.aws_region}",
+          "set -uo pipefail",
+          "aws cloudwatch put-metric-data --namespace filings-watcher --metric-name HostHeartbeat --value 1 --region ${var.aws_region}",
+          "MEM_AVAIL_PCT=$(awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{if(t>0) printf \"%.2f\", a/t*100; else print \"0\"}' /proc/meminfo)",
+          "SWAP_USED_PCT=$(awk '/^SwapTotal:/{t=$2} /^SwapFree:/{f=$2} END{if(t>0) printf \"%.2f\", (t-f)/t*100; else print \"0\"}' /proc/meminfo)",
+          "aws cloudwatch put-metric-data --namespace filings-watcher --metric-name MemAvailablePercent --unit Percent --value \"$MEM_AVAIL_PCT\" --region ${var.aws_region} || true",
+          "aws cloudwatch put-metric-data --namespace filings-watcher --metric-name SwapUsedPercent --unit Percent --value \"$SWAP_USED_PCT\" --region ${var.aws_region} || true",
           "TICK_EOF",
           "chmod 0755 /usr/local/bin/filings-host-heartbeat-tick",
           "chown root:root /usr/local/bin/filings-host-heartbeat-tick",

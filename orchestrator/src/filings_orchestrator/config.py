@@ -45,6 +45,11 @@ class Config:
     # but at or above the warn level, a structured cost_warning event fires.
     anthropic_daily_cost_cap_usd: float
     anthropic_daily_cost_warn_usd: float
+    # Back-pressure: max new filings classified per ingest tick. A backlog
+    # (e.g. after an outage) drains as a bounded stream across ticks rather than
+    # in one long invocation that risks the 12-min systemd TimeoutStartSec. The
+    # filings-PK dedup carries forward progress between ticks. See ADR 0035.
+    max_filings_per_tick: int
 
 
 _loaded = False
@@ -104,6 +109,25 @@ def get_config_float(name: str, default: float) -> float:
         raise MissingConfigError(f"config {name} must be a number, got {raw!r}") from e
 
 
+def get_config_int(name: str, default: int) -> int:
+    """Read a positive int from the environment, falling back to `default`.
+
+    Malformed or non-positive values raise MissingConfigError so an operator
+    typo is loud rather than silently stalling ingestion or reverting to default.
+    """
+    _ensure_dotenv_loaded()
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError as e:
+        raise MissingConfigError(f"config {name} must be an integer, got {raw!r}") from e
+    if value < 1:
+        raise MissingConfigError(f"config {name} must be >= 1, got {value}")
+    return value
+
+
 def load_config() -> Config:
     """Load the full Config object. Use this at process startup."""
     import os
@@ -126,4 +150,8 @@ def load_config() -> Config:
         anthropic_daily_cost_warn_usd=get_config_float(
             "ANTHROPIC_DAILY_COST_WARN_USD", default_cost_warn_usd
         ),
+        # Conservative starting batch: ~10 filings per 30s atom tick (~20/min)
+        # comfortably clears a normal backlog while keeping a tick well under the
+        # 12-min timeout. Operator-tunable via MAX_FILINGS_PER_TICK per ADR 0012.
+        max_filings_per_tick=get_config_int("MAX_FILINGS_PER_TICK", 10),
     )

@@ -182,3 +182,39 @@ resource "aws_cloudwatch_metric_alarm" "classifier_oom_killed" {
     Name = "filings-watcher-classifier-oom-killed"
   }
 }
+
+# The public site is failing its external health check (ADR 0036). Route 53 probes
+# https://filingsradar.com/health from outside AWS (see route53.tf) and publishes
+# HealthCheckStatus — 1 healthy / 0 unhealthy, already debounced by the check's
+# failure_threshold. This pages when the SITE is down even if the box looks fine: a
+# web-service crash-loop, panic, OOM, expired cert, or DNS failure — the gap the
+# host-heartbeat and status-check alarms cannot see. Route 53 health-check metrics
+# live in us-east-1 (our region), so this alarm reads them directly.
+#
+# treat_missing_data = notBreaching here (unlike the heartbeat alarms): the real
+# signal is a PRESENT HealthCheckStatus=0 from an AWS-managed continuous metric, not
+# an absent one — so breaching would only add a transient false page at create time
+# for no real benefit. (The heartbeats use breaching because there the ABSENCE of a
+# box-emitted metric is itself the signal.)
+resource "aws_cloudwatch_metric_alarm" "site_unhealthy" {
+  alarm_name        = "filings-watcher-site-unhealthy"
+  alarm_description = "filingsradar.com/health is failing Route 53's external checkers: the public web service is down (crash-loop, panic, OOM, expired cert, or DNS/host failure) — even if the host itself looks healthy."
+
+  namespace   = "AWS/Route53"
+  metric_name = "HealthCheckStatus"
+  dimensions  = { HealthCheckId = aws_route53_health_check.site.id }
+  statistic   = "Minimum"
+  period      = 60
+
+  comparison_operator = "LessThanThreshold"
+  threshold           = 1
+  evaluation_periods  = 1
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = [aws_sns_topic.alarms.arn]
+  ok_actions    = [aws_sns_topic.alarms.arn]
+
+  tags = {
+    Name = "filings-watcher-site-unhealthy"
+  }
+}

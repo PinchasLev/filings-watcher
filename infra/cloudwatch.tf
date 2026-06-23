@@ -152,3 +152,33 @@ resource "aws_cloudwatch_metric_alarm" "host_memory_low" {
     Name = "filings-watcher-host-memory-low"
   }
 }
+
+# A classifier tick was OOM-killed at its 2 GB slice cap (ADR 0035). MemorySwapMax=0
+# means a tick exceeding 2 GB is SIGKILLed inside its cgroup — contained (the host
+# never wedges) and the timer re-fires — but the SIGKILL bypasses the orchestrator's
+# own alerting (ADR 0031), so without this it would be journald-only. The classifier
+# services' OnFailure= handler emits ClassifierOOMKill=1 per kill (see
+# ssm_install_orchestrate_timer.tf); the metric's sum over time is the kill frequency.
+# Kills should be ~never, so any kill pages. treat_missing_data = notBreaching: no
+# kills -> no data -> OK.
+resource "aws_cloudwatch_metric_alarm" "classifier_oom_killed" {
+  alarm_name        = "filings-watcher-classifier-oom-killed"
+  alarm_description = "A classifier tick was OOM-killed at the 2 GB slice cap. Contained (the host is fine and the timer re-fires), but a recurring kill means a filing exceeds the cap and will keep being retried without dead-lettering — investigate the filing and its size."
+
+  namespace   = "filings-watcher"
+  metric_name = "ClassifierOOMKill"
+  statistic   = "Sum"
+  period      = 300
+
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 1
+  evaluation_periods  = 1
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = [aws_sns_topic.alarms.arn]
+  ok_actions    = [aws_sns_topic.alarms.arn]
+
+  tags = {
+    Name = "filings-watcher-classifier-oom-killed"
+  }
+}

@@ -244,6 +244,26 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "TICK_EOF",
           "chmod 0755 /usr/local/bin/filings-host-heartbeat-tick",
           "chown root:root /usr/local/bin/filings-host-heartbeat-tick",
+          # --- Classifier OOM-kill notifier wrapper (OnFailure handler, ADR 0035) ---
+          # Invoked by filings-oom-notify@.service when a classifier tick enters
+          # 'failed'. Records a ClassifierOOMKill metric ONLY when systemd reports the
+          # failure was a cgroup OOM-kill at the 2G slice cap (Result=oom-kill; systemd
+          # >= 243). A SIGKILL bypasses the orchestrator's own alerting (ADR 0031) —
+          # that is the gap this fills; ordinary (caught) failures are left to the app.
+          # The metric's sum over time is the kill frequency; the alarm pages per kill.
+          "cat > /usr/local/bin/filings-oom-notify-tick <<'TICK_EOF'",
+          "#!/bin/bash",
+          "set -uo pipefail",
+          "[ \"$#\" -ge 1 ] || exit 0",
+          "UNIT=\"$1\"",
+          "RESULT=$(systemctl show \"$UNIT\" -p Result --value 2>/dev/null)",
+          "if [ \"$RESULT\" = \"oom-kill\" ]; then",
+          "  echo \"classifier tick OOM-killed at the 2G cap: $UNIT\"",
+          "  aws cloudwatch put-metric-data --namespace filings-watcher --metric-name ClassifierOOMKill --value 1 --region ${var.aws_region} || true",
+          "fi",
+          "TICK_EOF",
+          "chmod 0755 /usr/local/bin/filings-oom-notify-tick",
+          "chown root:root /usr/local/bin/filings-oom-notify-tick",
           "install -d -o filings -g filings -m 0755 /var/lib/filings-watcher",
           # --- Classifier resource slice (memory isolation, ADR 0035) ---
           # All Anthropic-classifying ticks (daily-index, atom-feed, reclassify-
@@ -270,6 +290,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "Documentation=https://github.com/PinchasLev/filings-watcher",
           "After=network-online.target",
           "Wants=network-online.target",
+          "OnFailure=filings-oom-notify@%n.service",
           "",
           "[Service]",
           "Type=oneshot",
@@ -307,6 +328,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "Documentation=https://github.com/PinchasLev/filings-watcher",
           "After=network-online.target",
           "Wants=network-online.target",
+          "OnFailure=filings-oom-notify@%n.service",
           "",
           "[Service]",
           "Type=oneshot",
@@ -346,6 +368,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "Documentation=https://github.com/PinchasLev/filings-watcher",
           "After=network-online.target",
           "Wants=network-online.target",
+          "OnFailure=filings-oom-notify@%n.service",
           "",
           "[Service]",
           "Type=oneshot",
@@ -445,6 +468,26 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "[Install]",
           "WantedBy=timers.target",
           "TIMER_EOF",
+          # --- Classifier OOM-kill notifier (OnFailure handler unit, ADR 0035) ---
+          # Templated, started by OnFailure= on the three classifier services. NOT
+          # enabled or timed — instantiated only when a classifier tick fails. %i is
+          # the failed unit name, passed to the wrapper, which acts only on a real
+          # OOM-kill. Runs as root (needs systemctl + the instance-role creds for
+          # put-metric-data), independent of the filings user — like the heartbeat.
+          "cat > /etc/systemd/system/filings-oom-notify@.service <<'SERVICE_EOF'",
+          "[Unit]",
+          "Description=filings-watcher classifier OOM-kill notifier for %i (ADR 0035)",
+          "Documentation=https://github.com/PinchasLev/filings-watcher",
+          "",
+          "[Service]",
+          "Type=oneshot",
+          "ExecStart=/usr/local/bin/filings-oom-notify-tick %i",
+          "StandardOutput=journal",
+          "StandardError=journal",
+          "SyslogIdentifier=filings-oom-notify",
+          "NoNewPrivileges=true",
+          "PrivateTmp=true",
+          "SERVICE_EOF",
           "systemctl daemon-reload",
           "systemctl enable filings-daily-index.timer",
           "systemctl enable filings-atom-feed.timer",

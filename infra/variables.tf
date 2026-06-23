@@ -11,9 +11,9 @@ variable "availability_zone" {
 }
 
 variable "instance_type" {
-  description = "EC2 instance type. Default is t4g.small (ARM Graviton, 2 vCPU, 2 GB RAM)."
+  description = "EC2 instance type. t4g.medium (ARM Graviton, 2 vCPU, 4 GB RAM). Raised from t4g.small (2 GB) after the 2026-06-22 wedge — 2 GB left too little host reserve once 6-K classification load was added (ADR 0035). The classifier-slice cgroup cap is the primary guard; this is the host reserve it draws against."
   type        = string
-  default     = "t4g.small"
+  default     = "t4g.medium"
 }
 
 variable "root_volume_gb" {

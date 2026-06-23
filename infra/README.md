@@ -62,10 +62,12 @@ The host comes up with Tailscale installed but not joined. To join:
 aws ssm start-session --target <instance-id> --region us-east-1
 
 # Inside the SSM session:
-sudo tailscale up --ssh
+sudo tailscale up --ssh --accept-dns=false
 ```
 
-`tailscale up --ssh` prints a URL. Open it on any device already on your tailnet (your laptop's browser is easiest), confirm "Connect," and the host joins. The `--ssh` flag enables Tailscale-mediated SSH so you don't need a public port 22 ever again.
+`tailscale up --ssh --accept-dns=false` prints a URL. Open it on any device already on your tailnet (your laptop's browser is easiest), confirm "Connect," and the host joins. The `--ssh` flag enables Tailscale-mediated SSH so you don't need a public port 22 ever again.
+
+**`--accept-dns=false` is required, not optional.** Without it, Tailscale's MagicDNS overwrites `/etc/resolv.conf` to point at `100.100.100.100`, which on this host does not resolve public names — so the box silently loses its route to the SSM API endpoint, EDGAR, and Anthropic (every tick fails, the SSM agent can't register) while the website still serves. This wedged ingestion on 2026-06-22 after a reboot re-ran `tailscale up` with the default `accept-dns=true`. The box reaches AWS/EDGAR by public DNS and Tailscale by tailnet IPs, so it never needs MagicDNS. If a node is already up with the wrong setting: `sudo tailscale set --accept-dns=false` (persists across reboots). See ADR 0035.
 
 Verify from an operator device on the tailnet:
 

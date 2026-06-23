@@ -273,3 +273,73 @@ def test_scan_atom_feed_exits_when_daily_spend_at_cap(
     assert len(cap_alerts) == 1
     assert cap_alerts[0].severity == "alert"
     assert cap_alerts[0].dedup_key == f"cost_cap:{today_utc}"
+
+
+def test_scan_atom_feed_caps_batch_and_defers_remainder(
+    configured_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Back-pressure (ADR 0035): with MAX_FILINGS_PER_TICK=1 and two new entries,
+    only the oldest is classified this tick; the newer one is deferred — not even
+    fetched — and reported via entries_deferred. Forward progress across ticks is
+    carried by the filings-PK dedup (see the dedup test above)."""
+    monkeypatch.setenv("MAX_FILINGS_PER_TICK", "1")
+    monkeypatch.setattr(
+        "filings_orchestrator.cli._pipeline.classify_filing",
+        _stub_classify_filing,
+    )
+
+    # Inject a second, NEWER 8-K entry into the single-entry fixture. Oldest-first
+    # draining + a batch cap of 1 means the fixture's entry (15:31) is processed and
+    # this one (15:45) is deferred, so only the fixture's index/body are fetched.
+    entry_b = (
+        "<entry>\n"
+        "<title>8-K - EXAMPLE CORP (0001234567) (Filer)</title>\n"
+        '<link rel="alternate" type="text/html" '
+        'href="https://www.sec.gov/Archives/edgar/data/1234567/000123456726000001/'
+        '0001234567-26-000001-index.htm"/>\n'
+        '<summary type="html">\n'
+        " &lt;b&gt;Filed:&lt;/b&gt; 2026-05-15 &lt;b&gt;AccNo:&lt;/b&gt; "
+        "0001234567-26-000001 &lt;b&gt;Size:&lt;/b&gt; 1 MB\n"
+        "&lt;br&gt;Item 8.01: Other Events\n"
+        "</summary>\n"
+        "<updated>2026-05-15T15:45:00-04:00</updated>\n"
+        '<category scheme="https://www.sec.gov/" label="form type" term="8-K"/>\n'
+        "<id>urn:tag:sec.gov,2008:accession-number=0001234567-26-000001</id>\n"
+        "</entry>\n"
+    )
+    two_entry_feed = _ATOM_BODY.replace("</feed>", entry_b + "</feed>")
+
+    with respx.mock(assert_all_called=True) as mock:
+        mock.get(_ATOM_URL).mock(return_value=httpx.Response(200, text=two_entry_feed))
+        mock.get(_ATOM_URL_6K).mock(return_value=httpx.Response(200, text=_ATOM_BODY_EMPTY))
+        # Only the oldest entry (the fixture's) is fetched; the deferred one is not.
+        mock.get(
+            "https://www.sec.gov/Archives/edgar/data/101295/000117184326003455/"
+            "0001171843-26-003455-index.html"
+        ).mock(return_value=httpx.Response(200, text=_FILING_INDEX_HTML))
+        mock.get(
+            "https://www.sec.gov/Archives/edgar/data/101295/000117184326003455/f8k_051426.htm"
+        ).mock(return_value=httpx.Response(200, text=_FILING_BODY_HTML))
+
+        main()
+
+    events = _read_jsonl(capsys.readouterr().out)
+
+    polled = next(e for e in events if e["event"] == "atom_feed_polled")
+    assert polled["entries_total"] == 2
+    assert polled["entries_new"] == 2
+    assert polled["entries_deferred"] == 1
+
+    completed = next(e for e in events if e["event"] == "tick_completed")
+    assert completed["new_filings_count"] == 1
+    assert completed["entries_deferred"] == 1
+    assert completed["errors_count"] == 0
+
+    # Exactly the oldest entry is persisted; the deferred (newer) one is absent —
+    # it will be picked up by the next tick.
+    engine = open_engine(str(configured_env))
+    with engine.begin() as conn:
+        rows = conn.execute(text("SELECT accession_number FROM filings")).fetchall()
+    assert {r[0] for r in rows} == {"0001171843-26-003455"}

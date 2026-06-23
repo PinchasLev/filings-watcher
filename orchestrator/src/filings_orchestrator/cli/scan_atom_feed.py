@@ -134,6 +134,7 @@ def main() -> None:
         new_filings_count = 0
         errors_count = 0
         reduce_errors_count = 0
+        entries_deferred = 0
 
         with EdgarClient(
             user_agent=config.edgar_user_agent,
@@ -149,13 +150,24 @@ def main() -> None:
                 key=lambda e: e.updated_at,
             )
 
+            # Back-pressure (ADR 0035): classify at most max_filings_per_tick this
+            # invocation and defer the rest to the next 30s tick, so a backlog
+            # drains as a bounded stream rather than one long pass that risks the
+            # 12-min TimeoutStartSec SIGTERM. Forward progress is carried by the
+            # filings-PK dedup above — process_one upserts each filing, so a
+            # processed entry is "seen" and not re-offered next tick. Oldest-first
+            # (the sort) drains chronologically.
+            batch = new_entries[: config.max_filings_per_tick]
+            entries_deferred = len(new_entries) - len(batch)
+
             emit(
                 "atom_feed_polled",
                 entries_total=len(entries),
                 entries_new=len(new_entries),
+                entries_deferred=entries_deferred,
             )
 
-            for entry in new_entries:
+            for entry in batch:
                 try:
                     reduce_errors_count += process_one(
                         client=client,
@@ -185,6 +197,7 @@ def main() -> None:
         span.set_attribute("new_filings_count", new_filings_count)
         span.set_attribute("errors_count", errors_count)
         span.set_attribute("reduce_errors_count", reduce_errors_count)
+        span.set_attribute("entries_deferred", entries_deferred)
         emit(
             "tick_completed",
             source="atom_feed",
@@ -192,6 +205,7 @@ def main() -> None:
             new_filings_count=new_filings_count,
             errors_count=errors_count,
             reduce_errors_count=reduce_errors_count,
+            entries_deferred=entries_deferred,
         )
 
 

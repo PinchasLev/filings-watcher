@@ -27,6 +27,7 @@ from filings_orchestrator.classify import (
     domain_for,
 )
 from filings_orchestrator.edgar.document import FilingDocument, ItemSection
+from filings_orchestrator.edgar.form4 import Form4Filing
 from filings_orchestrator.edgar.models import Exhibit, Filing, FilingItem
 
 
@@ -867,6 +868,103 @@ def select_seen_accessions(engine: Engine, accessions: list[str]) -> set[str]:
     with engine.begin() as conn:
         rows = conn.execute(sql, {"accs": accessions}).fetchall()
     return {row[0] for row in rows}
+
+
+def select_seen_insider_accessions(engine: Engine, accessions: list[str]) -> set[str]:
+    """Return the subset of `accessions` already present in insider_transactions.
+
+    Form-4 ingest dedups on the accession PK before fetching/parsing, mirroring
+    `select_seen_accessions` for the filings table. (A Form 4 reporting only
+    derivative transactions persists no rows here and so re-parses on a same-date
+    re-run — cheap, and harmless given idempotent inserts.)
+    """
+    if not accessions:
+        return set()
+    sql = text(
+        "SELECT DISTINCT accession_number FROM insider_transactions WHERE accession_number IN :accs"
+    ).bindparams(bindparam("accs", expanding=True))
+    with engine.begin() as conn:
+        rows = conn.execute(sql, {"accs": accessions}).fetchall()
+    return {row[0] for row in rows}
+
+
+def insert_insider_transactions(
+    engine: Engine, filing: Form4Filing, *, filed_at: str, ingested_at: str
+) -> int:
+    """Insert a parsed Form 4's non-derivative transactions. Idempotent on
+    (accession_number, txn_seq); returns the number of rows newly inserted."""
+    rows = _insider_rows(filing, filed_at=filed_at, ingested_at=ingested_at)
+    if not rows:
+        return 0
+    sql = text(
+        """
+        INSERT OR IGNORE INTO insider_transactions (
+            accession_number, txn_seq, filed_at, period_of_report,
+            issuer_cik, issuer_name, issuer_ticker,
+            owner_cik, owner_name, is_director, is_officer,
+            is_ten_percent_owner, is_other, officer_title,
+            transaction_date, security_title, transaction_code, acquired_disposed,
+            shares, price_per_share, transaction_value, shares_owned_following,
+            direct_or_indirect, is_10b5_1, not_subject_to_section16, ingested_at
+        ) VALUES (
+            :accession_number, :txn_seq, :filed_at, :period_of_report,
+            :issuer_cik, :issuer_name, :issuer_ticker,
+            :owner_cik, :owner_name, :is_director, :is_officer,
+            :is_ten_percent_owner, :is_other, :officer_title,
+            :transaction_date, :security_title, :transaction_code, :acquired_disposed,
+            :shares, :price_per_share, :transaction_value, :shares_owned_following,
+            :direct_or_indirect, :is_10b5_1, :not_subject_to_section16, :ingested_at
+        )
+        """
+    )
+    inserted = 0
+    with engine.begin() as conn:
+        for row in rows:
+            inserted += conn.execute(sql, row).rowcount
+    return inserted
+
+
+def _insider_rows(
+    filing: Form4Filing, *, filed_at: str, ingested_at: str
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for txn in filing.transactions:
+        value = (
+            txn.shares * txn.price_per_share
+            if txn.shares is not None and txn.price_per_share is not None
+            else None
+        )
+        rows.append(
+            {
+                "accession_number": filing.accession_number,
+                "txn_seq": txn.txn_seq,
+                "filed_at": filed_at,
+                "period_of_report": filing.period_of_report,
+                "issuer_cik": filing.issuer_cik,
+                "issuer_name": filing.issuer_name,
+                "issuer_ticker": filing.issuer_ticker,
+                "owner_cik": filing.owner_cik,
+                "owner_name": filing.owner_name,
+                "is_director": 1 if filing.is_director else 0,
+                "is_officer": 1 if filing.is_officer else 0,
+                "is_ten_percent_owner": 1 if filing.is_ten_percent_owner else 0,
+                "is_other": 1 if filing.is_other else 0,
+                "officer_title": filing.officer_title,
+                "transaction_date": txn.transaction_date,
+                "security_title": txn.security_title,
+                "transaction_code": txn.transaction_code,
+                "acquired_disposed": txn.acquired_disposed,
+                "shares": txn.shares,
+                "price_per_share": txn.price_per_share,
+                "transaction_value": value,
+                "shares_owned_following": txn.shares_owned_following,
+                "direct_or_indirect": txn.direct_or_indirect,
+                "is_10b5_1": 1 if filing.is_10b5_1 else 0,
+                "not_subject_to_section16": 1 if filing.not_subject_to_section16 else 0,
+                "ingested_at": ingested_at,
+            }
+        )
+    return rows
 
 
 def daily_cost_usd(engine: Engine, day_utc: str) -> float:

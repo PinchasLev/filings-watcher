@@ -871,21 +871,169 @@ def select_seen_accessions(engine: Engine, accessions: list[str]) -> set[str]:
 
 
 def select_seen_insider_accessions(engine: Engine, accessions: list[str]) -> set[str]:
-    """Return the subset of `accessions` already present in insider_transactions.
+    """Return the subset of `accessions` already processed, per insider_filings.
 
     Form-4 ingest dedups on the accession PK before fetching/parsing, mirroring
-    `select_seen_accessions` for the filings table. (A Form 4 reporting only
-    derivative transactions persists no rows here and so re-parses on a same-date
-    re-run — cheap, and harmless given idempotent inserts.)
+    `select_seen_accessions` for the filings table. The anchor is insider_filings
+    (one row per processed Form 4, written even for option-only or unparseable
+    filings) — NOT insider_transactions, which lacks rows for filings with no
+    non-derivative transactions and would re-fetch them forever. See ADR 0038.
     """
     if not accessions:
         return set()
     sql = text(
-        "SELECT DISTINCT accession_number FROM insider_transactions WHERE accession_number IN :accs"
+        "SELECT accession_number FROM insider_filings WHERE accession_number IN :accs"
     ).bindparams(bindparam("accs", expanding=True))
     with engine.begin() as conn:
         rows = conn.execute(sql, {"accs": accessions}).fetchall()
     return {row[0] for row in rows}
+
+
+def read_form4_cursor(engine: Engine) -> tuple[str, str] | None:
+    """Return the Form-4 ingest cursor as (accession_number, filed_at), or None.
+
+    None means the singleton has never been written — the next tick is the
+    first and should scan only the current ET day (no backfill), mirroring the
+    8-K cursor's first-tick contract.
+    """
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                "SELECT last_accession_number, last_filed_at FROM form4_ingest_cursor WHERE id = 1"
+            )
+        ).fetchone()
+    if row is None:
+        return None
+    return str(row[0]), str(row[1])
+
+
+def advance_form4_cursor(engine: Engine, accession_number: str, filed_at: str) -> None:
+    """Upsert the singleton Form-4 cursor to (accession_number, filed_at).
+
+    Called only after an index date is FULLY ingested (every Form 4 anchored in
+    insider_filings). An aborted tick never reaches the advance, so the next run
+    resumes from the incomplete date and fills the gap. See ADR 0038.
+    """
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO form4_ingest_cursor
+                       (id, last_accession_number, last_filed_at, updated_at)
+                VALUES (1, :accession, :filed_at, :updated_at)
+                ON CONFLICT (id) DO UPDATE SET
+                    last_accession_number = excluded.last_accession_number,
+                    last_filed_at         = excluded.last_filed_at,
+                    updated_at            = excluded.updated_at
+                """
+            ),
+            {
+                "accession": accession_number,
+                "filed_at": filed_at,
+                "updated_at": datetime.now(UTC).isoformat(),
+            },
+        )
+
+
+def insert_insider_filing(
+    engine: Engine,
+    *,
+    accession_number: str,
+    filed_at: str,
+    ingested_at: str,
+    filing: Form4Filing | None,
+    non_derivative_count: int = 0,
+    derivative_count: int = 0,
+) -> None:
+    """Upsert the per-filing envelope row — the Form-4 dedup anchor.
+
+    Written for every PROCESSED Form 4: with `filing` set for a parsed document,
+    or `filing=None` (parsed=0, null issuer/owner) for a fetched-but-unparseable
+    document so it still anchors and is not re-fetched. Idempotent on the
+    accession PK. See ADR 0038.
+    """
+    if filing is not None:
+        row: dict[str, object | None] = {
+            "accession_number": accession_number,
+            "filed_at": filed_at,
+            "period_of_report": filing.period_of_report,
+            "issuer_cik": filing.issuer_cik,
+            "issuer_name": filing.issuer_name,
+            "issuer_ticker": filing.issuer_ticker,
+            "owner_cik": filing.owner_cik,
+            "owner_name": filing.owner_name,
+            "is_director": 1 if filing.is_director else 0,
+            "is_officer": 1 if filing.is_officer else 0,
+            "is_ten_percent_owner": 1 if filing.is_ten_percent_owner else 0,
+            "is_other": 1 if filing.is_other else 0,
+            "officer_title": filing.officer_title,
+            "is_10b5_1": 1 if filing.is_10b5_1 else 0,
+            "not_subject_to_section16": 1 if filing.not_subject_to_section16 else 0,
+            "parsed": 1,
+            "non_derivative_count": non_derivative_count,
+            "derivative_count": derivative_count,
+            "ingested_at": ingested_at,
+        }
+    else:
+        row = {
+            "accession_number": accession_number,
+            "filed_at": filed_at,
+            "period_of_report": None,
+            "issuer_cik": None,
+            "issuer_name": None,
+            "issuer_ticker": None,
+            "owner_cik": None,
+            "owner_name": None,
+            "is_director": 0,
+            "is_officer": 0,
+            "is_ten_percent_owner": 0,
+            "is_other": 0,
+            "officer_title": None,
+            "is_10b5_1": 0,
+            "not_subject_to_section16": 0,
+            "parsed": 0,
+            "non_derivative_count": 0,
+            "derivative_count": 0,
+            "ingested_at": ingested_at,
+        }
+    sql = text(
+        """
+        INSERT INTO insider_filings (
+            accession_number, filed_at, period_of_report,
+            issuer_cik, issuer_name, issuer_ticker, owner_cik, owner_name,
+            is_director, is_officer, is_ten_percent_owner, is_other, officer_title,
+            is_10b5_1, not_subject_to_section16, parsed,
+            non_derivative_count, derivative_count, ingested_at
+        ) VALUES (
+            :accession_number, :filed_at, :period_of_report,
+            :issuer_cik, :issuer_name, :issuer_ticker, :owner_cik, :owner_name,
+            :is_director, :is_officer, :is_ten_percent_owner, :is_other, :officer_title,
+            :is_10b5_1, :not_subject_to_section16, :parsed,
+            :non_derivative_count, :derivative_count, :ingested_at
+        )
+        ON CONFLICT (accession_number) DO UPDATE SET
+            filed_at                 = excluded.filed_at,
+            period_of_report         = excluded.period_of_report,
+            issuer_cik               = excluded.issuer_cik,
+            issuer_name              = excluded.issuer_name,
+            issuer_ticker            = excluded.issuer_ticker,
+            owner_cik                = excluded.owner_cik,
+            owner_name               = excluded.owner_name,
+            is_director              = excluded.is_director,
+            is_officer               = excluded.is_officer,
+            is_ten_percent_owner     = excluded.is_ten_percent_owner,
+            is_other                 = excluded.is_other,
+            officer_title            = excluded.officer_title,
+            is_10b5_1                = excluded.is_10b5_1,
+            not_subject_to_section16 = excluded.not_subject_to_section16,
+            parsed                   = excluded.parsed,
+            non_derivative_count     = excluded.non_derivative_count,
+            derivative_count         = excluded.derivative_count,
+            ingested_at              = excluded.ingested_at
+        """
+    )
+    with engine.begin() as conn:
+        conn.execute(sql, row)
 
 
 def insert_insider_transactions(

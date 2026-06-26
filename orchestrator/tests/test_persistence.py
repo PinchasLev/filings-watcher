@@ -157,6 +157,7 @@ def test_apply_migrations_creates_tables_and_records_version() -> None:
         "010_taxonomy_snapshots",
         "011_classifications_append_only",
         "012_insider_transactions",
+        "013_insider_filings_and_cursor",
     ]
 
     with engine.begin() as conn:
@@ -179,6 +180,8 @@ def test_apply_migrations_creates_tables_and_records_version() -> None:
         "taxonomy_leaves",
         "schema_versions",
         "insider_transactions",
+        "insider_filings",
+        "form4_ingest_cursor",
     }.issubset(tables)
 
 

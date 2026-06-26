@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<ownershipDocument>
+    <schemaVersion>X0609</schemaVersion>
+    <documentType>4</documentType>
+    <periodOfReport>2026-06-26</periodOfReport>
+    <issuer>
+        <issuerCik>0000000789</issuerCik>
+        <issuerName>OPTION CO</issuerName>
+        <issuerTradingSymbol>OPT</issuerTradingSymbol>
+    </issuer>
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0000000999</rptOwnerCik>
+            <rptOwnerName>ROE RICHARD</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerRelationship>
+            <isOfficer>1</isOfficer>
+            <officerTitle>Chief Financial Officer</officerTitle>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+    <aff10b5One>0</aff10b5One>
+    <notSubjectToSection16>0</notSubjectToSection16>
+    <derivativeTable>
+        <derivativeTransaction>
+            <securityTitle>
+                <value>Employee Stock Option (Right to Buy)</value>
+            </securityTitle>
+            <transactionDate>
+                <value>2026-06-26</value>
+            </transactionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>A</transactionCode>
+            </transactionCoding>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>5000</value>
+                </transactionShares>
+                <transactionAcquiredDisposedCode>
+                    <value>A</value>
+                </transactionAcquiredDisposedCode>
+            </transactionAmounts>
+        </derivativeTransaction>
+    </derivativeTable>
+</ownershipDocument>

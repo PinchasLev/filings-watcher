@@ -55,6 +55,7 @@ from filings_orchestrator.otel_setup import setup_otel
 from filings_orchestrator.persistence import open_engine
 from filings_orchestrator.persistence.repository import (
     advance_form4_cursor,
+    insert_insider_derivative_transactions,
     insert_insider_filing,
     insert_insider_transactions,
     read_form4_cursor,
@@ -140,6 +141,7 @@ def main() -> None:
 
         filings_count = 0
         transactions_count = 0
+        derivative_transactions_count = 0
         skipped = 0
         errors_count = 0
         total_deferred = 0
@@ -217,6 +219,9 @@ def main() -> None:
                         transactions_count += insert_insider_transactions(
                             engine, filing, filed_at=entry.filed_at, ingested_at=ingested_at
                         )
+                        derivative_transactions_count += insert_insider_derivative_transactions(
+                            engine, filing, filed_at=entry.filed_at, ingested_at=ingested_at
+                        )
                         insert_insider_filing(
                             engine,
                             accession_number=entry.accession_number,
@@ -224,6 +229,7 @@ def main() -> None:
                             ingested_at=ingested_at,
                             filing=filing,
                             non_derivative_count=len(filing.transactions),
+                            derivative_count=len(filing.derivative_transactions),
                         )
                         filings_count += 1
                     except Exception as exc:
@@ -278,6 +284,7 @@ def main() -> None:
             dates_completed=dates_completed,
             filings_count=filings_count,
             transactions_count=transactions_count,
+            derivative_transactions_count=derivative_transactions_count,
             skipped=skipped,
             errors_count=errors_count,
             entries_deferred=total_deferred,

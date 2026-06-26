@@ -160,16 +160,27 @@ def test_scan_form4_option_only_filing_is_anchored(
         mock.get(_INDEX_URL_0626).mock(return_value=httpx.Response(200, text=idx))
         mock.get(sub_url).mock(return_value=httpx.Response(200, text=_OPTIONONLY))
         main()
-    capsys.readouterr()
+
+    completed = _event(_read_jsonl(capsys.readouterr().out), "tick_completed")
+    assert completed["transactions_count"] == 0
+    assert completed["derivative_transactions_count"] == 1
 
     engine = open_engine(str(configured_env))
     with engine.begin() as conn:
         txns = conn.execute(text("SELECT COUNT(*) FROM insider_transactions")).scalar()
+        deriv = conn.execute(
+            text(
+                "SELECT transaction_code, conversion_exercise_price, expiration_date, "
+                "underlying_shares FROM insider_derivative_transactions"
+            )
+        ).fetchone()
         env = conn.execute(
-            text("SELECT parsed, non_derivative_count FROM insider_filings")
+            text("SELECT parsed, non_derivative_count, derivative_count FROM insider_filings")
         ).fetchone()
     assert txns == 0  # no non-derivative transactions stored
-    assert env is not None and env[0] == 1 and env[1] == 0  # but anchored
+    assert deriv is not None and deriv[0] == "A" and deriv[1] == 15.5
+    assert deriv[2] == "2036-06-26" and deriv[3] == 5000.0
+    assert env is not None and env[0] == 1 and env[1] == 0 and env[2] == 1  # anchored, 1 deriv
 
     # Re-run: anchored → no submission fetch.
     with respx.mock(assert_all_called=True) as mock:

@@ -25,6 +25,9 @@
             <securityTitle>
                 <value>Employee Stock Option (Right to Buy)</value>
             </securityTitle>
+            <conversionOrExercisePrice>
+                <value>15.50</value>
+            </conversionOrExercisePrice>
             <transactionDate>
                 <value>2026-06-26</value>
             </transactionDate>
@@ -36,10 +39,37 @@
                 <transactionShares>
                     <value>5000</value>
                 </transactionShares>
+                <transactionPricePerShare>
+                    <value>0.00</value>
+                </transactionPricePerShare>
                 <transactionAcquiredDisposedCode>
                     <value>A</value>
                 </transactionAcquiredDisposedCode>
             </transactionAmounts>
+            <exerciseDate>
+                <value>2027-06-26</value>
+            </exerciseDate>
+            <expirationDate>
+                <value>2036-06-26</value>
+            </expirationDate>
+            <underlyingSecurity>
+                <underlyingSecurityTitle>
+                    <value>Common Stock</value>
+                </underlyingSecurityTitle>
+                <underlyingSecurityShares>
+                    <value>5000</value>
+                </underlyingSecurityShares>
+            </underlyingSecurity>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>5000</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>D</value>
+                </directOrIndirectOwnership>
+            </ownershipNature>
         </derivativeTransaction>
     </derivativeTable>
 </ownershipDocument>

@@ -8,8 +8,10 @@ contextualizes against the already-classified event layer, in a later join).
 The XML wraps "footnotable" leaf values in a `<value>` element
 (`<transactionShares><value>1000</value></transactionShares>`) while plain leaves
 hold text directly (`<transactionCode>P</transactionCode>`); `_text` handles both.
-Confirmed against real filings 2026-06-25. Non-derivative transactions only; the
-derivative (option) table is deferred.
+Confirmed against real filings 2026-06-25. Both the non-derivative table (common
+stock) and the derivative table (options, warrants, convertibles) are parsed —
+stored separately, since the derivative table carries strike/exercise/expiration
+and an underlying security. See ADR 0039.
 """
 
 from __future__ import annotations
@@ -40,6 +42,31 @@ class InsiderTransaction(BaseModel):
     direct_or_indirect: str | None  # "D" or "I"
 
 
+class DerivativeTransaction(BaseModel):
+    """One derivative transaction line from a Form 4 (option/warrant/convertible).
+
+    Carries the derivative-specific fields the non-derivative table lacks:
+    the strike (`conversion_exercise_price`), the exercise/expiration window, and
+    the underlying security. `shares` is the number of derivative securities;
+    `underlying_shares` is the count of the underlying they convert into.
+    """
+
+    txn_seq: int
+    security_title: str | None
+    conversion_exercise_price: float | None
+    transaction_date: str | None
+    transaction_code: str | None  # A=grant, M=exercise/conversion, etc.
+    acquired_disposed: str | None  # "A" or "D"
+    shares: float | None
+    price_per_share: float | None
+    exercise_date: str | None
+    expiration_date: str | None
+    underlying_security_title: str | None
+    underlying_shares: float | None
+    shares_owned_following: float | None
+    direct_or_indirect: str | None  # "D" or "I"
+
+
 class Form4Filing(BaseModel):
     """A parsed Form 4: issuer, reporting owner + role, and its transactions."""
 
@@ -58,6 +85,7 @@ class Form4Filing(BaseModel):
     is_10b5_1: bool
     not_subject_to_section16: bool
     transactions: list[InsiderTransaction]
+    derivative_transactions: list[DerivativeTransaction]
 
 
 def submission_url(submission_path: str) -> str:
@@ -164,6 +192,33 @@ def parse_form4(submission_text: str, accession_number: str) -> Form4Filing | No
                 )
             )
 
+    derivative_transactions: list[DerivativeTransaction] = []
+    deriv_table = root.find("derivativeTable")
+    if deriv_table is not None:
+        for seq, txn in enumerate(deriv_table.findall("derivativeTransaction")):
+            amounts = txn.find("transactionAmounts")
+            post = txn.find("postTransactionAmounts")
+            nature = txn.find("ownershipNature")
+            underlying = txn.find("underlyingSecurity")
+            derivative_transactions.append(
+                DerivativeTransaction(
+                    txn_seq=seq,
+                    security_title=_text(txn, "securityTitle"),
+                    conversion_exercise_price=_num(txn, "conversionOrExercisePrice"),
+                    transaction_date=_text(txn, "transactionDate"),
+                    transaction_code=_text(txn, "transactionCoding/transactionCode"),
+                    acquired_disposed=_text(amounts, "transactionAcquiredDisposedCode"),
+                    shares=_num(amounts, "transactionShares"),
+                    price_per_share=_num(amounts, "transactionPricePerShare"),
+                    exercise_date=_text(txn, "exerciseDate"),
+                    expiration_date=_text(txn, "expirationDate"),
+                    underlying_security_title=_text(underlying, "underlyingSecurityTitle"),
+                    underlying_shares=_num(underlying, "underlyingSecurityShares"),
+                    shares_owned_following=_num(post, "sharesOwnedFollowingTransaction"),
+                    direct_or_indirect=_text(nature, "directOrIndirectOwnership"),
+                )
+            )
+
     return Form4Filing(
         accession_number=accession_number,
         period_of_report=_text(root, "periodOfReport"),
@@ -180,4 +235,5 @@ def parse_form4(submission_text: str, accession_number: str) -> Form4Filing | No
         is_10b5_1=_flag(root, "aff10b5One"),
         not_subject_to_section16=_flag(root, "notSubjectToSection16"),
         transactions=transactions,
+        derivative_transactions=derivative_transactions,
     )

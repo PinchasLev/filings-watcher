@@ -12,6 +12,7 @@ from filings_orchestrator.edgar.form4 import (
 
 FIXTURES = Path(__file__).parent / "fixtures"
 _OWNERSHIP = (FIXTURES / "form4_ownership.xml").read_text()
+_OPTIONONLY = (FIXTURES / "form4_optiononly.xml").read_text()
 _ACCESSION = "0001234567-26-000001"
 
 
@@ -55,6 +56,33 @@ def test_parse_form4_extracts_nonderivative_transactions() -> None:
     assert sell.acquired_disposed == "D"
     assert sell.shares == 200.0
     assert sell.price_per_share == 12.5
+
+
+def test_parse_form4_ownership_has_no_derivatives() -> None:
+    f = parse_form4(_OWNERSHIP, _ACCESSION)
+    assert f is not None
+    assert f.derivative_transactions == []
+
+
+def test_parse_form4_extracts_derivative_transactions() -> None:
+    f = parse_form4(_OPTIONONLY, _ACCESSION)
+    assert f is not None
+    # Option-only filing: nothing in the non-derivative table, one derivative line.
+    assert f.transactions == []
+    assert len(f.derivative_transactions) == 1
+    d = f.derivative_transactions[0]
+    assert d.txn_seq == 0
+    assert d.security_title == "Employee Stock Option (Right to Buy)"
+    assert d.conversion_exercise_price == 15.5
+    assert d.transaction_code == "A"  # grant
+    assert d.acquired_disposed == "A"
+    assert d.shares == 5000.0
+    assert d.price_per_share == 0.0
+    assert d.exercise_date == "2027-06-26"
+    assert d.expiration_date == "2036-06-26"
+    assert d.underlying_security_title == "Common Stock"
+    assert d.underlying_shares == 5000.0
+    assert d.direct_or_indirect == "D"
 
 
 def test_parse_form4_returns_none_without_ownership_block() -> None:

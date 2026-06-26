@@ -1,13 +1,14 @@
-# SSM document that installs the periodic ingest under systemd: five
-# wrapper scripts, five oneshot service units, five timers, and a shared
-# classifier resource slice (ADR 0035) — the
-# Atom feed (ADR 0029, near-real-time), the daily-index reconciliation
-# backstop (ADR 0021, evening cluster per ADR 0029), the classify
+# SSM document that installs the periodic ingest under systemd: six
+# wrapper scripts, six timer-driven oneshot service units (plus an OnFailure
+# OOM-notify handler), six timers, and a shared classifier resource slice
+# (ADR 0035) — the Atom feed (ADR 0029, near-real-time), the daily-index
+# reconciliation backstop (ADR 0021, evening cluster per ADR 0029), the classify
 # reconciler that heals orphaned filings (ADR 0030), the alarm drainer
-# that delivers queued alerts to Discord (ADR 0031), and the host
+# that delivers queued alerts to Discord (ADR 0031), the host
 # heartbeat that feeds the external CloudWatch dead-man's-switch (ADR
-# 0031). The operator runs this once per host (e.g., after the first
-# deploy on a new instance).
+# 0031), and the Form-4 insider-transaction ingest (ADR 0037, evening cluster).
+# The operator runs this once per host (e.g., after the first deploy on a new
+# instance).
 #
 # Why an SSM document rather than user_data: both timers depend on the
 # orchestrator release tree being present on disk
@@ -74,7 +75,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
 
   content = jsonencode({
     schemaVersion = "2.2"
-    description   = "Install + enable the systemd timers for scan-atom-feed (30s), scan-daily-index (evening cluster), reclassify-orphans (20m reconciler), alarm-drain (2m alert delivery), and host-heartbeat (5m dead-man's-switch)"
+    description   = "Install + enable the systemd timers for scan-atom-feed (30s), scan-daily-index (evening cluster), reclassify-orphans (20m reconciler), alarm-drain (2m alert delivery), host-heartbeat (5m dead-man's-switch), and scan-form4 (evening insider ingest)"
     mainSteps = [{
       action = "aws:runShellScript"
       name   = "install"
@@ -264,6 +265,27 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "TICK_EOF",
           "chmod 0755 /usr/local/bin/filings-oom-notify-tick",
           "chown root:root /usr/local/bin/filings-oom-notify-tick",
+          # --- Form-4 (insider) wrapper ---
+          # One Form-4 daily-index ingest invocation (ADR 0037). Unlike the classify
+          # wrappers it needs NO Anthropic/LangSmith credential and NO cost cap — the
+          # parse is deterministic and LLM-free. Only the EDGAR user agent (polite
+          # fetching) + the DB path + OTel. Invoked by filings-scan-form4.service.
+          "cat > /usr/local/bin/filings-scan-form4-tick <<'TICK_EOF'",
+          "#!/bin/bash",
+          "set -euo pipefail",
+          "EDGAR_USER_AGENT=$(aws ssm get-parameter --name /filings-watcher/edgar-user-agent --with-decryption --query Parameter.Value --output text --region ${var.aws_region})",
+          "export EDGAR_USER_AGENT",
+          "export FILINGS_DB_PATH=/var/lib/filings-watcher/filings.db",
+          "RELEASE_SHA=$(basename $(readlink -f /opt/filings-watcher/current))",
+          "export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317",
+          "export OTEL_EXPORTER_OTLP_PROTOCOL=grpc",
+          "export OTEL_SERVICE_NAME=filings-orchestrator",
+          "export OTEL_RESOURCE_ATTRIBUTES=service.namespace=filings-watcher,service.version=$RELEASE_SHA",
+          "cd /opt/filings-watcher/current/orchestrator",
+          "exec /home/filings/.local/bin/uv run --no-sync scan-form4",
+          "TICK_EOF",
+          "chmod 0755 /usr/local/bin/filings-scan-form4-tick",
+          "chown root:root /usr/local/bin/filings-scan-form4-tick",
           "install -d -o filings -g filings -m 0755 /var/lib/filings-watcher",
           # --- Classifier resource slice (memory isolation, ADR 0035) ---
           # All Anthropic-classifying ticks (daily-index, atom-feed, reclassify-
@@ -316,6 +338,46 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "OnCalendar=*-*-* 22:30:00 America/New_York",
           "OnCalendar=*-*-* 22:45:00 America/New_York",
           "OnCalendar=*-*-* 23:00:00 America/New_York",
+          "Persistent=true",
+          "",
+          "[Install]",
+          "WantedBy=timers.target",
+          "TIMER_EOF",
+          # --- Form-4 (insider) service + timer ---
+          # ADR 0037: ingest Form 4 from the daily index in the evening cluster (after
+          # EDGAR publishes ~10 PM ET), staggered off the daily-index reconciler to
+          # avoid contending on EDGAR + the DB. NOT a classifier — no LLM, so no
+          # filings-classify.slice and no OOM handler. TimeoutStartSec=15m covers a
+          # full day (~1000 Form 4s) of polite fetch+parse.
+          "cat > /etc/systemd/system/filings-scan-form4.service <<'SERVICE_EOF'",
+          "[Unit]",
+          "Description=filings-watcher Form-4 insider-transaction ingest (one invocation)",
+          "Documentation=https://github.com/PinchasLev/filings-watcher",
+          "After=network-online.target",
+          "Wants=network-online.target",
+          "",
+          "[Service]",
+          "Type=oneshot",
+          "User=filings",
+          "Group=filings",
+          "TimeoutStartSec=15m",
+          "ExecStart=/usr/bin/flock -n --conflict-exit-code=0 /var/lib/filings-watcher/scan-form4.lock /usr/local/bin/filings-scan-form4-tick",
+          "StandardOutput=journal",
+          "StandardError=journal",
+          "SyslogIdentifier=filings-scan-form4",
+          "NoNewPrivileges=true",
+          "PrivateTmp=true",
+          "SERVICE_EOF",
+          "cat > /etc/systemd/system/filings-scan-form4.timer <<'TIMER_EOF'",
+          "[Unit]",
+          "Description=Evening cluster invocations of the Form-4 insider ingest (ADR 0037)",
+          "Documentation=https://github.com/PinchasLev/filings-watcher",
+          "",
+          "[Timer]",
+          "Unit=filings-scan-form4.service",
+          "OnCalendar=*-*-* 22:20:00 America/New_York",
+          "OnCalendar=*-*-* 22:50:00 America/New_York",
+          "OnCalendar=*-*-* 23:20:00 America/New_York",
           "Persistent=true",
           "",
           "[Install]",
@@ -494,6 +556,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "systemctl enable filings-reclassify-orphans.timer",
           "systemctl enable filings-alarm-drain.timer",
           "systemctl enable filings-host-heartbeat.timer",
+          "systemctl enable filings-scan-form4.timer",
           # Fire one Atom invocation now so OnUnitInactiveSec has a
           # reference timestamp; subsequent invocations are scheduled 30
           # seconds after each one exits. systemctl start --no-block
@@ -519,12 +582,15 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "systemctl start filings-reclassify-orphans.timer",
           "systemctl start filings-alarm-drain.timer",
           "systemctl start filings-host-heartbeat.timer",
+          # filings-scan-form4.timer is OnCalendar (evening cluster) — no priming needed.
+          "systemctl start filings-scan-form4.timer",
           "systemctl status --no-pager filings-daily-index.timer || true",
           "systemctl status --no-pager filings-atom-feed.timer || true",
           "systemctl status --no-pager filings-reclassify-orphans.timer || true",
           "systemctl status --no-pager filings-alarm-drain.timer || true",
           "systemctl status --no-pager filings-host-heartbeat.timer || true",
-          "echo \"install + enable of filings-daily-index.timer, filings-atom-feed.timer, filings-reclassify-orphans.timer, filings-alarm-drain.timer, and filings-host-heartbeat.timer complete\"",
+          "systemctl status --no-pager filings-scan-form4.timer || true",
+          "echo \"install + enable of filings-daily-index.timer, filings-atom-feed.timer, filings-reclassify-orphans.timer, filings-alarm-drain.timer, filings-host-heartbeat.timer, and filings-scan-form4.timer complete\"",
         ]
       }
     }]

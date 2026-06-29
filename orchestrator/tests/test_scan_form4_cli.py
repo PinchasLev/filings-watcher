@@ -207,7 +207,8 @@ def test_scan_form4_cursor_first_tick_scans_today_and_advances(
         main()
 
     events = _read_jsonl(capsys.readouterr().out)
-    assert _event(events, "tick_started")["dates_to_scan"] == ["2026-06-26"]
+    assert _event(events, "tick_started")["dates_to_scan"] == 1
+    assert _event(events, "tick_started")["backfill"] is False
     assert _event(events, "cursor_advanced")["filed_at"] == "2026-06-26"
     engine = open_engine(str(configured_env))
     with engine.begin() as conn:
@@ -258,3 +259,54 @@ def test_scan_form4_resumes_after_budget_defer(
     with engine.begin() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM insider_filings")).scalar() == 2
         assert conn.execute(text("SELECT COUNT(*) FROM form4_ingest_cursor")).scalar() == 1
+
+
+def test_scan_form4_backfill_range_newest_first_no_cursor(
+    configured_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--since/--until ingests the whole range newest-first, uncapped, without
+    touching the cursor — the backfill driver."""
+    acc_a, acc_b = "0002000000-26-000025", "0002000000-26-000026"
+    sub_a = f"https://www.sec.gov/Archives/edgar/data/200/{acc_a}.txt"
+    sub_b = f"https://www.sec.gov/Archives/edgar/data/200/{acc_b}.txt"
+    idx25 = _master_idx(f"200|BACKFILL CO|4|2026-06-25|edgar/data/200/{acc_a}.txt")
+    idx26 = _master_idx(f"200|BACKFILL CO|4|2026-06-26|edgar/data/200/{acc_b}.txt")
+    monkeypatch.setattr(
+        sys, "argv", ["scan-form4", "--since", "2026-06-25", "--until", "2026-06-26", "--rate", "5"]
+    )
+
+    with respx.mock(assert_all_called=True) as mock:
+        mock.get(_INDEX_URL_0625).mock(return_value=httpx.Response(200, text=idx25))
+        mock.get(_INDEX_URL_0626).mock(return_value=httpx.Response(200, text=idx26))
+        mock.get(sub_a).mock(return_value=httpx.Response(200, text=_OWNERSHIP))
+        mock.get(sub_b).mock(return_value=httpx.Response(200, text=_OWNERSHIP))
+        main()
+
+    events = _read_jsonl(capsys.readouterr().out)
+    started = _event(events, "tick_started")
+    assert started["backfill"] is True
+    assert started["rate_per_sec"] == 5
+    assert started["dates_to_scan"] == 2
+    # Newest-first: 06-26 is polled before 06-25.
+    polled = [e["index_date"] for e in events if e["event"] == "form4_index_polled"]
+    assert polled == ["2026-06-26", "2026-06-25"]
+    assert _event(events, "tick_completed")["filings_count"] == 2
+
+    engine = open_engine(str(configured_env))
+    with engine.begin() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM insider_filings")).scalar() == 2
+        # Backfill never touches the cursor.
+        assert conn.execute(text("SELECT COUNT(*) FROM form4_ingest_cursor")).scalar() == 0
+
+
+def test_scan_form4_rejects_date_with_since(
+    configured_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        sys, "argv", ["scan-form4", "--date", "2026-06-26", "--since", "2026-06-01"]
+    )
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 2

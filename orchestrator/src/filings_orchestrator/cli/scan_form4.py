@@ -70,6 +70,8 @@ _FORM = "4"
 # (each is a cheap fetch+parse, no LLM); a larger backlog drains across runs,
 # the cursor only advancing past fully-ingested dates. Tunable via env.
 _DEFAULT_MAX_FORM4_PER_TICK = 1500
+# Effectively unlimited per-run budget for a backfill (which drains the full range).
+_UNCAPPED = 10**12
 
 
 def _parse_filed_at_to_date(filed_at: str) -> date:
@@ -97,6 +99,17 @@ def _dates_to_scan(cursor_filed_at: str | None, today_et: date) -> list[date]:
     return out
 
 
+def _date_range(since: date, until: date) -> list[date]:
+    """All dates in [since, until], newest first — the backfill scan order, so
+    the most recent (most relevant) history lands first if the run is interrupted."""
+    out: list[date] = []
+    current = until
+    while current >= since:
+        out.append(current)
+        current = date.fromordinal(current.toordinal() - 1)
+    return out
+
+
 def main() -> None:
     setup_otel()
     parser = argparse.ArgumentParser(
@@ -107,6 +120,22 @@ def main() -> None:
         "--date",
         help="Ingest only this index date (YYYY-MM-DD, ET); a manual override that "
         "does not read or advance the cursor. Default: cursor-driven scan to today (ET).",
+    )
+    parser.add_argument(
+        "--since",
+        help="Backfill: ingest the whole date range [--since, --until] newest-first, "
+        "uncapped, without reading or advancing the cursor. Requires/pairs with --until.",
+    )
+    parser.add_argument(
+        "--until",
+        help="End of the --since backfill range (YYYY-MM-DD, ET). Defaults to today (ET).",
+    )
+    parser.add_argument(
+        "--rate",
+        type=int,
+        default=_EDGAR_RATE_LIMIT_PER_SEC,
+        help=f"EDGAR requests/sec (default {_EDGAR_RATE_LIMIT_PER_SEC}); raise for a "
+        "one-off backfill (EDGAR's limit is 10).",
     )
     args = parser.parse_args()
 
@@ -121,12 +150,45 @@ def main() -> None:
     today_et = datetime.now(_EASTERN).date()
     engine = open_engine(db_path)
 
-    use_cursor = args.date is None
-    if use_cursor:
+    if args.date is not None and (args.since is not None or args.until is not None):
+        emit(
+            "tick_failed",
+            source="form4",
+            error_class="ValueError",
+            message="--date cannot be combined with --since/--until",
+        )
+        sys.exit(2)
+    if args.until is not None and args.since is None:
+        emit(
+            "tick_failed",
+            source="form4",
+            error_class="ValueError",
+            message="--until requires --since",
+        )
+        sys.exit(2)
+
+    range_mode = args.since is not None
+    if args.since is not None:
+        # Backfill: an explicit date range, newest-first, uncapped, cursor untouched.
+        since = date.fromisoformat(args.since)
+        until = date.fromisoformat(args.until) if args.until else today_et
+        if since > until:
+            emit(
+                "tick_failed",
+                source="form4",
+                error_class="ValueError",
+                message=f"--since {since.isoformat()} is after --until {until.isoformat()}",
+            )
+            sys.exit(2)
+        target_dates = _date_range(since, until)
+        use_cursor = False
+    elif args.date is not None:
+        target_dates = [date.fromisoformat(args.date)]
+        use_cursor = False
+    else:
+        use_cursor = True
         cursor = read_form4_cursor(engine)
         target_dates = _dates_to_scan(cursor[1] if cursor else None, today_et)
-    else:
-        target_dates = [date.fromisoformat(args.date)]
 
     tracer = trace.get_tracer("filings_orchestrator")
     with tracer.start_as_current_span("tick") as span:
@@ -136,7 +198,9 @@ def main() -> None:
             source="form4",
             started_at=started.isoformat(),
             cursor_driven=use_cursor,
-            dates_to_scan=[d.isoformat() for d in target_dates],
+            backfill=range_mode,
+            rate_per_sec=args.rate,
+            dates_to_scan=len(target_dates),
         )
 
         filings_count = 0
@@ -147,12 +211,13 @@ def main() -> None:
         total_deferred = 0
         dates_completed = 0
         today_publication_missing = False
-        budget = max_per_tick
+        # A backfill drains the whole range; the per-tick cap is live-path back-pressure.
+        budget = _UNCAPPED if range_mode else max_per_tick
         ingested_at = datetime.now(UTC).isoformat()
 
         with EdgarClient(
             user_agent=edgar_user_agent,
-            rate_limit_per_second=_EDGAR_RATE_LIMIT_PER_SEC,
+            rate_limit_per_second=args.rate,
         ) as client:
             for target in target_dates:
                 if budget <= 0:

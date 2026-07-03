@@ -138,7 +138,7 @@ type Store interface {
 	CompanyInsiderPulse(ctx context.Context, cik string, windowDays int) (InsiderPulse, error)
 	CompanyInsiderTrades(ctx context.Context, cik string, limit int) ([]InsiderTrade, error)
 	// NotableInsiderActivity backs the /insiders feed: recent cluster buys.
-	NotableInsiderActivity(ctx context.Context, windowDays, limit int) ([]InsiderCluster, error)
+	NotableInsiderActivity(ctx context.Context, windowDays int, minValue float64, limit int) ([]InsiderCluster, error)
 	// Events layer (ADR 0027/0028). Each filing's current view is the wholesale
 	// output of its single greatest run_id — never a per-anchor maximum.
 	MaterialEvents(ctx context.Context, eventType string, limit, offset int) ([]Event, int, error)

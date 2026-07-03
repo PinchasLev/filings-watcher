@@ -16,6 +16,9 @@ import (
 const (
 	notableWindowDays = 30
 	notableFeedLimit  = 60
+	// notableMinValue drops de-minimis clusters (a few hundred dollars of
+	// director-plan buys) so the feed leads with material activity.
+	notableMinValue = 10000.0
 )
 
 var insidersTemplate = template.Must(template.New("layout.html.tmpl").Funcs(templateFuncs).ParseFS(
@@ -30,7 +33,7 @@ type insidersPageData struct {
 
 func handleInsiders(s storer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		clusters, err := s.NotableInsiderActivity(r.Context(), notableWindowDays, notableFeedLimit)
+		clusters, err := s.NotableInsiderActivity(r.Context(), notableWindowDays, notableMinValue, notableFeedLimit)
 		if err != nil {
 			http.Error(w, "query failed", http.StatusInternalServerError)
 			return

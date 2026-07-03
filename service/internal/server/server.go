@@ -29,7 +29,7 @@ type storer interface {
 	CompanyInsiderPulse(ctx context.Context, cik string, windowDays int) (store.InsiderPulse, error)
 	CompanyInsiderTrades(ctx context.Context, cik string, limit int) ([]store.InsiderTrade, error)
 	// NotableInsiderActivity backs the /insiders feed of recent cluster buys.
-	NotableInsiderActivity(ctx context.Context, windowDays, limit int) ([]store.InsiderCluster, error)
+	NotableInsiderActivity(ctx context.Context, windowDays int, minValue float64, limit int) ([]store.InsiderCluster, error)
 	// LiveEvents backs the /live tape: near-real-time material events sorted
 	// by precise EDGAR-side submission time within a rolling window. Implicit
 	// atom-feed-only via the submitted_at IS NOT NULL filter in the query.

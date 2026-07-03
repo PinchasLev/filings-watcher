@@ -160,7 +160,7 @@ func (f *fakeStore) CompanyInsiderTrades(_ context.Context, _ string, _ int) ([]
 	return f.insiderTrades, nil
 }
 
-func (f *fakeStore) NotableInsiderActivity(_ context.Context, _, _ int) ([]store.InsiderCluster, error) {
+func (f *fakeStore) NotableInsiderActivity(_ context.Context, _ int, _ float64, _ int) ([]store.InsiderCluster, error) {
 	return f.notableClusters, nil
 }
 

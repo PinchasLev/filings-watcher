@@ -78,6 +78,23 @@ func TestCompanyInsiderPulseAndTrades(t *testing.T) {
 	}
 }
 
+func TestLookupCIKByTicker_InsiderFallback(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+	// "TST" is absent from cik_tickers (the SEC map) and present only in insider
+	// data via issuer_ticker — the discoverability gap the fallback closes.
+	insertInsiderTxn(t, raw, "accX", "0000042042", "OWNER_X", "XAVIER", "P", 1000, 3)
+	_ = raw.Close()
+	s := openStore(t, dbPath)
+
+	cik, err := s.LookupCIKByTicker(context.Background(), "tst")
+	if err != nil {
+		t.Fatalf("LookupCIKByTicker fallback: %v", err)
+	}
+	if cik != "0000042042" {
+		t.Errorf("cik = %q, want 0000042042 (resolved via insider issuer_ticker)", cik)
+	}
+}
+
 func TestCompanyInsiderPulse_NoData(t *testing.T) {
 	dbPath, raw := freshDBPath(t)
 	_ = raw.Close()

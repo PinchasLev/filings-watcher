@@ -169,6 +169,7 @@
     <nav class="page-nav" aria-label="Sections">
       <a href="/" {{if eq .Nav "latest"}}class="active"{{end}}>Latest</a>
       <a href="/live" {{if eq .Nav "live"}}class="active"{{end}}>Live</a>
+      <a href="/insiders" {{if eq .Nav "insiders"}}class="active"{{end}}>Insiders</a>
     </nav>
     <form class="search" method="get" action="/" role="search">
       <input type="search" name="ticker" placeholder="Search by ticker — e.g. AAPL"

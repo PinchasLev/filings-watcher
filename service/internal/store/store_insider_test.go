@@ -95,6 +95,35 @@ func TestLookupCIKByTicker_InsiderFallback(t *testing.T) {
 	}
 }
 
+func TestNotableInsiderActivity_ClustersOnly(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+	// A cluster: two distinct insiders buying the same issuer, recently.
+	insertInsiderTxn(t, raw, "c1", "0000000111", "OWN_A", "ALICE", "P", 5000, 4)
+	insertInsiderTxn(t, raw, "c2", "0000000111", "OWN_B", "BOB", "P", 7000, 3)
+	// A lone buyer at another issuer — not a cluster, must be excluded.
+	insertInsiderTxn(t, raw, "l1", "0000000222", "OWN_C", "CAROL", "P", 9000, 2)
+	// An old cluster, outside the 30-day window — excluded.
+	insertInsiderTxn(t, raw, "o1", "0000000333", "OWN_D", "DAVE", "P", 1000, 200)
+	insertInsiderTxn(t, raw, "o2", "0000000333", "OWN_E", "EVE", "P", 1000, 201)
+	_ = raw.Close()
+
+	s := openStore(t, dbPath)
+	clusters, err := s.NotableInsiderActivity(context.Background(), 30, 60)
+	if err != nil {
+		t.Fatalf("NotableInsiderActivity: %v", err)
+	}
+	if len(clusters) != 1 {
+		t.Fatalf("clusters = %d, want 1 (only the recent >=2-buyer issuer)", len(clusters))
+	}
+	c := clusters[0]
+	if c.CIK != "0000000111" || c.Buyers != 2 || c.Trades != 2 {
+		t.Errorf("cluster = %+v, want cik 0000000111 / 2 buyers / 2 trades", c)
+	}
+	if c.TotalValue != 12000 {
+		t.Errorf("total value = %v, want 12000", c.TotalValue)
+	}
+}
+
 func TestCompanyInsiderPulse_NoData(t *testing.T) {
 	dbPath, raw := freshDBPath(t)
 	_ = raw.Close()

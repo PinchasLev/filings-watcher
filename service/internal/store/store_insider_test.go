@@ -105,10 +105,13 @@ func TestNotableInsiderActivity_ClustersOnly(t *testing.T) {
 	// An old cluster, outside the 30-day window — excluded.
 	insertInsiderTxn(t, raw, "o1", "0000000333", "OWN_D", "DAVE", "P", 1000, 200)
 	insertInsiderTxn(t, raw, "o2", "0000000333", "OWN_E", "EVE", "P", 1000, 201)
+	// A recent 2-buyer cluster below the dollar floor — excluded.
+	insertInsiderTxn(t, raw, "s1", "0000000444", "OWN_F", "FRANK", "P", 1000, 3)
+	insertInsiderTxn(t, raw, "s2", "0000000444", "OWN_G", "GRETA", "P", 2000, 3)
 	_ = raw.Close()
 
 	s := openStore(t, dbPath)
-	clusters, err := s.NotableInsiderActivity(context.Background(), 30, 60)
+	clusters, err := s.NotableInsiderActivity(context.Background(), 30, 10000, 60)
 	if err != nil {
 		t.Fatalf("NotableInsiderActivity: %v", err)
 	}

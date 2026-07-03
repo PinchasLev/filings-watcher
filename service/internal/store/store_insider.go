@@ -121,10 +121,15 @@ type InsiderCluster struct {
 }
 
 // NotableInsiderActivity returns companies with at least two distinct insiders
-// making open-market buys (code P) within the trailing windowDays, most recent
-// cluster first. This is a "cluster buy" — the one insider pattern that showed
-// even a modest forward edge and the view no raw insider feed assembles.
-func (s *store) NotableInsiderActivity(ctx context.Context, windowDays, limit int) ([]InsiderCluster, error) {
+// making open-market buys (code P) totaling at least minValue within the
+// trailing windowDays. Most recent first, then largest dollar value. The
+// minValue floor drops de-minimis director-plan buys so the feed leads with
+// material clusters rather than the most recent trivial one. This is a "cluster
+// buy" — the one insider pattern that showed even a modest forward edge, and the
+// view no raw insider feed assembles.
+func (s *store) NotableInsiderActivity(
+	ctx context.Context, windowDays int, minValue float64, limit int,
+) ([]InsiderCluster, error) {
 	const q = `
 		SELECT issuer_cik,
 		       COALESCE(MAX(issuer_ticker), ''),
@@ -138,10 +143,12 @@ func (s *store) NotableInsiderActivity(ctx context.Context, windowDays, limit in
 		  AND replace(transaction_date, '-', '') >= strftime('%Y%m%d', 'now', ?)
 		GROUP BY issuer_cik
 		HAVING COUNT(DISTINCT owner_cik) >= 2
-		ORDER BY MAX(replace(transaction_date, '-', '')) DESC, COUNT(DISTINCT owner_cik) DESC
+		   AND SUM(COALESCE(transaction_value, 0)) >= ?
+		ORDER BY MAX(replace(transaction_date, '-', '')) DESC,
+		         SUM(COALESCE(transaction_value, 0)) DESC
 		LIMIT ?
 	`
-	rows, err := s.db.QueryContext(ctx, q, fmt.Sprintf("-%d days", windowDays), limit)
+	rows, err := s.db.QueryContext(ctx, q, fmt.Sprintf("-%d days", windowDays), minValue, limit)
 	if err != nil {
 		return nil, fmt.Errorf("notable insider activity: %w", err)
 	}
@@ -156,6 +163,10 @@ func (s *store) NotableInsiderActivity(ctx context.Context, windowDays, limit in
 		if err := rows.Scan(&c.CIK, &c.Ticker, &c.CompanyName, &c.Buyers, &c.Trades,
 			&c.TotalValue, &first, &last); err != nil {
 			return nil, fmt.Errorf("scan insider cluster: %w", err)
+		}
+		// Some Form 4s report a placeholder symbol; render just the name instead.
+		if c.Ticker == "N/A" || c.Ticker == "NONE" {
+			c.Ticker = ""
 		}
 		c.FirstDate = deref(first)
 		c.LastDate = deref(last)

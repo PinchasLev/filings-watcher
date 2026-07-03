@@ -25,6 +25,9 @@ type storer interface {
 	// filter-chip counts, and the detail page's per-event drill-down.
 	MaterialEvents(ctx context.Context, eventType string, limit, offset int) ([]store.Event, int, error)
 	CompanyEvents(ctx context.Context, cik string, limit, offset int) (*store.Company, []store.Event, int, error)
+	// Insider (Form 4) surfacing on the company page.
+	CompanyInsiderPulse(ctx context.Context, cik string, windowDays int) (store.InsiderPulse, error)
+	CompanyInsiderTrades(ctx context.Context, cik string, limit int) ([]store.InsiderTrade, error)
 	// LiveEvents backs the /live tape: near-real-time material events sorted
 	// by precise EDGAR-side submission time within a rolling window. Implicit
 	// atom-feed-only via the submitted_at IS NOT NULL filter in the query.

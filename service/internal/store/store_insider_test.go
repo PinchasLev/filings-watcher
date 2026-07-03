@@ -1,0 +1,93 @@
+package store_test
+
+import (
+	"context"
+	"database/sql"
+	"testing"
+	"time"
+)
+
+func insertInsiderTxn(
+	t *testing.T, db *sql.DB, accession, cik, owner, name, code string, value float64, daysAgo int,
+) {
+	t.Helper()
+	date := time.Now().AddDate(0, 0, -daysAgo).Format("2006-01-02") // dashed → exercises normalization
+	_, err := db.Exec(
+		`INSERT INTO insider_transactions
+			(accession_number, txn_seq, filed_at, issuer_cik, issuer_ticker, owner_cik, owner_name,
+			 is_officer, officer_title, transaction_date, transaction_code, shares, transaction_value,
+			 is_10b5_1, ingested_at)
+		 VALUES (?, 0, ?, ?, 'TST', ?, ?, 1, 'CEO', ?, ?, 100, ?, 0, '2026-01-01T00:00:00Z')`,
+		accession, date, cik, owner, name, date, code, value,
+	)
+	if err != nil {
+		t.Fatalf("insert insider txn: %v", err)
+	}
+}
+
+func TestCompanyInsiderPulseAndTrades(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+	const cik = "0000000999"
+	insertInsiderTxn(t, raw, "acc1", cik, "OWNER_A", "ALICE", "P", 10000, 5)  // in 30d
+	insertInsiderTxn(t, raw, "acc2", cik, "OWNER_B", "BOB", "P", 20000, 45)   // in 90d only
+	insertInsiderTxn(t, raw, "acc3", cik, "OWNER_C", "CAROL", "S", 5000, 10)  // sell in 30d
+	insertInsiderTxn(t, raw, "acc4", cik, "OWNER_D", "DAVE", "P", 99000, 200) // outside both
+	_ = raw.Close()
+
+	s := openStore(t, dbPath)
+	ctx := context.Background()
+
+	p30, err := s.CompanyInsiderPulse(ctx, cik, 30)
+	if err != nil {
+		t.Fatalf("pulse30: %v", err)
+	}
+	if p30.BuyValue != 10000 || p30.Buyers != 1 || p30.BuyCount != 1 {
+		t.Errorf("pulse30 buys = %v/%d/%d, want 10000/1/1", p30.BuyValue, p30.Buyers, p30.BuyCount)
+	}
+	if p30.SellValue != 5000 || p30.Sellers != 1 || p30.SellCount != 1 {
+		t.Errorf("pulse30 sells = %v/%d/%d, want 5000/1/1", p30.SellValue, p30.Sellers, p30.SellCount)
+	}
+	if !p30.HasActivity() {
+		t.Error("pulse30 HasActivity = false, want true")
+	}
+
+	p90, err := s.CompanyInsiderPulse(ctx, cik, 90)
+	if err != nil {
+		t.Fatalf("pulse90: %v", err)
+	}
+	if p90.BuyValue != 30000 || p90.Buyers != 2 || p90.BuyCount != 2 {
+		t.Errorf("pulse90 buys = %v/%d/%d, want 30000/2/2 (200d-old buy must be excluded)",
+			p90.BuyValue, p90.Buyers, p90.BuyCount)
+	}
+
+	trades, err := s.CompanyInsiderTrades(ctx, cik, 20)
+	if err != nil {
+		t.Fatalf("trades: %v", err)
+	}
+	if len(trades) != 4 {
+		t.Fatalf("trades = %d, want 4 (all codes, all dates)", len(trades))
+	}
+	if trades[0].OwnerName != "ALICE" { // newest first (5 days ago)
+		t.Errorf("first trade owner = %q, want ALICE", trades[0].OwnerName)
+	}
+	if trades[0].Role != "CEO" {
+		t.Errorf("first trade role = %q, want CEO", trades[0].Role)
+	}
+	if trades[0].Value == nil || *trades[0].Value != 10000 {
+		t.Errorf("first trade value = %v, want 10000", trades[0].Value)
+	}
+}
+
+func TestCompanyInsiderPulse_NoData(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+	_ = raw.Close()
+	s := openStore(t, dbPath)
+
+	p, err := s.CompanyInsiderPulse(context.Background(), "0000000000", 30)
+	if err != nil {
+		t.Fatalf("pulse: %v", err)
+	}
+	if p.HasActivity() {
+		t.Errorf("HasActivity = true for a company with no insider rows, want false")
+	}
+}

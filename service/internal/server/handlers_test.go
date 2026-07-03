@@ -49,6 +49,9 @@ type fakeStore struct {
 	companyTotal  int
 	companyErr    error
 
+	insiderPulse  store.InsiderPulse
+	insiderTrades []store.InsiderTrade
+
 	liveEventsResult []store.Event
 	liveEventsTotal  int
 	liveEventsErr    error
@@ -146,6 +149,14 @@ func (f *fakeStore) CompanyEvents(
 	f.companyCalledWith.limit = limit
 	f.companyCalledWith.offset = offset
 	return f.companyResult, f.companyEvents, f.companyTotal, f.companyErr
+}
+
+func (f *fakeStore) CompanyInsiderPulse(_ context.Context, _ string, _ int) (store.InsiderPulse, error) {
+	return f.insiderPulse, nil
+}
+
+func (f *fakeStore) CompanyInsiderTrades(_ context.Context, _ string, _ int) ([]store.InsiderTrade, error) {
+	return f.insiderTrades, nil
 }
 
 func (f *fakeStore) LiveEvents(

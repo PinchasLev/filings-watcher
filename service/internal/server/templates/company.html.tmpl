@@ -16,6 +16,42 @@
   </div>
 </section>
 
+<section class="insider-activity">
+  <h3>Insider activity <small>(SEC Form 4)</small></h3>
+  {{if or .Pulse30.HasActivity .Pulse90.HasActivity .InsiderTrades}}
+    <div class="filing-meta">
+      <span><strong>Last 30 days:</strong></span>
+      <span class="badge">{{.Pulse30.Buyers}} buyer{{if ne .Pulse30.Buyers 1}}s{{end}} bought {{usd .Pulse30.BuyValue}}</span>
+      <span class="badge">{{.Pulse30.Sellers}} seller{{if ne .Pulse30.Sellers 1}}s{{end}} sold {{usd .Pulse30.SellValue}}</span>
+    </div>
+    <div class="filing-meta">
+      <span><strong>Last 90 days:</strong></span>
+      <span>{{.Pulse90.Buyers}} buyer{{if ne .Pulse90.Buyers 1}}s{{end}} bought {{usd .Pulse90.BuyValue}}</span>
+      <span>{{.Pulse90.Sellers}} seller{{if ne .Pulse90.Sellers 1}}s{{end}} sold {{usd .Pulse90.SellValue}}</span>
+    </div>
+    {{if .InsiderTrades}}
+      <table class="insider-trades">
+        <thead><tr><th>Insider</th><th>Role</th><th>Date</th><th>Transaction</th><th>Shares</th><th>Value</th></tr></thead>
+        <tbody>
+          {{range .InsiderTrades}}
+            <tr>
+              <td>{{.OwnerName}}</td>
+              <td>{{.Role}}</td>
+              <td>{{.TransactionDate}}</td>
+              <td>{{txnLabel .Code}}{{if .Is10b51}} <span class="badge">10b5-1</span>{{end}}</td>
+              <td>{{printf "%.0f" .Shares}}</td>
+              <td>{{usdp .Value}}</td>
+            </tr>
+          {{end}}
+        </tbody>
+      </table>
+      <small>Most recent {{len .InsiderTrades}} reported transactions. Open-market buys (P) and sells (S) are the deliberate ones; grants and option exercises are compensation. Not investment advice.</small>
+    {{end}}
+  {{else}}
+    <p>No insider (Form&nbsp;4) transactions on record for this company yet.</p>
+  {{end}}
+</section>
+
 {{if .Events}}
   <section>
     {{range .Events}}

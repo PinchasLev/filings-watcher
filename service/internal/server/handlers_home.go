@@ -44,6 +44,9 @@ var templateFuncs = template.FuncMap{
 	"anchorLabel":   anchorLabel,
 	"edgarURL":      edgarFilingURL,
 	"mul":           func(a, b float64) float64 { return a * b },
+	"usd":           usdCompact,
+	"usdp":          usdCompactPtr,
+	"txnLabel":      insiderTxnLabel,
 	"liveWindowURL": liveWindowURL,
 	"relTime":       relTimeFromISO,
 	// utcDateTime is the server-side fallback for the <time> elements on

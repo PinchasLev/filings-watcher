@@ -133,6 +133,10 @@ type Store interface {
 	EventTypeCounts(ctx context.Context) ([]EventTypeCount, error)
 	LookupCIKByTicker(ctx context.Context, ticker string) (string, error)
 	CompanyByCIK(ctx context.Context, cik string, limit, offset int) (*Company, []Classification, int, error)
+	// Insider (Form 4) surfacing: a company's open-market buy/sell pulse over a
+	// rolling window, and its most recent insider transactions.
+	CompanyInsiderPulse(ctx context.Context, cik string, windowDays int) (InsiderPulse, error)
+	CompanyInsiderTrades(ctx context.Context, cik string, limit int) ([]InsiderTrade, error)
 	// Events layer (ADR 0027/0028). Each filing's current view is the wholesale
 	// output of its single greatest run_id — never a per-anchor maximum.
 	MaterialEvents(ctx context.Context, eventType string, limit, offset int) ([]Event, int, error)

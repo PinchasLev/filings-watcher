@@ -137,6 +137,8 @@ type Store interface {
 	// rolling window, and its most recent insider transactions.
 	CompanyInsiderPulse(ctx context.Context, cik string, windowDays int) (InsiderPulse, error)
 	CompanyInsiderTrades(ctx context.Context, cik string, limit int) ([]InsiderTrade, error)
+	// NotableInsiderActivity backs the /insiders feed: recent cluster buys.
+	NotableInsiderActivity(ctx context.Context, windowDays, limit int) ([]InsiderCluster, error)
 	// Events layer (ADR 0027/0028). Each filing's current view is the wholesale
 	// output of its single greatest run_id — never a per-anchor maximum.
 	MaterialEvents(ctx context.Context, eventType string, limit, offset int) ([]Event, int, error)
@@ -494,14 +496,30 @@ func (s *store) FilingByAccession(ctx context.Context, accession string) (*Filin
 // (e.g., GOOG and GOOGL) are distinct rows that both point at one CIK, so
 // resolving either lands on the same company view.
 func (s *store) LookupCIKByTicker(ctx context.Context, ticker string) (string, error) {
-	const query = `SELECT cik FROM cik_tickers WHERE ticker = ? LIMIT 1`
+	t := strings.ToUpper(strings.TrimSpace(ticker))
 	var cik string
-	err := s.db.QueryRowContext(ctx, query, strings.ToUpper(strings.TrimSpace(ticker))).Scan(&cik)
+
+	const primary = `SELECT cik FROM cik_tickers WHERE ticker = ? LIMIT 1`
+	err := s.db.QueryRowContext(ctx, primary, t).Scan(&cik)
+	if err == nil {
+		return cik, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("lookup cik by ticker: %w", err)
+	}
+
+	// Fallback: the SEC ticker map (cik_tickers) misses issuers that appear only
+	// in Form-4 data, and lists some CIKs under a different symbol than the one
+	// commonly typed (e.g. TSM's ADR ticker vs. its mapped OTC symbol "TSMWF").
+	// Resolve against the ticker as self-reported on the company's own Form 4s.
+	const fallback = `SELECT issuer_cik FROM insider_transactions
+		WHERE UPPER(TRIM(issuer_ticker)) = ? ORDER BY filed_at DESC LIMIT 1`
+	err = s.db.QueryRowContext(ctx, fallback, t).Scan(&cik)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrNotFound
 	}
 	if err != nil {
-		return "", fmt.Errorf("lookup cik by ticker: %w", err)
+		return "", fmt.Errorf("lookup cik by ticker (insider fallback): %w", err)
 	}
 	return cik, nil
 }

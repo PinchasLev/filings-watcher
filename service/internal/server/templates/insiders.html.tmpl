@@ -1,0 +1,25 @@
+{{- /* Insider cluster-buy feed: companies with multiple open-market insider buyers in a window. */ -}}
+{{define "title"}}Insider cluster buys{{end}}
+{{define "content"}}
+<section class="company-header">
+  <h2>Insider cluster buys</h2>
+  <p class="reasoning">Companies where <strong>two or more insiders</strong> made open-market purchases in the last {{.WindowDays}} days &mdash; deliberate, own-cash buying, rare enough at most companies to be worth a look. Grants, option exercises and routine sales are excluded. Not investment advice.</p>
+</section>
+
+{{if .Clusters}}
+  <section>
+    {{range .Clusters}}
+      <article class="filing-card">
+        <h3><a href="/companies/{{.CIK}}">{{if .Ticker}}{{.Ticker}} &mdash; {{end}}{{.CompanyName}}</a></h3>
+        <div class="filing-meta">
+          <span class="badge">{{.Buyers}} insiders bought {{usd .TotalValue}}</span>
+          <span>{{.Trades}} open-market buy{{if ne .Trades 1}}s{{end}}</span>
+          <span>{{.FirstDate}}{{if ne .FirstDate .LastDate}} &ndash; {{.LastDate}}{{end}}</span>
+        </div>
+      </article>
+    {{end}}
+  </section>
+{{else}}
+  <p>No insider cluster buys on record in the last {{.WindowDays}} days.</p>
+{{end}}
+{{end}}

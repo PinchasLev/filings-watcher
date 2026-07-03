@@ -106,6 +106,64 @@ func (s *store) CompanyInsiderTrades(ctx context.Context, cik string, limit int)
 	return out, rows.Err()
 }
 
+// InsiderCluster is a company where several insiders made open-market buys in a
+// recent window — the notable-activity feed's core item. It's the cross-filing
+// aggregation (multiple Form 4s grouped by issuer) that a raw insider feed lacks.
+type InsiderCluster struct {
+	CIK         string
+	Ticker      string
+	CompanyName string
+	Buyers      int
+	Trades      int
+	TotalValue  float64
+	FirstDate   string
+	LastDate    string
+}
+
+// NotableInsiderActivity returns companies with at least two distinct insiders
+// making open-market buys (code P) within the trailing windowDays, most recent
+// cluster first. This is a "cluster buy" — the one insider pattern that showed
+// even a modest forward edge and the view no raw insider feed assembles.
+func (s *store) NotableInsiderActivity(ctx context.Context, windowDays, limit int) ([]InsiderCluster, error) {
+	const q = `
+		SELECT issuer_cik,
+		       COALESCE(MAX(issuer_ticker), ''),
+		       COALESCE(MAX(issuer_name), ''),
+		       COUNT(DISTINCT owner_cik),
+		       COUNT(*),
+		       COALESCE(SUM(COALESCE(transaction_value, 0)), 0),
+		       MIN(transaction_date), MAX(transaction_date)
+		FROM insider_transactions
+		WHERE transaction_code = 'P'
+		  AND replace(transaction_date, '-', '') >= strftime('%Y%m%d', 'now', ?)
+		GROUP BY issuer_cik
+		HAVING COUNT(DISTINCT owner_cik) >= 2
+		ORDER BY MAX(replace(transaction_date, '-', '')) DESC, COUNT(DISTINCT owner_cik) DESC
+		LIMIT ?
+	`
+	rows, err := s.db.QueryContext(ctx, q, fmt.Sprintf("-%d days", windowDays), limit)
+	if err != nil {
+		return nil, fmt.Errorf("notable insider activity: %w", err)
+	}
+	defer rows.Close()
+
+	var out []InsiderCluster
+	for rows.Next() {
+		var (
+			c           InsiderCluster
+			first, last *string
+		)
+		if err := rows.Scan(&c.CIK, &c.Ticker, &c.CompanyName, &c.Buyers, &c.Trades,
+			&c.TotalValue, &first, &last); err != nil {
+			return nil, fmt.Errorf("scan insider cluster: %w", err)
+		}
+		c.FirstDate = deref(first)
+		c.LastDate = deref(last)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 func deref(s *string) string {
 	if s == nil {
 		return ""

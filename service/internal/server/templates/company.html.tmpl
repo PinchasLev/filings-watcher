@@ -19,13 +19,14 @@
 <section class="insider-activity">
   <h3>Insider activity <small>(SEC Form 4)</small></h3>
   {{if or .Pulse30.HasActivity .Pulse90.HasActivity .InsiderTrades}}
+    <p class="reasoning">Open-market buys and sells only &mdash; the deliberate trades. Zero here doesn&rsquo;t mean no filings: grants, option exercises and tax withholding (below) are compensation, not market trades.</p>
     <div class="filing-meta">
-      <span><strong>Last 30 days:</strong></span>
+      <span><strong>Open-market &middot; last 30 days:</strong></span>
       <span class="badge">{{.Pulse30.Buyers}} buyer{{if ne .Pulse30.Buyers 1}}s{{end}} bought {{usd .Pulse30.BuyValue}}</span>
       <span class="badge">{{.Pulse30.Sellers}} seller{{if ne .Pulse30.Sellers 1}}s{{end}} sold {{usd .Pulse30.SellValue}}</span>
     </div>
     <div class="filing-meta">
-      <span><strong>Last 90 days:</strong></span>
+      <span><strong>Open-market &middot; last 90 days:</strong></span>
       <span>{{.Pulse90.Buyers}} buyer{{if ne .Pulse90.Buyers 1}}s{{end}} bought {{usd .Pulse90.BuyValue}}</span>
       <span>{{.Pulse90.Sellers}} seller{{if ne .Pulse90.Sellers 1}}s{{end}} sold {{usd .Pulse90.SellValue}}</span>
     </div>

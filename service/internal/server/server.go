@@ -28,6 +28,8 @@ type storer interface {
 	// Insider (Form 4) surfacing on the company page.
 	CompanyInsiderPulse(ctx context.Context, cik string, windowDays int) (store.InsiderPulse, error)
 	CompanyInsiderTrades(ctx context.Context, cik string, limit int) ([]store.InsiderTrade, error)
+	// NotableInsiderActivity backs the /insiders feed of recent cluster buys.
+	NotableInsiderActivity(ctx context.Context, windowDays, limit int) ([]store.InsiderCluster, error)
 	// LiveEvents backs the /live tape: near-real-time material events sorted
 	// by precise EDGAR-side submission time within a rolling window. Implicit
 	// atom-feed-only via the submitted_at IS NOT NULL filter in the query.
@@ -54,6 +56,7 @@ func New(s storer) http.Handler {
 	mux.HandleFunc("GET /filings", handleListFilings(s))
 	mux.HandleFunc("GET /filings/{accession}", handleFilingDetail(s))
 	mux.HandleFunc("GET /companies/{cik}", handleCompany(s))
+	mux.HandleFunc("GET /insiders", handleInsiders(s))
 	mux.HandleFunc("GET /live", handleLive(s))
 	mux.HandleFunc("GET /api/live-events", handleLiveEvents(s))
 	mux.HandleFunc("GET /static/live.js", handleLiveScript())

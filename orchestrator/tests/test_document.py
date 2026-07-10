@@ -14,6 +14,7 @@ import respx
 from filings_orchestrator.edgar import EdgarClient, fetch_filing_document
 from filings_orchestrator.edgar.document import (
     _choose_parser,
+    _document_kind,
     _extract_plain_text,
     _split_into_item_sections,
 )
@@ -228,3 +229,74 @@ def test_fetch_filing_document_skips_failed_exhibit_fetch() -> None:
     # Only the successful exhibit survives; the failed one is dropped, not fatal.
     assert [e.exhibit_type for e in document.exhibits] == ["EX-99.1"]
     assert len(document.text) > 0
+
+
+def test_document_kind_classifies_content_first() -> None:
+    assert _document_kind(b"%PDF-1.7\nobjects", "") == "pdf"
+    assert _document_kind(b"not-a-pdf", "application/pdf") == "pdf"  # header even without magic
+    assert _document_kind(b"\x89PNG\r\n\x1a\n", "") == "binary"
+    assert _document_kind(b"PK\x03\x04zipdata", "") == "binary"
+    assert _document_kind(b"anything", "image/jpeg") == "binary"
+    assert _document_kind(b"<html><body>hi</body></html>", "text/html") == "markup"
+    assert _document_kind(b"x" * (26 * 1024 * 1024), "text/html") == "oversized"
+
+
+def test_fetch_filing_document_skips_pdf_exhibit() -> None:
+    """A PDF exhibit is detected by content and skipped, never parsed; a sibling
+    HTML exhibit is still parsed."""
+    body = (FIXTURES / "sample_8k.html").read_text()
+    pdf_url = "https://www.sec.gov/Archives/edgar/data/320193/000032019326000045/ex99_1.pdf"
+    htm_url = "https://www.sec.gov/Archives/edgar/data/320193/000032019326000045/ex99_2.htm"
+    filing = _filing_with_exhibits(pdf_url, htm_url)
+
+    with respx.mock(assert_all_called=True) as mock:
+        mock.get(filing.primary_document_url).mock(return_value=httpx.Response(200, text=body))
+        mock.get(pdf_url).mock(
+            return_value=httpx.Response(
+                200,
+                content=b"%PDF-1.7\n%\xe2\xe3\xcf\xd3 binary junk <<< >>> " * 100,
+                headers={"content-type": "application/pdf"},
+            )
+        )
+        mock.get(htm_url).mock(return_value=httpx.Response(200, text="<p>Real release.</p>"))
+        with EdgarClient(user_agent="filings-watcher tester@example.com") as client:
+            document = fetch_filing_document(filing, client)
+
+    # The PDF is fetched but skipped; only the HTML exhibit survives and is parsed.
+    assert [e.exhibit_type for e in document.exhibits] == ["EX-99.2"]
+    assert "Real release." in document.exhibits[0].text
+
+
+def test_fetch_filing_document_skips_oversized_exhibit() -> None:
+    """An exhibit whose bytes exceed the parse cap is skipped, not parsed."""
+    body = (FIXTURES / "sample_8k.html").read_text()
+    big_url = "https://www.sec.gov/Archives/edgar/data/320193/000032019326000045/ex99_big.htm"
+    filing = _filing_with_exhibits(big_url)
+
+    with respx.mock(assert_all_called=True) as mock:
+        mock.get(filing.primary_document_url).mock(return_value=httpx.Response(200, text=body))
+        mock.get(big_url).mock(
+            return_value=httpx.Response(
+                200, content=b"x" * (26 * 1024 * 1024), headers={"content-type": "text/html"}
+            )
+        )
+        with EdgarClient(user_agent="filings-watcher tester@example.com") as client:
+            document = fetch_filing_document(filing, client)
+
+    assert document.exhibits == []
+
+
+def test_fetch_filing_document_pdf_primary_is_metadata_only() -> None:
+    """A PDF primary document yields empty body text and doesn't crash."""
+    filing = _sample_filing()
+    with respx.mock(assert_all_called=True) as mock:
+        mock.get(filing.primary_document_url).mock(
+            return_value=httpx.Response(
+                200, content=b"%PDF-1.4 ... stream ...", headers={"content-type": "application/pdf"}
+            )
+        )
+        with EdgarClient(user_agent="filings-watcher tester@example.com") as client:
+            document = fetch_filing_document(filing, client)
+
+    assert document.text == ""
+    assert document.exhibits == []

@@ -90,6 +90,52 @@ class FilingDocument(BaseModel):
     raw_size_bytes: int
 
 
+# Cap on the bytes of a single document we will parse as markup. A markup
+# parser's in-memory tree dwarfs its input — this incident: a 27 MB PDF exhibit
+# misparsed as HTML reached ~2 GB and OOM-killed the classifier slice — so above
+# this we skip rather than parse. No single filing may exhaust the slice. Binary
+# content is skipped regardless of size. See ADR 0040.
+_MAX_PARSE_BYTES = 25 * 1024 * 1024  # 25 MB
+
+# Leading-byte signatures of common non-markup formats EDGAR serves as exhibits.
+_BINARY_SIGNATURES = (b"%PDF-", b"PK\x03\x04", b"\xff\xd8\xff", b"\x89PNG", b"GIF8", b"BM")
+
+
+def _document_kind(content: bytes, content_type: str) -> str:
+    """Classify fetched bytes so we route to the right handling.
+
+    Returns 'pdf', 'binary' (other non-markup), 'oversized', or 'markup'.
+    Detection is content-first — magic bytes, then the Content-Type header —
+    because EDGAR exhibit refs carry no reliable filename/extension.
+    """
+    ct = content_type.split(";", 1)[0].strip().lower()
+    head = content.lstrip()[:8]
+    if head.startswith(b"%PDF-") or ct == "application/pdf":
+        return "pdf"
+    if (
+        any(head.startswith(sig) for sig in _BINARY_SIGNATURES)
+        or ct.startswith(("image/", "application/zip"))
+        or ct in ("application/octet-stream", "application/vnd.ms-excel")
+    ):
+        return "binary"
+    if len(content) > _MAX_PARSE_BYTES:
+        return "oversized"
+    return "markup"
+
+
+def _decode(content: bytes, content_type: str) -> str:
+    """Decode fetched bytes to text using the response charset (EDGAR is almost
+    always UTF-8), replacing undecodable bytes rather than raising."""
+    charset = "utf-8"
+    lc = content_type.lower()
+    if "charset=" in lc:
+        charset = lc.split("charset=", 1)[1].split(";", 1)[0].strip() or "utf-8"
+    try:
+        return content.decode(charset, "replace")
+    except LookupError:
+        return content.decode("utf-8", "replace")
+
+
 def fetch_filing_document(filing: Filing, client: EdgarClient) -> FilingDocument:
     """Fetch the primary document and EX-99 exhibits, return parsed text.
 
@@ -98,14 +144,27 @@ def fetch_filing_document(filing: Filing, client: EdgarClient) -> FilingDocument
     skipped, not raised: exhibits are supplemental context, so one missing
     attachment must not abort ingestion of the filing itself.
     """
-    raw_html = client.get_text(filing.primary_document_url)
-    text = _extract_plain_text(raw_html)
+    primary_bytes, primary_ct = client.get_bytes(filing.primary_document_url)
+    primary_kind = _document_kind(primary_bytes, primary_ct)
+    if primary_kind == "markup":
+        text = _extract_plain_text(_decode(primary_bytes, primary_ct))
+    else:
+        # A PDF/binary/oversized primary document must never reach the markup
+        # parser (it would explode memory). Record and ingest as metadata-only.
+        emit(
+            "document_skipped",
+            accession_number=filing.accession_number,
+            role="primary",
+            kind=primary_kind,
+            size_bytes=len(primary_bytes),
+        )
+        text = ""
     items = _split_into_item_sections(text)
 
     exhibits: list[Exhibit] = []
     for ref in filing.exhibits:
         try:
-            exhibit_html = client.get_text(ref.url)
+            ex_bytes, ex_ct = client.get_bytes(ref.url)
         except Exception as exc:  # supplemental — skip this one, keep the filing
             emit(
                 "exhibit_fetch_failed",
@@ -115,12 +174,25 @@ def fetch_filing_document(filing: Filing, client: EdgarClient) -> FilingDocument
                 error_class=type(exc).__name__,
             )
             continue
+        ex_kind = _document_kind(ex_bytes, ex_ct)
+        if ex_kind != "markup":
+            # PDFs and other binaries carry no markup we can parse and would
+            # blow up the parser; skip them rather than feed them in.
+            emit(
+                "document_skipped",
+                accession_number=filing.accession_number,
+                role="exhibit",
+                exhibit_type=ref.exhibit_type,
+                kind=ex_kind,
+                size_bytes=len(ex_bytes),
+            )
+            continue
         exhibits.append(
             Exhibit(
                 exhibit_type=ref.exhibit_type,
                 document=ref.document,
                 url=ref.url,
-                text=_extract_plain_text(exhibit_html),
+                text=_extract_plain_text(_decode(ex_bytes, ex_ct)),
             )
         )
 
@@ -129,7 +201,7 @@ def fetch_filing_document(filing: Filing, client: EdgarClient) -> FilingDocument
         text=text,
         items=items,
         exhibits=exhibits,
-        raw_size_bytes=len(raw_html.encode("utf-8")),
+        raw_size_bytes=len(primary_bytes),
     )
 
 

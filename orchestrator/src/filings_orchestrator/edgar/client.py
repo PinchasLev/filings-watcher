@@ -104,6 +104,19 @@ class EdgarClient:
             response.raise_for_status()
             return response.text
 
+    def get_bytes(self, url: str) -> tuple[bytes, str]:
+        """Fetch raw bytes and the Content-Type header.
+
+        Used where the content type must be known before decoding or parsing —
+        e.g. filing documents and exhibits, which EDGAR may serve as PDFs or
+        images that must never be handed to the HTML parser.
+        """
+        with self._for_host(url):
+            self._limiter.acquire()
+            response = self._client.get(url)
+            response.raise_for_status()
+            return response.content, response.headers.get("content-type", "")
+
     @contextmanager
     def _for_host(self, url: str) -> Iterator[None]:
         """Temporarily set the Host header to match the URL.

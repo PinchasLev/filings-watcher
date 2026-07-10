@@ -88,6 +88,17 @@
         <p class="sub">No filings carry a precise submission timestamp yet. The atom path populates this on each new ingest.</p>
       {{end}}
     </article>
+
+    <article class="panel">
+      <h2>Daily-index reconciler freshness</h2>
+      {{if .CursorDate}}
+        <p class="stat">{{.CursorDaysBehind}} d behind</p>
+        <p class="sub">Reconciler cursor at {{ derefStr .CursorDate }} — the high-water date the evening daily-index backstop has fully processed. Unlike the atom clock, a stalled reconciler sits here silently, so this is its own signal.</p>
+      {{else}}
+        <p class="stat">no data</p>
+        <p class="sub">The daily-index cursor is unset. It populates on the first evening reconciliation tick.</p>
+      {{end}}
+    </article>
   </section>
 
   <article class="panel">

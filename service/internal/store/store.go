@@ -172,6 +172,12 @@ type Store interface {
 	// no-data days.
 	SpendDataStartDate(ctx context.Context) (string, error)
 	AtomSnapshotFreshness(ctx context.Context) (*string, error)
+	// DailyIndexCursorFreshness is the "YYYYMMDD" high-water date the
+	// daily-index reconciler has processed (ingest_cursor.last_filed_at), or
+	// nil when the cursor is unset. Distinct from the atom clock: the
+	// reconciler can stall silently for days, so the dashboard surfaces this
+	// second freshness signal alongside it.
+	DailyIndexCursorFreshness(ctx context.Context) (*string, error)
 	Close() error
 }
 

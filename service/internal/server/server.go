@@ -47,6 +47,7 @@ type storer interface {
 	DailySpendBuckets(ctx context.Context, days int) ([]store.DailyBucket, error)
 	SpendDataStartDate(ctx context.Context) (string, error)
 	AtomSnapshotFreshness(ctx context.Context) (*string, error)
+	DailyIndexCursorFreshness(ctx context.Context) (*string, error)
 }
 
 // New returns an http.Handler with all routes registered.

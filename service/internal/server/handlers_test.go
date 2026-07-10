@@ -75,6 +75,9 @@ type fakeStore struct {
 	freshnessResult *string
 	freshnessErr    error
 
+	cursorFreshnessResult *string
+	cursorFreshnessErr    error
+
 	trailingSpendCalledWith []int
 	hourlyBucketsCalledWith []int
 	dailyBucketsCalledWith  []int
@@ -205,6 +208,10 @@ func (f *fakeStore) SpendDataStartDate(_ context.Context) (string, error) {
 
 func (f *fakeStore) AtomSnapshotFreshness(_ context.Context) (*string, error) {
 	return f.freshnessResult, f.freshnessErr
+}
+
+func (f *fakeStore) DailyIndexCursorFreshness(_ context.Context) (*string, error) {
+	return f.cursorFreshnessResult, f.cursorFreshnessErr
 }
 
 // migrationsDir locates the shared SQL migrations directory.

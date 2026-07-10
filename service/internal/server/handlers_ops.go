@@ -62,6 +62,14 @@ type opsPageData struct {
 	// Pipeline freshness — verbatim ISO timestamp or nil.
 	FreshnessTimestamp *string
 
+	// Daily-index reconciler freshness — a second, slower clock beside the
+	// atom one. CursorDate is the reconciler's high-water date ("YYYY-MM-DD")
+	// or nil when unset; CursorDaysBehind is coarse calendar days from that
+	// date to now, for the headline. The precise business-day staleness that
+	// drives the operator alarm lives in the orchestrator, not here.
+	CursorDate       *string
+	CursorDaysBehind int
+
 	// Two charts, same SVG machinery. The 24h hourly chart answers
 	// "shape of the day"; the 30d daily chart answers "shape of the
 	// month" — different time scales of the same question.
@@ -157,6 +165,12 @@ func handleOps(s storer) http.HandlerFunc {
 			http.Error(w, "query failed", http.StatusInternalServerError)
 			return
 		}
+		cursorRaw, err := s.DailyIndexCursorFreshness(r.Context())
+		if err != nil {
+			http.Error(w, "query failed", http.StatusInternalServerError)
+			return
+		}
+		cursorDate, cursorDaysBehind := cursorFreshnessView(cursorRaw)
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := opsTemplate.ExecuteTemplate(w, "ops.html.tmpl", opsPageData{
@@ -170,11 +184,37 @@ func handleOps(s storer) http.HandlerFunc {
 			ChartViewBoxHeight:  chartViewBoxHeight,
 			SpendDataSince:      spendDataCaveat(spendStart, trailingChartDays),
 			FreshnessTimestamp:  freshness,
+			CursorDate:          cursorDate,
+			CursorDaysBehind:    cursorDaysBehind,
 			RenderedAt:          time.Now().UTC().Format(time.RFC3339),
 		}); err != nil {
 			_ = err
 		}
 	}
+}
+
+// cursorFreshnessView turns the raw ingest-cursor high-water value
+// ("YYYYMMDD", as the daily index files it) into a display date
+// ("YYYY-MM-DD") and a coarse count of calendar days from that date to now.
+// A nil or unparseable input yields (nil, 0) so the template renders its
+// "no data" branch. This is the at-a-glance view; the precise business-day
+// staleness that drives the operator alarm lives in the orchestrator.
+func cursorFreshnessView(raw *string) (*string, int) {
+	if raw == nil || *raw == "" {
+		return nil, 0
+	}
+	t, err := time.Parse("20060102", *raw)
+	if err != nil {
+		if t, err = time.Parse("2006-01-02", *raw); err != nil {
+			return nil, 0
+		}
+	}
+	iso := t.Format("2006-01-02")
+	days := int(time.Since(t).Hours() / 24)
+	if days < 0 {
+		days = 0
+	}
+	return &iso, days
 }
 
 // hourlySources formats hourly buckets for the chart. The tooltip label

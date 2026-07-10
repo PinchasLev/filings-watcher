@@ -280,3 +280,43 @@ func TestAtomSnapshotFreshness_ReturnsNilWhenAllNull(t *testing.T) {
 		t.Errorf("freshness = %q, want nil", *ts)
 	}
 }
+
+// TestDailyIndexCursorFreshness_ReturnsCursorDate returns the singleton
+// cursor's last_filed_at high-water date verbatim.
+func TestDailyIndexCursorFreshness_ReturnsCursorDate(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+
+	const q = `
+		INSERT INTO ingest_cursor (id, last_accession_number, last_filed_at, updated_at)
+		VALUES (1, '0001-26-001', '20260702', '2026-07-02T23:00:00+00:00')
+	`
+	if _, err := raw.Exec(q); err != nil {
+		t.Fatalf("seed ingest_cursor: %v", err)
+	}
+	_ = raw.Close()
+	s := openStore(t, dbPath)
+
+	got, err := s.DailyIndexCursorFreshness(context.Background())
+	if err != nil {
+		t.Fatalf("DailyIndexCursorFreshness: %v", err)
+	}
+	if got == nil || *got != "20260702" {
+		t.Errorf("cursor freshness = %v, want %q", got, "20260702")
+	}
+}
+
+// TestDailyIndexCursorFreshness_ReturnsNilWhenUnset — fresh-install case, before
+// the first daily-index tick has written a cursor.
+func TestDailyIndexCursorFreshness_ReturnsNilWhenUnset(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+	_ = raw.Close()
+	s := openStore(t, dbPath)
+
+	got, err := s.DailyIndexCursorFreshness(context.Background())
+	if err != nil {
+		t.Fatalf("DailyIndexCursorFreshness: %v", err)
+	}
+	if got != nil {
+		t.Errorf("cursor freshness = %q, want nil", *got)
+	}
+}

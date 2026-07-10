@@ -33,6 +33,7 @@ import httpx
 from opentelemetry import trace
 
 from filings_orchestrator.alerting import ALERT, emit_alert
+from filings_orchestrator.business_days import is_business_day, parse_filed_at_to_date
 from filings_orchestrator.cli._pipeline import process_one, verify_taxonomy
 from filings_orchestrator.config import MissingConfigError, load_config
 from filings_orchestrator.cost import db_llm_call_sink, set_cost_sink
@@ -254,11 +255,11 @@ def main() -> None:
         # consumers route weekend dates as informational and business-day
         # misses as alarm-eligible.
         if today_publication_missing and datetime.now(_EASTERN).hour >= 23:
-            is_business_day = _is_business_day(today_et)
+            today_is_business_day = is_business_day(today_et)
             emit(
                 "daily_index_publication_missing",
                 date=today_et.isoformat(),
-                is_business_day=is_business_day,
+                is_business_day=today_is_business_day,
             )
             # Absence alarm (ADR 0031): a business-day miss at the end of the
             # evening cluster means EDGAR slipped its publish OR our ingest is
@@ -266,7 +267,7 @@ def main() -> None:
             # should look at. Weekend/holiday misses are expected, so they stay
             # informational (structured log only). dedup_key per date so a single
             # dark day pages once, not on every late-cluster invocation.
-            if is_business_day:
+            if today_is_business_day:
                 emit_alert(
                     engine,
                     ALERT,
@@ -309,7 +310,7 @@ def _dates_to_scan(cursor_filed_at: str | None, today_et: date) -> list[date]:
     """
     if cursor_filed_at is None:
         return [today_et]
-    start = _parse_filed_at_to_date(cursor_filed_at)
+    start = parse_filed_at_to_date(cursor_filed_at)
     if start > today_et:
         return [today_et]
     out: list[date] = []
@@ -318,28 +319,6 @@ def _dates_to_scan(cursor_filed_at: str | None, today_et: date) -> list[date]:
         out.append(current)
         current = date.fromordinal(current.toordinal() + 1)
     return out
-
-
-def _is_business_day(d: date) -> bool:
-    """Return True for Mon-Fri.
-
-    Deliberately weekday-only for v0 — the ~9 NYSE/SEC holidays per year
-    register as false positives (the publication-missing event would
-    flag is_business_day=True on, e.g., Memorial Day, when EDGAR
-    legitimately publishes nothing). The downstream alarm is meant to
-    surface anomalies; treating ~9 days per year as alarm-eligible
-    instead of informational is a known limitation, tracked for a
-    follow-up that wires in a real NYSE calendar (e.g., the `holidays`
-    package's `NYSE` calendar or `pandas_market_calendars`).
-    """
-    return d.weekday() < 5
-
-
-def _parse_filed_at_to_date(value: str) -> date:
-    s = value.strip()
-    if len(s) == 8 and s.isdigit():
-        return date(int(s[0:4]), int(s[4:6]), int(s[6:8]))
-    return date.fromisoformat(s)
 
 
 def _fail(tick_started_at: datetime, **fields: object) -> None:

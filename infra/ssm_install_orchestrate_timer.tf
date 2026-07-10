@@ -1,12 +1,14 @@
-# SSM document that installs the periodic ingest under systemd: six
-# wrapper scripts, six timer-driven oneshot service units (plus an OnFailure
-# OOM-notify handler), six timers, and a shared classifier resource slice
+# SSM document that installs the periodic ingest under systemd: seven
+# wrapper scripts, seven timer-driven oneshot service units (plus an OnFailure
+# OOM-notify handler), seven timers, and a shared classifier resource slice
 # (ADR 0035) — the Atom feed (ADR 0029, near-real-time), the daily-index
 # reconciliation backstop (ADR 0021, evening cluster per ADR 0029), the classify
 # reconciler that heals orphaned filings (ADR 0030), the alarm drainer
 # that delivers queued alerts to Discord (ADR 0031), the host
 # heartbeat that feeds the external CloudWatch dead-man's-switch (ADR
-# 0031), and the Form-4 insider-transaction ingest (ADR 0037, evening cluster).
+# 0031), the Form-4 insider-transaction ingest (ADR 0037, evening cluster),
+# and the ingest-freshness check that alarms when the daily-index cursor
+# falls behind (ADR 0041, its own dead-man's-switch on the reconciler).
 # The operator runs this once per host (e.g., after the first deploy on a new
 # instance).
 #
@@ -52,8 +54,9 @@
 # and needs no priming; it will fire at the next 22:15 ET window.
 #
 # Self-arming across reboots (ADR 0035): the OnUnitInactiveSec timers
-# (atom-feed, reclassify-orphans, alarm-drain, host-heartbeat) also carry
-# OnBootSec=, so they fire once shortly after every boot and re-acquire
+# (atom-feed, reclassify-orphans, alarm-drain, host-heartbeat,
+# check-ingest-freshness) also carry OnBootSec=, so they fire once shortly
+# after every boot and re-acquire
 # their inactive reference. Without it, a plain reboot/stop-start leaves
 # them loaded-but-unscheduled until the install doc is re-run — which on
 # 2026-06-22 silently halted both ingestion AND the heartbeat (so the
@@ -75,7 +78,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
 
   content = jsonencode({
     schemaVersion = "2.2"
-    description   = "Install + enable the systemd timers for scan-atom-feed (30s), scan-daily-index (evening cluster), reclassify-orphans (20m reconciler), alarm-drain (2m alert delivery), host-heartbeat (5m dead-man's-switch), and scan-form4 (evening insider ingest)"
+    description   = "Install + enable the systemd timers for scan-atom-feed (30s), scan-daily-index (evening cluster), reclassify-orphans (20m reconciler), alarm-drain (2m alert delivery), host-heartbeat (5m dead-man's-switch), scan-form4 (evening insider ingest), and check-ingest-freshness (1h cursor-staleness alarm)"
     mainSteps = [{
       action = "aws:runShellScript"
       name   = "install"
@@ -286,6 +289,21 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "TICK_EOF",
           "chmod 0755 /usr/local/bin/filings-scan-form4-tick",
           "chown root:root /usr/local/bin/filings-scan-form4-tick",
+          # --- Ingest-freshness-check wrapper (ADR 0041) ---
+          # Dead-man's switch on the daily-index reconciler cursor. Reads only the
+          # cursor + calendar and queues an outbox alert when the cursor is stale —
+          # no Anthropic/EDGAR credential, no cost cap, no classify or fetch, so it
+          # cannot OOM or hang the way a tick can. The alarm-drain tick delivers
+          # whatever it queues. Needs only the DB path.
+          "cat > /usr/local/bin/filings-check-ingest-freshness-tick <<'TICK_EOF'",
+          "#!/bin/bash",
+          "set -euo pipefail",
+          "export FILINGS_DB_PATH=/var/lib/filings-watcher/filings.db",
+          "cd /opt/filings-watcher/current/orchestrator",
+          "exec /home/filings/.local/bin/uv run --no-sync check-ingest-freshness",
+          "TICK_EOF",
+          "chmod 0755 /usr/local/bin/filings-check-ingest-freshness-tick",
+          "chown root:root /usr/local/bin/filings-check-ingest-freshness-tick",
           "install -d -o filings -g filings -m 0755 /var/lib/filings-watcher",
           # --- Classifier resource slice (memory isolation, ADR 0035) ---
           # All Anthropic-classifying ticks (daily-index, atom-feed, reclassify-
@@ -530,6 +548,45 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "[Install]",
           "WantedBy=timers.target",
           "TIMER_EOF",
+          # --- Ingest-freshness-check service + timer (ADR 0041) ---
+          # OnUnitInactiveSec=1h with OnBootSec self-arm. Lightweight: reads the
+          # cursor, counts business-day lag against today, and queues an outbox alert
+          # past threshold. Its own lock file; TimeoutStartSec=2m (a single DB read +
+          # at most one insert). Deliberately OUTSIDE filings-classify.slice and with
+          # no OnFailure OOM handler — it never classifies or fetches, so it is the
+          # watcher that stays alive when a classifier tick is the thing that died.
+          "cat > /etc/systemd/system/filings-check-ingest-freshness.service <<'SERVICE_EOF'",
+          "[Unit]",
+          "Description=filings-watcher ingest-freshness check (daily-index cursor dead-man's-switch, ADR 0041)",
+          "Documentation=https://github.com/PinchasLev/filings-watcher",
+          "After=network-online.target",
+          "Wants=network-online.target",
+          "",
+          "[Service]",
+          "Type=oneshot",
+          "User=filings",
+          "Group=filings",
+          "TimeoutStartSec=2m",
+          "ExecStart=/usr/bin/flock -n --conflict-exit-code=0 /var/lib/filings-watcher/check-ingest-freshness.lock /usr/local/bin/filings-check-ingest-freshness-tick",
+          "StandardOutput=journal",
+          "StandardError=journal",
+          "SyslogIdentifier=filings-check-ingest-freshness",
+          "NoNewPrivileges=true",
+          "PrivateTmp=true",
+          "SERVICE_EOF",
+          "cat > /etc/systemd/system/filings-check-ingest-freshness.timer <<'TIMER_EOF'",
+          "[Unit]",
+          "Description=Periodic ingest-freshness check (daily-index cursor staleness, ADR 0041)",
+          "Documentation=https://github.com/PinchasLev/filings-watcher",
+          "",
+          "[Timer]",
+          "Unit=filings-check-ingest-freshness.service",
+          "OnUnitInactiveSec=1h",
+          "OnBootSec=4min",
+          "",
+          "[Install]",
+          "WantedBy=timers.target",
+          "TIMER_EOF",
           # --- Classifier OOM-kill notifier (OnFailure handler unit, ADR 0035) ---
           # Templated, started by OnFailure= on the three classifier services. NOT
           # enabled or timed — instantiated only when a classifier tick fails. %i is
@@ -557,6 +614,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "systemctl enable filings-alarm-drain.timer",
           "systemctl enable filings-host-heartbeat.timer",
           "systemctl enable filings-scan-form4.timer",
+          "systemctl enable filings-check-ingest-freshness.timer",
           # Fire one Atom invocation now so OnUnitInactiveSec has a
           # reference timestamp; subsequent invocations are scheduled 30
           # seconds after each one exits. systemctl start --no-block
@@ -577,6 +635,11 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           # first metric lands immediately (otherwise the alarm, which treats
           # missing data as breaching, would page before the first push).
           "systemctl start --no-block filings-host-heartbeat.service",
+          # Prime the freshness check so OnUnitInactiveSec has a reference timestamp;
+          # --no-block returns immediately. This first pass evaluates cursor lag right
+          # away so an already-stale cursor pages promptly rather than after the first
+          # interval.
+          "systemctl start --no-block filings-check-ingest-freshness.service",
           "systemctl start filings-daily-index.timer",
           "systemctl start filings-atom-feed.timer",
           "systemctl start filings-reclassify-orphans.timer",
@@ -584,13 +647,15 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "systemctl start filings-host-heartbeat.timer",
           # filings-scan-form4.timer is OnCalendar (evening cluster) — no priming needed.
           "systemctl start filings-scan-form4.timer",
+          "systemctl start filings-check-ingest-freshness.timer",
           "systemctl status --no-pager filings-daily-index.timer || true",
           "systemctl status --no-pager filings-atom-feed.timer || true",
           "systemctl status --no-pager filings-reclassify-orphans.timer || true",
           "systemctl status --no-pager filings-alarm-drain.timer || true",
           "systemctl status --no-pager filings-host-heartbeat.timer || true",
           "systemctl status --no-pager filings-scan-form4.timer || true",
-          "echo \"install + enable of filings-daily-index.timer, filings-atom-feed.timer, filings-reclassify-orphans.timer, filings-alarm-drain.timer, filings-host-heartbeat.timer, and filings-scan-form4.timer complete\"",
+          "systemctl status --no-pager filings-check-ingest-freshness.timer || true",
+          "echo \"install + enable of filings-daily-index.timer, filings-atom-feed.timer, filings-reclassify-orphans.timer, filings-alarm-drain.timer, filings-host-heartbeat.timer, filings-scan-form4.timer, and filings-check-ingest-freshness.timer complete\"",
         ]
       }
     }]

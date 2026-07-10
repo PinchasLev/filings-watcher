@@ -15,14 +15,16 @@ import (
 // totals, both charts, and a non-nil freshness timestamp populated.
 func TestHandleOpsRendersAllPanels(t *testing.T) {
 	freshness := time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+	cursor := "20260702"
 	fake := &fakeStore{
 		trailingSpendByHours: map[int]store.SpendSnapshot{
 			24 * 30: {TotalUSD: 43.21, CallCount: 1234},
 			24:      {TotalUSD: 1.50, CallCount: 42},
 		},
-		hourlyBucketsResult: hourlyZeros(24),
-		dailyBucketsResult:  dailyZeros(30),
-		freshnessResult:     &freshness,
+		hourlyBucketsResult:   hourlyZeros(24),
+		dailyBucketsResult:    dailyZeros(30),
+		freshnessResult:       &freshness,
+		cursorFreshnessResult: &cursor,
 	}
 
 	rec := httptest.NewRecorder()
@@ -43,6 +45,9 @@ func TestHandleOpsRendersAllPanels(t *testing.T) {
 		"42 LLM call",
 		"Atom-ingest freshness",
 		"min ago",
+		"Daily-index reconciler freshness",
+		"d behind",
+		"2026-07-02",
 		"Hourly spend, last 24 hours",
 		"Daily spend, last 30 days",
 		"30d ago",
@@ -215,6 +220,30 @@ func TestHandleOpsHandlesNoFreshnessData(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, "no data") {
 		t.Errorf("expected freshness panel to render 'no data' when timestamp is nil")
+	}
+}
+
+// TestHandleOpsCursorFreshnessNoData verifies the reconciler-freshness panel
+// renders its own "no data / unset" branch when the cursor is nil, distinct
+// from the atom panel.
+func TestHandleOpsCursorFreshnessNoData(t *testing.T) {
+	fake := &fakeStore{
+		trailingSpendByHours:  map[int]store.SpendSnapshot{24 * 30: {}, 24: {}},
+		hourlyBucketsResult:   hourlyZeros(24),
+		dailyBucketsResult:    dailyZeros(30),
+		cursorFreshnessResult: nil,
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/ops/", nil)
+	server.New(fake).ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "Daily-index reconciler freshness") {
+		t.Errorf("expected reconciler-freshness panel to render")
+	}
+	if !strings.Contains(body, "daily-index cursor is unset") {
+		t.Errorf("expected reconciler panel to render its 'unset' branch when cursor is nil")
 	}
 }
 

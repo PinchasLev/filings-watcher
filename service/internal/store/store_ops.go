@@ -175,3 +175,30 @@ func (s *store) AtomSnapshotFreshness(ctx context.Context) (*string, error) {
 	}
 	return &ts.String, nil
 }
+
+// DailyIndexCursorFreshness returns the high-water date the daily-index
+// reconciler has fully processed — ingest_cursor.last_filed_at. This is a
+// distinct freshness signal from AtomSnapshotFreshness: the atom clock is
+// near-real-time and self-heals (a stuck filing ages out of EDGAR's rolling
+// window), whereas the daily-index re-scans a fixed date's index and can sit
+// silently stuck for days if a tick keeps failing before advancing the cursor.
+// The handler renders how far behind today this date sits so that stall is
+// visible on the dashboard.
+//
+// The value is stored as the daily index files it — "YYYYMMDD". Returns
+// (nil, nil) when the cursor is unset (a fresh install before the first
+// daily-index tick); the handler treats nil as "no data."
+func (s *store) DailyIndexCursorFreshness(ctx context.Context) (*string, error) {
+	const q = `SELECT last_filed_at FROM ingest_cursor WHERE id = 1`
+	var v sql.NullString
+	if err := s.db.QueryRowContext(ctx, q).Scan(&v); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("daily-index cursor freshness: %w", err)
+	}
+	if !v.Valid {
+		return nil, nil
+	}
+	return &v.String, nil
+}

@@ -37,8 +37,8 @@ way for an OOM, a hang, a cost-cap wedge, or a timer that never armed.
   window and goes silent when the cursor catches up. It touches no EDGAR/Anthropic
   credential and does no fetch/parse/classify, so it cannot itself OOM or hang the
   way a tick can: it is the watcher that stays alive when a classifier tick is the
-  thing that died. It runs on its own light self-arming timer (`OnUnitInactiveSec=1h`
-  + `OnBootSec`), outside the classifier resource slice.
+  thing that died. It runs on its own light self-arming timer
+  (`OnUnitInactiveSec=1h` plus `OnBootSec`), outside the classifier resource slice.
 
 - **Staleness is measured in business days, not wall-clock.** The cursor
   legitimately sits at "yesterday" between evening ticks and at "last Friday" all

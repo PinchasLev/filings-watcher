@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, date, datetime
+from typing import NamedTuple
 
 from sqlalchemy import Connection, Engine, bindparam, text
 
@@ -1421,3 +1422,89 @@ def insert_periodic_filing(
                     "block_hash": block.block_hash,
                 },
             )
+
+
+# --- Block embeddings (ADR 0042, PR 3) ---------------------------------------
+#
+# One vector per (block, model), stored as a JSON array of floats. select_...
+# returns blocks that have no embedding yet for a given model, so the embed step
+# is a resumable reconciler (already-embedded blocks are skipped).
+
+
+class UnembeddedBlock(NamedTuple):
+    """A block awaiting an embedding for some model: its key plus the text to embed."""
+
+    accession_number: str
+    section: str
+    block_index: int
+    block_text: str
+
+
+def select_unembedded_blocks(engine: Engine, model_id: str, limit: int) -> list[UnembeddedBlock]:
+    """Return up to `limit` blocks that have no embedding for `model_id` yet.
+
+    A left join against filing_block_embeddings for this model finds the gap, so
+    the embed step drains a backlog across runs and is idempotent (re-running
+    embeds only what is still missing).
+    """
+    sql = text(
+        """
+        SELECT b.accession_number, b.section, b.block_index, b.block_text
+          FROM filing_blocks b
+          LEFT JOIN filing_block_embeddings e
+            ON e.accession_number = b.accession_number
+           AND e.section          = b.section
+           AND e.block_index       = b.block_index
+           AND e.model_id          = :model_id
+         WHERE e.accession_number IS NULL
+         ORDER BY b.accession_number, b.section, b.block_index
+         LIMIT :limit
+        """
+    )
+    with engine.begin() as conn:
+        rows = conn.execute(sql, {"model_id": model_id, "limit": limit}).fetchall()
+    return [UnembeddedBlock(str(r[0]), str(r[1]), int(r[2]), str(r[3])) for r in rows]
+
+
+def insert_block_embeddings(
+    engine: Engine,
+    *,
+    model_id: str,
+    items: list[tuple[UnembeddedBlock, list[float]]],
+    embedded_at: str,
+) -> int:
+    """Store embeddings for a batch of blocks under `model_id`. Returns the count.
+
+    Idempotent on the (accession, section, block_index, model_id) key — a re-embed
+    of the same block/model overwrites, so a retried batch does not duplicate.
+    """
+    sql = text(
+        """
+        INSERT INTO filing_block_embeddings (
+            accession_number, section, block_index, model_id,
+            dim, embedding_json, embedded_at
+        ) VALUES (
+            :accession_number, :section, :block_index, :model_id,
+            :dim, :embedding_json, :embedded_at
+        )
+        ON CONFLICT (accession_number, section, block_index, model_id) DO UPDATE SET
+            dim            = excluded.dim,
+            embedding_json = excluded.embedding_json,
+            embedded_at    = excluded.embedded_at
+        """
+    )
+    with engine.begin() as conn:
+        for block, vector in items:
+            conn.execute(
+                sql,
+                {
+                    "accession_number": block.accession_number,
+                    "section": block.section,
+                    "block_index": block.block_index,
+                    "model_id": model_id,
+                    "dim": len(vector),
+                    "embedding_json": json.dumps(vector),
+                    "embedded_at": embedded_at,
+                },
+            )
+    return len(items)

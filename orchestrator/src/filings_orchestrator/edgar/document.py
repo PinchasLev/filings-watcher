@@ -205,6 +205,21 @@ def fetch_filing_document(filing: Filing, client: EdgarClient) -> FilingDocument
     )
 
 
+def fetch_markup_text(client: EdgarClient, url: str) -> str | None:
+    """Fetch a document and return its decoded markup text, or None.
+
+    Returns None when the content is not markup or exceeds the parse-size cap
+    (the ADR 0040 guard) — so a caller that only needs the body text to parse
+    further (e.g. section segmentation) never hands a PDF/oversized document to
+    an HTML parser. Distinct from `fetch_filing_document`, which assembles the
+    8-K-specific FilingDocument (items + EX-99 exhibits); this returns just text.
+    """
+    content, content_type = client.get_bytes(url)
+    if _document_kind(content, content_type) != "markup":
+        return None
+    return _decode(content, content_type)
+
+
 def _extract_plain_text(html: str) -> str:
     """Convert filing markup to whitespace-normalized plain text.
 

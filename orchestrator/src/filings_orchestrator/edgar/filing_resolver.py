@@ -87,12 +87,38 @@ def resolve_filing(
         form=form,
         accession_number=accession_number,
         filing_date=_to_date(filed_at),
-        report_date=None,
+        report_date=_extract_report_date(page_html),
         primary_document=primary_name,
         primary_document_url=primary_url,
         items=[],
         exhibits=exhibits,
     )
+
+
+def _extract_report_date(page_html: str) -> date | None:
+    """Extract the "Period of Report" (fiscal period end) from a filing-index page.
+
+    The page renders it as an `<div class="infoHead">Period of Report</div>`
+    followed by an `<div class="info">YYYY-MM-DD</div>`. For a 10-K this is the
+    fiscal year-end — the auditable pairing key for change-detection. Returns None
+    when the field is absent or unparseable, so callers that do not need it (8-K,
+    Atom) are unaffected.
+    """
+    soup = BeautifulSoup(page_html, "lxml")
+    for head in soup.find_all("div", class_="infoHead"):
+        if head.get_text(strip=True).lower() != "period of report":
+            continue
+        info = head.find_next_sibling("div", class_="info")
+        if info is None:
+            return None
+        text = info.get_text(strip=True)
+        if _ISO_DATE_RE.match(text):
+            try:
+                return date.fromisoformat(text[:10])
+            except ValueError:
+                return None
+        return None
+    return None
 
 
 def _extract_exhibit_99_refs(

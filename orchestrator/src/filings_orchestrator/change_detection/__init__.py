@@ -7,9 +7,20 @@ module is the deterministic section segmentation that turns a filing's Risk Fact
 into whole risk-factor blocks.
 """
 
+from filings_orchestrator.change_detection.embeddings import (
+    DEFAULT_MODEL,
+    Embedder,
+    VoyageEmbedder,
+)
 from filings_orchestrator.change_detection.sectioning import (
     RiskFactorBlock,
     segment_risk_factors,
 )
 
-__all__ = ["RiskFactorBlock", "segment_risk_factors"]
+__all__ = [
+    "DEFAULT_MODEL",
+    "Embedder",
+    "RiskFactorBlock",
+    "VoyageEmbedder",
+    "segment_risk_factors",
+]

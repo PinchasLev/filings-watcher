@@ -55,6 +55,9 @@ logs/
 .cache/
 data/local/
 
+# --- throwaway research spikes (never committed; kept local only) ---
+research/
+
 # --- node (if any tooling sneaks in) ---
 node_modules/
 

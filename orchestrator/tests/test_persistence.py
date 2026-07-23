@@ -159,6 +159,7 @@ def test_apply_migrations_creates_tables_and_records_version() -> None:
         "012_insider_transactions",
         "013_insider_filings_and_cursor",
         "014_insider_derivative_transactions",
+        "015_periodic_filings",
     ]
 
     with engine.begin() as conn:
@@ -184,6 +185,9 @@ def test_apply_migrations_creates_tables_and_records_version() -> None:
         "insider_filings",
         "form4_ingest_cursor",
         "insider_derivative_transactions",
+        "periodic_filings",
+        "filing_blocks",
+        "periodic_ingest_cursor",
     }.issubset(tables)
 
 

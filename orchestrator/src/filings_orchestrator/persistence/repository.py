@@ -18,6 +18,7 @@ from datetime import UTC, date, datetime
 
 from sqlalchemy import Connection, Engine, bindparam, text
 
+from filings_orchestrator.change_detection import RiskFactorBlock
 from filings_orchestrator.classify import (
     Classification,
     EventType,
@@ -1256,3 +1257,167 @@ def daily_token_usage(engine: Engine, day_utc: str) -> dict[str, int]:
         "cache_read_tokens": int(row[2]),
         "cache_creation_tokens": int(row[3]),
     }
+
+
+# --- Periodic-filing ingest (ADR 0042) ---------------------------------------
+#
+# periodic_filings is the dedup anchor + completeness ledger (one row per
+# processed 10-K); filing_blocks holds its segmented risk-factor blocks;
+# periodic_ingest_cursor is the resumable high-water mark. Mirrors the Form-4
+# envelope/cursor pattern (ADR 0038).
+
+_PERIODIC_SECTION_RISK_FACTORS = "risk_factors"
+
+
+def select_seen_periodic_accessions(engine: Engine, accessions: list[str]) -> set[str]:
+    """Return the subset of `accessions` already processed, per periodic_filings.
+
+    Periodic ingest dedups on the accession PK before fetching/segmenting. The
+    anchor is periodic_filings (one row per processed 10-K, written even when the
+    document yielded no blocks), so a non-markup or section-less filing is not
+    re-fetched forever.
+    """
+    if not accessions:
+        return set()
+    sql = text(
+        "SELECT accession_number FROM periodic_filings WHERE accession_number IN :accs"
+    ).bindparams(bindparam("accs", expanding=True))
+    with engine.begin() as conn:
+        rows = conn.execute(sql, {"accs": accessions}).fetchall()
+    return {row[0] for row in rows}
+
+
+def read_periodic_cursor(engine: Engine) -> tuple[str, str] | None:
+    """Return the periodic-ingest cursor as (accession_number, filed_at), or None.
+
+    None means the singleton has never been written — the first tick scans only
+    the current ET day (no backfill), mirroring the 8-K/Form-4 cursor contract.
+    """
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                "SELECT last_accession_number, last_filed_at "
+                "FROM periodic_ingest_cursor WHERE id = 1"
+            )
+        ).fetchone()
+    if row is None:
+        return None
+    return str(row[0]), str(row[1])
+
+
+def advance_periodic_cursor(engine: Engine, accession_number: str, filed_at: str) -> None:
+    """Upsert the singleton periodic cursor to (accession_number, filed_at).
+
+    Called only after an index date is FULLY ingested. An aborted tick never
+    reaches the advance, so the next run resumes from the incomplete date.
+    """
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO periodic_ingest_cursor
+                       (id, last_accession_number, last_filed_at, updated_at)
+                VALUES (1, :accession, :filed_at, :updated_at)
+                ON CONFLICT (id) DO UPDATE SET
+                    last_accession_number = excluded.last_accession_number,
+                    last_filed_at         = excluded.last_filed_at,
+                    updated_at            = excluded.updated_at
+                """
+            ),
+            {
+                "accession": accession_number,
+                "filed_at": filed_at,
+                "updated_at": datetime.now(UTC).isoformat(),
+            },
+        )
+
+
+def insert_periodic_filing(
+    engine: Engine,
+    *,
+    accession_number: str,
+    cik: str,
+    company_name: str | None,
+    form: str,
+    filed_at: str,
+    period_of_report: str | None,
+    fiscal_year: int | None,
+    parsed: bool,
+    blocks: list[RiskFactorBlock],
+    ingested_at: str,
+    section: str = _PERIODIC_SECTION_RISK_FACTORS,
+) -> None:
+    """Store one processed 10-K: the envelope row plus its risk-factor blocks.
+
+    Envelope and blocks are written in a single transaction so a filing is either
+    fully stored or not at all. Idempotent: the envelope upserts on the accession
+    PK and the filing's blocks for this section are replaced (delete + insert), so
+    a re-segmentation of the same accession does not accumulate stale blocks.
+    `parsed=False` records a fetched-but-unsegmentable filing (non-markup/oversized)
+    with zero blocks, so it stays anchored and is not re-fetched.
+    """
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO periodic_filings (
+                    accession_number, cik, company_name, form, filed_at,
+                    period_of_report, fiscal_year, parsed, block_count, ingested_at
+                ) VALUES (
+                    :accession_number, :cik, :company_name, :form, :filed_at,
+                    :period_of_report, :fiscal_year, :parsed, :block_count, :ingested_at
+                )
+                ON CONFLICT (accession_number) DO UPDATE SET
+                    cik              = excluded.cik,
+                    company_name     = excluded.company_name,
+                    form             = excluded.form,
+                    filed_at         = excluded.filed_at,
+                    period_of_report = excluded.period_of_report,
+                    fiscal_year      = excluded.fiscal_year,
+                    parsed           = excluded.parsed,
+                    block_count      = excluded.block_count,
+                    ingested_at      = excluded.ingested_at
+                """
+            ),
+            {
+                "accession_number": accession_number,
+                "cik": cik,
+                "company_name": company_name,
+                "form": form,
+                "filed_at": filed_at,
+                "period_of_report": period_of_report,
+                "fiscal_year": fiscal_year,
+                "parsed": 1 if parsed else 0,
+                "block_count": len(blocks),
+                "ingested_at": ingested_at,
+            },
+        )
+        conn.execute(
+            text(
+                "DELETE FROM filing_blocks "
+                "WHERE accession_number = :accession_number AND section = :section"
+            ),
+            {"accession_number": accession_number, "section": section},
+        )
+        for block in blocks:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO filing_blocks (
+                        accession_number, section, block_index,
+                        heading, block_text, block_hash
+                    ) VALUES (
+                        :accession_number, :section, :block_index,
+                        :heading, :block_text, :block_hash
+                    )
+                    """
+                ),
+                {
+                    "accession_number": accession_number,
+                    "section": section,
+                    "block_index": block.index,
+                    "heading": block.heading,
+                    "block_text": block.text,
+                    "block_hash": block.block_hash,
+                },
+            )

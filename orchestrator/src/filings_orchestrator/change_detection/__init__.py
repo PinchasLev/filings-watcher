@@ -17,18 +17,30 @@ from filings_orchestrator.change_detection.embeddings import (
     Embedder,
     VoyageEmbedder,
 )
+from filings_orchestrator.change_detection.materiality import (
+    DEFAULT_JUDGE_MODEL,
+    MaterialityVerdict,
+    build_judge,
+    judge_change,
+    judge_version,
+)
 from filings_orchestrator.change_detection.sectioning import (
     RiskFactorBlock,
     segment_risk_factors,
 )
 
 __all__ = [
+    "DEFAULT_JUDGE_MODEL",
     "DEFAULT_MODEL",
     "BlockChange",
     "DiffResult",
     "Embedder",
+    "MaterialityVerdict",
     "RiskFactorBlock",
     "VoyageEmbedder",
+    "build_judge",
     "diff_blocks",
+    "judge_change",
+    "judge_version",
     "segment_risk_factors",
 ]

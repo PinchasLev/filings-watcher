@@ -19,7 +19,11 @@ from typing import NamedTuple
 
 from sqlalchemy import Connection, Engine, bindparam, text
 
-from filings_orchestrator.change_detection import DiffResult, RiskFactorBlock
+from filings_orchestrator.change_detection import (
+    DiffResult,
+    MaterialityVerdict,
+    RiskFactorBlock,
+)
 from filings_orchestrator.classify import (
     Classification,
     EventType,
@@ -1723,3 +1727,116 @@ def insert_filing_diff(
                     "similarity": change.similarity,
                 },
             )
+
+
+# --- Change materiality verdicts (ADR 0042, PR 5) ----------------------------
+#
+# The LLM judges each shortlisted change; verdicts are stored per judge_version so
+# a prompt/model change re-judges rather than overwrites.
+
+
+class ChangeToJudge(NamedTuple):
+    """A shortlisted change with both sides' text loaded, ready for the LLM judge.
+    current_text is None for a dropped change; prior_text is None for an added one."""
+
+    accession_number: str
+    section: str
+    model_id: str
+    change_seq: int
+    change_type: str
+    current_text: str | None
+    prior_text: str | None
+
+
+def select_changes_needing_verdict(
+    engine: Engine, judge_version: str, limit: int
+) -> list[ChangeToJudge]:
+    """Return up to `limit` shortlisted changes with no verdict yet for
+    `judge_version`, each with its current and prior block text joined in.
+
+    A left join against block_change_verdicts for this version finds the gap, so the
+    judge is a resumable reconciler. Text is joined from filing_blocks — current text
+    keyed on this filing, prior text on the paired prior filing.
+    """
+    sql = text(
+        """
+        SELECT c.accession_number, c.section, c.model_id, c.change_seq, c.change_type,
+               cur.block_text AS current_text, pri.block_text AS prior_text
+          FROM block_changes c
+          LEFT JOIN block_change_verdicts v
+                 ON v.accession_number = c.accession_number AND v.section = c.section
+                AND v.model_id = c.model_id AND v.change_seq = c.change_seq
+                AND v.judge_version = :judge_version
+          LEFT JOIN filing_blocks cur
+                 ON cur.accession_number = c.accession_number AND cur.section = c.section
+                AND cur.block_index = c.current_block_index
+          LEFT JOIN filing_blocks pri
+                 ON pri.accession_number = c.prior_accession_number AND pri.section = c.section
+                AND pri.block_index = c.prior_block_index
+         WHERE v.accession_number IS NULL
+         ORDER BY c.accession_number, c.change_seq
+         LIMIT :limit
+        """
+    )
+    with engine.begin() as conn:
+        rows = conn.execute(sql, {"judge_version": judge_version, "limit": limit}).fetchall()
+    return [
+        ChangeToJudge(
+            accession_number=str(r[0]),
+            section=str(r[1]),
+            model_id=str(r[2]),
+            change_seq=int(r[3]),
+            change_type=str(r[4]),
+            current_text=r[5],
+            prior_text=r[6],
+        )
+        for r in rows
+    ]
+
+
+def insert_change_verdict(
+    engine: Engine,
+    *,
+    change: ChangeToJudge,
+    judge_version: str,
+    verdict: MaterialityVerdict,
+    needs_review: bool,
+    judged_at: str,
+) -> None:
+    """Store one materiality verdict. Idempotent on the change + judge_version key —
+    a re-judge under the same version overwrites."""
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO block_change_verdicts (
+                    accession_number, section, model_id, change_seq, judge_version,
+                    is_material, confidence, category, explanation, needs_review, judged_at
+                ) VALUES (
+                    :accession_number, :section, :model_id, :change_seq, :judge_version,
+                    :is_material, :confidence, :category, :explanation, :needs_review, :judged_at
+                )
+                ON CONFLICT (accession_number, section, model_id, change_seq, judge_version)
+                DO UPDATE SET
+                    is_material  = excluded.is_material,
+                    confidence   = excluded.confidence,
+                    category     = excluded.category,
+                    explanation  = excluded.explanation,
+                    needs_review = excluded.needs_review,
+                    judged_at    = excluded.judged_at
+                """
+            ),
+            {
+                "accession_number": change.accession_number,
+                "section": change.section,
+                "model_id": change.model_id,
+                "change_seq": change.change_seq,
+                "judge_version": judge_version,
+                "is_material": 1 if verdict.is_material else 0,
+                "confidence": verdict.confidence,
+                "category": verdict.category,
+                "explanation": verdict.explanation,
+                "needs_review": 1 if needs_review else 0,
+                "judged_at": judged_at,
+            },
+        )

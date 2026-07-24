@@ -162,6 +162,7 @@ def test_apply_migrations_creates_tables_and_records_version() -> None:
         "015_periodic_filings",
         "016_filing_block_embeddings",
         "017_filing_diffs",
+        "018_block_change_verdicts",
     ]
 
     with engine.begin() as conn:
@@ -193,6 +194,7 @@ def test_apply_migrations_creates_tables_and_records_version() -> None:
         "filing_block_embeddings",
         "filing_diffs",
         "block_changes",
+        "block_change_verdicts",
     }.issubset(tables)
 
 

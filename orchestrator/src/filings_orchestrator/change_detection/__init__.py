@@ -7,6 +7,11 @@ module is the deterministic section segmentation that turns a filing's Risk Fact
 into whole risk-factor blocks.
 """
 
+from filings_orchestrator.change_detection.diffing import (
+    BlockChange,
+    DiffResult,
+    diff_blocks,
+)
 from filings_orchestrator.change_detection.embeddings import (
     DEFAULT_MODEL,
     Embedder,
@@ -19,8 +24,11 @@ from filings_orchestrator.change_detection.sectioning import (
 
 __all__ = [
     "DEFAULT_MODEL",
+    "BlockChange",
+    "DiffResult",
     "Embedder",
     "RiskFactorBlock",
     "VoyageEmbedder",
+    "diff_blocks",
     "segment_risk_factors",
 ]

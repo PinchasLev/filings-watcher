@@ -19,7 +19,7 @@ from typing import NamedTuple
 
 from sqlalchemy import Connection, Engine, bindparam, text
 
-from filings_orchestrator.change_detection import RiskFactorBlock
+from filings_orchestrator.change_detection import DiffResult, RiskFactorBlock
 from filings_orchestrator.classify import (
     Classification,
     EventType,
@@ -1508,3 +1508,218 @@ def insert_block_embeddings(
                 },
             )
     return len(items)
+
+
+# --- Change-detection diff (ADR 0042, PR 4) ----------------------------------
+#
+# A filing is diffed against its prior comparable (same cik/form, next-earlier
+# parsed period). The diff is computed only once both sides are fully embedded for
+# the model; the shortlist is stored in filing_diffs + block_changes.
+
+
+class DiffCandidate(NamedTuple):
+    """A filing ready to diff: fully embedded for the model, not yet diffed, with a
+    parsed earlier filing to pair against."""
+
+    accession_number: str
+    cik: str
+    form: str
+    period_of_report: str
+
+
+def select_filings_needing_diff(
+    engine: Engine, section: str, model_id: str, limit: int
+) -> list[DiffCandidate]:
+    """Return filings whose diff is ready to compute: fully embedded for `model_id`,
+    no diff row yet, and with at least one earlier parsed filing to pair against.
+
+    True first filings (no earlier parsed period) are excluded here, so they are not
+    re-checked every run; if an earlier filing is backfilled later, they become
+    eligible automatically. A filing whose prior exists but is not embedded yet still
+    matches and is skipped by the caller until the prior is embedded (retry-later).
+    """
+    sql = text(
+        """
+        SELECT p.accession_number, p.cik, p.form, p.period_of_report
+          FROM periodic_filings p
+         WHERE p.block_count > 0
+           AND p.period_of_report IS NOT NULL
+           AND NOT EXISTS (
+                 SELECT 1 FROM filing_diffs d
+                  WHERE d.accession_number = p.accession_number
+                    AND d.section = :section AND d.model_id = :model_id)
+           AND NOT EXISTS (
+                 SELECT 1 FROM filing_blocks b
+                 LEFT JOIN filing_block_embeddings e
+                        ON e.accession_number = b.accession_number
+                       AND e.section = b.section
+                       AND e.block_index = b.block_index
+                       AND e.model_id = :model_id
+                  WHERE b.accession_number = p.accession_number
+                    AND b.section = :section
+                    AND e.accession_number IS NULL)
+           AND EXISTS (
+                 SELECT 1 FROM periodic_filings q
+                  WHERE q.cik = p.cik AND q.form = p.form
+                    AND q.block_count > 0
+                    AND q.period_of_report IS NOT NULL
+                    AND q.period_of_report < p.period_of_report)
+         ORDER BY p.period_of_report
+         LIMIT :limit
+        """
+    )
+    with engine.begin() as conn:
+        rows = conn.execute(
+            sql, {"section": section, "model_id": model_id, "limit": limit}
+        ).fetchall()
+    return [DiffCandidate(str(r[0]), str(r[1]), str(r[2]), str(r[3])) for r in rows]
+
+
+def find_prior_periodic_filing(
+    engine: Engine, *, cik: str, form: str, before_period: str
+) -> str | None:
+    """Return the accession of the latest parsed earlier filing to diff against, or
+    None. Picks the most recent period strictly before `before_period` with blocks —
+    skipping an unparseable intervening year, which stays transparent because the
+    diff records the actual prior period it paired against."""
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT accession_number FROM periodic_filings
+                 WHERE cik = :cik AND form = :form
+                   AND block_count > 0
+                   AND period_of_report IS NOT NULL
+                   AND period_of_report < :before_period
+                 ORDER BY period_of_report DESC
+                 LIMIT 1
+                """
+            ),
+            {"cik": cik, "form": form, "before_period": before_period},
+        ).fetchone()
+    return str(row[0]) if row else None
+
+
+def is_filing_fully_embedded(
+    engine: Engine, accession_number: str, section: str, model_id: str
+) -> bool:
+    """True if every block of this filing/section has an embedding for `model_id`."""
+    with engine.begin() as conn:
+        missing = conn.execute(
+            text(
+                """
+                SELECT 1 FROM filing_blocks b
+                LEFT JOIN filing_block_embeddings e
+                       ON e.accession_number = b.accession_number
+                      AND e.section = b.section
+                      AND e.block_index = b.block_index
+                      AND e.model_id = :model_id
+                 WHERE b.accession_number = :accession_number
+                   AND b.section = :section
+                   AND e.accession_number IS NULL
+                 LIMIT 1
+                """
+            ),
+            {"accession_number": accession_number, "section": section, "model_id": model_id},
+        ).fetchone()
+    return missing is None
+
+
+def load_block_vectors(
+    engine: Engine, accession_number: str, section: str, model_id: str
+) -> list[tuple[int, list[float]]]:
+    """Return (block_index, vector) for a filing's blocks, ordered by block_index."""
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT block_index, embedding_json FROM filing_block_embeddings
+                 WHERE accession_number = :accession_number
+                   AND section = :section AND model_id = :model_id
+                 ORDER BY block_index
+                """
+            ),
+            {"accession_number": accession_number, "section": section, "model_id": model_id},
+        ).fetchall()
+    return [(int(r[0]), [float(x) for x in json.loads(r[1])]) for r in rows]
+
+
+def insert_filing_diff(
+    engine: Engine,
+    *,
+    accession_number: str,
+    prior_accession_number: str,
+    section: str,
+    model_id: str,
+    result: DiffResult,
+    computed_at: str,
+) -> None:
+    """Store a diff: the filing_diffs summary row plus the block_changes shortlist,
+    in one transaction. Idempotent — the summary upserts and the shortlist for this
+    (filing, section, model) is replaced, so recomputing does not accumulate rows."""
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO filing_diffs (
+                    accession_number, section, model_id, prior_accession_number,
+                    added_count, changed_count, carried_count, dropped_count, computed_at
+                ) VALUES (
+                    :accession_number, :section, :model_id, :prior_accession_number,
+                    :added, :changed, :carried, :dropped, :computed_at
+                )
+                ON CONFLICT (accession_number, section, model_id) DO UPDATE SET
+                    prior_accession_number = excluded.prior_accession_number,
+                    added_count            = excluded.added_count,
+                    changed_count          = excluded.changed_count,
+                    carried_count          = excluded.carried_count,
+                    dropped_count          = excluded.dropped_count,
+                    computed_at            = excluded.computed_at
+                """
+            ),
+            {
+                "accession_number": accession_number,
+                "section": section,
+                "model_id": model_id,
+                "prior_accession_number": prior_accession_number,
+                "added": result.added,
+                "changed": result.changed,
+                "carried": result.carried,
+                "dropped": result.dropped,
+                "computed_at": computed_at,
+            },
+        )
+        conn.execute(
+            text(
+                "DELETE FROM block_changes WHERE accession_number = :accession_number "
+                "AND section = :section AND model_id = :model_id"
+            ),
+            {"accession_number": accession_number, "section": section, "model_id": model_id},
+        )
+        for seq, change in enumerate(result.changes):
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO block_changes (
+                        accession_number, section, model_id, change_seq, change_type,
+                        current_block_index, prior_block_index, prior_accession_number,
+                        similarity
+                    ) VALUES (
+                        :accession_number, :section, :model_id, :change_seq, :change_type,
+                        :current_block_index, :prior_block_index, :prior_accession_number,
+                        :similarity
+                    )
+                    """
+                ),
+                {
+                    "accession_number": accession_number,
+                    "section": section,
+                    "model_id": model_id,
+                    "change_seq": seq,
+                    "change_type": change.change_type,
+                    "current_block_index": change.current_block_index,
+                    "prior_block_index": change.prior_block_index,
+                    "prior_accession_number": prior_accession_number,
+                    "similarity": change.similarity,
+                },
+            )

@@ -23,7 +23,13 @@ from typing import NamedTuple
 import numpy as np
 
 # A current block whose best prior match is at or above this is treated as unchanged.
-_CARRY_THRESHOLD = 0.95
+# 0.97, not 0.95: a validation run over real filings found material changes sitting in
+# the 0.95-0.97 band (a material fact added to an otherwise near-identical block, e.g.
+# Ford's 2025 emissions-authority repeal, an NHTSA consent order) that a 0.95 cutoff
+# carried over and missed. 0.97 sends the near-carry band to the LLM to judge; the cost
+# is a few extra judge calls, which the LLM filters. Purely-numeric changes can still
+# sit above 0.97 (embeddings are numeric-blind) — those are the numbers pipeline's job.
+_CARRY_THRESHOLD = 0.97
 # Between change and carry: a matched-but-edited block. Below it: no real counterpart
 # (added on the current side, dropped on the prior side).
 _CHANGE_THRESHOLD = 0.70

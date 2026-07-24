@@ -28,6 +28,10 @@ def _no_bold_html() -> str:
     return (FIXTURES / "sample_10k_no_bold_headers.html").read_text()
 
 
+def _crossref_html() -> str:
+    return (FIXTURES / "sample_10k_item1_crossref.html").read_text()
+
+
 def test_splits_into_intro_plus_one_block_per_risk_factor() -> None:
     blocks = segment_risk_factors(_risk_factors_html())
     # section intro + three bold-headed risk factors
@@ -89,6 +93,18 @@ def test_fallback_when_no_bold_headers() -> None:
 def test_no_risk_factors_section_returns_empty() -> None:
     html = "<html><body><p>This filing has no risk factors section at all.</p></body></html>"
     assert segment_risk_factors(html) == []
+
+
+def test_item1_crossreference_does_not_leak_business_into_risk_factors() -> None:
+    # An "Item 1A" cross-reference inside Item 1 (Business) must not start the section
+    # and pull Business content in (the over-capture seen on AMC/Peloton). The real
+    # Item 1A heading, which follows, is the true start.
+    blocks = segment_risk_factors(_crossref_html())
+    joined = " ".join(b.text.lower() for b in blocks)
+    assert "businesssectionmarker" not in joined  # Item 1 Business content excluded
+    assert "operating segments" not in joined
+    assert "going concern" in joined  # real risk factors still captured
+    assert any("small number of large customers" in (b.heading or "").lower() for b in blocks)
 
 
 def test_hash_is_whitespace_invariant_but_content_sensitive() -> None:

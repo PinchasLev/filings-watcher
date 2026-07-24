@@ -128,14 +128,29 @@ def _coalesced_segments(html: str) -> tuple[list[_Segment], str]:
     return segments, joined_lower
 
 
-def _locate_item_1a(joined_lower: str) -> tuple[int, int] | None:
-    """Find the character span of the Risk Factors section: from an "Item 1A" to the
-    next "Item 1B"/"Item 2" after it. Picks the widest such span so the real section
-    wins over the short table-of-contents entry."""
+def _locate_item_1a(joined_lower: str, segments: list[_Segment]) -> tuple[int, int] | None:
+    """Find the character span of the Risk Factors section: from the "Item 1A"
+    heading to the next "Item 1B"/"Item 2" after it.
+
+    The section start must be a real HEADING, i.e. an "Item 1A" match that falls inside
+    a bold segment — not an inline cross-reference like "see Item 1A. Risk Factors
+    below" that filers place in Item 1 (which would start the span early and swallow
+    the Business section), nor an inline back-reference from within a risk factor
+    (which would confuse a purely positional rule). Both were seen on real filings —
+    AMC/Peloton over-captured Item 1, Ford has inline references inside the section.
+    Among the heading candidates, the widest span to the next Item 1B/2 wins. If none
+    of the matches are bold (a filing whose headings carry no bold styling), fall back
+    to all matches so we still return something."""
     starts = [m.start() for m in _ITEM_1A_RE.finditer(joined_lower)]
     ends = [m.start() for m in _ITEM_END_RE.finditer(joined_lower)]
+
+    def _is_heading(pos: int) -> bool:
+        return any(seg.bold and seg.start <= pos < seg.end for seg in segments)
+
+    heading_starts = [s for s in starts if _is_heading(s)]
+    candidates = heading_starts or starts
     best: tuple[int, int] | None = None
-    for s in starts:
+    for s in candidates:
         after = [e for e in ends if e > s]
         if not after:
             continue
@@ -206,7 +221,7 @@ def segment_risk_factors(html: str) -> list[RiskFactorBlock]:
     structure. Blocks shorter than `_MIN_BLOCK_CHARS` are dropped.
     """
     segments, joined_lower = _coalesced_segments(html)
-    span = _locate_item_1a(joined_lower)
+    span = _locate_item_1a(joined_lower, segments)
     if span is None:
         return []
 

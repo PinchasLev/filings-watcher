@@ -28,6 +28,7 @@ type storer interface {
 	// Insider (Form 4) surfacing on the company page.
 	CompanyInsiderPulse(ctx context.Context, cik string, windowDays int) (store.InsiderPulse, error)
 	CompanyInsiderTrades(ctx context.Context, cik string, limit int) ([]store.InsiderTrade, error)
+	CompanyDisclosureChanges(ctx context.Context, cik string, limit int) ([]store.DisclosureChangeGroup, error)
 	// NotableInsiderActivity backs the /insiders feed of recent cluster buys.
 	NotableInsiderActivity(ctx context.Context, windowDays int, minValue float64, limit int) ([]store.InsiderCluster, error)
 	// LiveEvents backs the /live tape: near-real-time material events sorted

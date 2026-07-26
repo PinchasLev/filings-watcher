@@ -25,6 +25,9 @@ const companyPageLimit = 50
 // insiderTradesLimit caps the recent-insider-transactions table on the company page.
 const insiderTradesLimit = 20
 
+// disclosureChangesLimit caps the material risk-factor changes surfaced on the page.
+const disclosureChangesLimit = 40
+
 // companyTemplate is parsed once at process start, sharing the base layout
 // and the common template funcs with the home and detail pages.
 var companyTemplate = template.Must(template.New("layout.html.tmpl").Funcs(templateFuncs).ParseFS(
@@ -44,6 +47,10 @@ type companyPageData struct {
 	Pulse30       store.InsiderPulse
 	Pulse90       store.InsiderPulse
 	InsiderTrades []store.InsiderTrade
+	// Disclosure change-detection (ADR 0042): material year-over-year risk-factor
+	// changes, grouped by filing. Supplementary — a query error renders the empty
+	// state rather than failing the page.
+	DisclosureChanges []store.DisclosureChangeGroup
 	// Pagination state, identical in meaning to the home page's.
 	RangeStart int
 	RangeEnd   int
@@ -72,19 +79,21 @@ func handleCompany(s storer) http.HandlerFunc {
 		pulse30, _ := s.CompanyInsiderPulse(r.Context(), canonicalCIK, 30)
 		pulse90, _ := s.CompanyInsiderPulse(r.Context(), canonicalCIK, 90)
 		trades, _ := s.CompanyInsiderTrades(r.Context(), canonicalCIK, insiderTradesLimit)
+		changes, _ := s.CompanyDisclosureChanges(r.Context(), canonicalCIK, disclosureChangesLimit)
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := companyTemplate.ExecuteTemplate(w, "layout.html.tmpl", companyPageData{
-			Company:       *company,
-			Events:        events,
-			FilingTotal:   total,
-			Pulse30:       pulse30,
-			Pulse90:       pulse90,
-			InsiderTrades: trades,
-			RangeStart:    pageRangeStart(offset, len(events)),
-			RangeEnd:      pageRangeEnd(offset, len(events)),
-			PrevURL:       companyPageURL(cik, offset-companyPageLimit, true),
-			NextURL:       companyPageURL(cik, offset+companyPageLimit, offset+companyPageLimit < total),
+			Company:           *company,
+			Events:            events,
+			FilingTotal:       total,
+			Pulse30:           pulse30,
+			Pulse90:           pulse90,
+			InsiderTrades:     trades,
+			DisclosureChanges: changes,
+			RangeStart:        pageRangeStart(offset, len(events)),
+			RangeEnd:          pageRangeEnd(offset, len(events)),
+			PrevURL:           companyPageURL(cik, offset-companyPageLimit, true),
+			NextURL:           companyPageURL(cik, offset+companyPageLimit, offset+companyPageLimit < total),
 		}); err != nil {
 			// Headers already written; can't change status.
 			_ = err
@@ -141,6 +150,20 @@ func insiderTxnLabel(code string) string {
 		return "—"
 	default:
 		return code
+	}
+}
+
+// disclosureChangeLabel maps a diff change type to a reader-facing badge word.
+func disclosureChangeLabel(changeType string) string {
+	switch changeType {
+	case "added":
+		return "New"
+	case "changed":
+		return "Revised"
+	case "dropped":
+		return "Removed"
+	default:
+		return changeType
 	}
 }
 

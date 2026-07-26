@@ -137,6 +137,9 @@ type Store interface {
 	// rolling window, and its most recent insider transactions.
 	CompanyInsiderPulse(ctx context.Context, cik string, windowDays int) (InsiderPulse, error)
 	CompanyInsiderTrades(ctx context.Context, cik string, limit int) ([]InsiderTrade, error)
+	// Disclosure change-detection surfacing (ADR 0042): a company's material
+	// year-over-year risk-factor changes, grouped by filing.
+	CompanyDisclosureChanges(ctx context.Context, cik string, limit int) ([]DisclosureChangeGroup, error)
 	// NotableInsiderActivity backs the /insiders feed: recent cluster buys.
 	NotableInsiderActivity(ctx context.Context, windowDays int, minValue float64, limit int) ([]InsiderCluster, error)
 	// Events layer (ADR 0027/0028). Each filing's current view is the wholesale

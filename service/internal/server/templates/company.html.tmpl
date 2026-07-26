@@ -53,6 +53,32 @@
   {{end}}
 </section>
 
+{{if .DisclosureChanges}}
+  <section class="disclosure-changes">
+    <h3>Disclosure changes <small>(year-over-year Risk Factors)</small></h3>
+    {{range .DisclosureChanges}}
+      <div class="diff-group">
+        <p class="diff-periods">
+          Risk factors for fiscal period ending <strong>{{.CurrentPeriod}}</strong>{{if .PriorPeriod}}, versus <strong>{{.PriorPeriod}}</strong>{{end}}
+          — <a href="{{edgarURL .Accession}}" rel="noopener" target="_blank">view filing on EDGAR &rarr;</a>
+        </p>
+        {{range .Changes}}
+          <article class="filing-card">
+            <div class="filing-meta">
+              <span class="badge">{{changeLabel .ChangeType}}</span>
+              {{if .Category}}<span class="badge">{{.Category}}</span>{{end}}
+              {{if .NeedsReview}}<span class="badge">needs review</span>{{end}}
+            </div>
+            {{if .Heading}}<h4>{{.Heading}}</h4>{{end}}
+            <p class="reasoning">{{.Explanation}}</p>
+          </article>
+        {{end}}
+      </div>
+    {{end}}
+    <small>Material year-over-year changes to this company's Risk Factors (Item&nbsp;1A), found by comparing each annual report to the prior year and judged for materiality. Fiscal periods are the reporting period ends. Not investment advice.</small>
+  </section>
+{{end}}
+
 {{if .Events}}
   <section>
     {{range .Events}}

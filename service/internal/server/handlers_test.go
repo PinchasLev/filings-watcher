@@ -49,9 +49,12 @@ type fakeStore struct {
 	companyTotal  int
 	companyErr    error
 
-	insiderPulse    store.InsiderPulse
-	insiderTrades   []store.InsiderTrade
-	notableClusters []store.InsiderCluster
+	insiderPulse  store.InsiderPulse
+	insiderTrades []store.InsiderTrade
+
+	disclosureChanges    []store.DisclosureChangeGroup
+	disclosureChangesErr error
+	notableClusters      []store.InsiderCluster
 
 	liveEventsResult []store.Event
 	liveEventsTotal  int
@@ -161,6 +164,12 @@ func (f *fakeStore) CompanyInsiderPulse(_ context.Context, _ string, _ int) (sto
 
 func (f *fakeStore) CompanyInsiderTrades(_ context.Context, _ string, _ int) ([]store.InsiderTrade, error) {
 	return f.insiderTrades, nil
+}
+
+func (f *fakeStore) CompanyDisclosureChanges(
+	_ context.Context, _ string, _ int,
+) ([]store.DisclosureChangeGroup, error) {
+	return f.disclosureChanges, f.disclosureChangesErr
 }
 
 func (f *fakeStore) NotableInsiderActivity(_ context.Context, _ int, _ float64, _ int) ([]store.InsiderCluster, error) {

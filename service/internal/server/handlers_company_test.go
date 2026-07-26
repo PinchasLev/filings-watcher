@@ -123,6 +123,63 @@ func TestCompanyPageRenders(t *testing.T) {
 	}
 }
 
+func TestCompanyPageRendersDisclosureChanges(t *testing.T) {
+	sim := 0.82
+	fake := &fakeStore{
+		companyResult: &store.Company{CIK: "0001234567", Ticker: "ACME", CompanyName: "Acme Corp"},
+		disclosureChanges: []store.DisclosureChangeGroup{{
+			Accession:     "0001234567-26-000010",
+			CurrentPeriod: "2025-12-31",
+			PriorPeriod:   "2024-12-31",
+			Changes: []store.DisclosureChange{{
+				Heading:     "Going concern doubt.",
+				ChangeType:  "added",
+				Category:    "going-concern",
+				Explanation: "New going-concern risk disclosed this year.",
+				Confidence:  0.95,
+				NeedsReview: true,
+				Similarity:  &sim,
+			}},
+		}},
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/companies/0001234567", nil)
+	server.New(fake).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Disclosure changes",
+		"2025-12-31", "2024-12-31", // both fiscal periods shown
+		"New",                              // changeLabel("added")
+		"going-concern",                    // category badge
+		"Going concern doubt.",             // heading
+		"New going-concern risk disclosed", // explanation
+		"needs review",                     // review flag
+		"0001234567-26-000010-index.htm",   // EDGAR citation link
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected disclosure-changes body to contain %q", want)
+		}
+	}
+}
+
+func TestCompanyPageOmitsDisclosureChangesWhenEmpty(t *testing.T) {
+	fake := &fakeStore{
+		companyResult: &store.Company{CIK: "0001234567", CompanyName: "Acme Corp"},
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/companies/0001234567", nil)
+	server.New(fake).ServeHTTP(rec, req)
+
+	if strings.Contains(rec.Body.String(), "Disclosure changes") {
+		t.Error("disclosure-changes section should be absent when there are no changes")
+	}
+}
+
 func TestCompanyPageNotFoundIs404(t *testing.T) {
 	fake := &fakeStore{companyErr: store.ErrNotFound}
 

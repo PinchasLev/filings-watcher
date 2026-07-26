@@ -47,6 +47,7 @@ var templateFuncs = template.FuncMap{
 	"usd":           usdCompact,
 	"usdp":          usdCompactPtr,
 	"txnLabel":      insiderTxnLabel,
+	"changeLabel":   disclosureChangeLabel,
 	"liveWindowURL": liveWindowURL,
 	"relTime":       relTimeFromISO,
 	// utcDateTime is the server-side fallback for the <time> elements on

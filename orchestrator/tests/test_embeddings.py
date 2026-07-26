@@ -117,6 +117,28 @@ def test_voyage_embed_empty_makes_no_request() -> None:
         assert not route.called
 
 
+def test_voyage_embed_retries_on_429_then_succeeds() -> None:
+    with respx.mock(assert_all_called=True) as mock:
+        mock.post(_VOYAGE_URL).mock(
+            side_effect=[
+                httpx.Response(429),
+                httpx.Response(
+                    200, json={"data": [{"embedding": [0.1, 0.2], "index": 0}], "model": _MODEL}
+                ),
+            ]
+        )
+        embedder = VoyageEmbedder("key", _MODEL, sleep=lambda _s: None)
+        assert embedder.embed(["x"]) == [[0.1, 0.2]]
+
+
+def test_voyage_embed_raises_after_persistent_429() -> None:
+    with respx.mock() as mock:
+        mock.post(_VOYAGE_URL).mock(return_value=httpx.Response(429))
+        embedder = VoyageEmbedder("key", _MODEL, max_attempts=3, sleep=lambda _s: None)
+        with pytest.raises(httpx.HTTPStatusError):
+            embedder.embed(["x"])
+
+
 # --- persistence ---
 
 

@@ -10,7 +10,9 @@ new class, not a rewrite.
 
 from __future__ import annotations
 
-from typing import Protocol
+import time
+from collections.abc import Callable
+from typing import Any, Protocol
 
 import httpx
 
@@ -20,6 +22,17 @@ import httpx
 DEFAULT_MODEL = "voyage-finance-2"
 
 _VOYAGE_URL = "https://api.voyageai.com/v1/embeddings"
+
+# Voyage returns 429 when a per-minute rate/token limit is hit, and 5xx on transient
+# upstream failures. Both are worth retrying — the difference between the embed
+# reconciler draining a backlog and dying on a busy minute.
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 529})
+_RETRYABLE_NETWORK: tuple[type[Exception], ...] = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.PoolTimeout,
+)
 
 
 class Embedder(Protocol):
@@ -45,24 +58,57 @@ class VoyageEmbedder:
         *,
         client: httpx.Client | None = None,
         timeout: float = 60.0,
+        max_attempts: int = 5,
+        base_delay: float = 1.0,
+        max_delay: float = 30.0,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.model_id = model
         self._api_key = api_key
         self._client = client or httpx.Client(timeout=timeout)
+        self._max_attempts = max_attempts
+        self._base_delay = base_delay
+        self._max_delay = max_delay
+        self._sleep = sleep
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        response = self._client.post(
-            _VOYAGE_URL,
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
-            json={"input": texts, "model": self.model_id, "input_type": "document"},
-        )
-        response.raise_for_status()
-        payload = response.json()
+        payload = self._post(texts)
         # Voyage tags each item with its input index; sort to restore input order.
         items = sorted(payload["data"], key=lambda d: int(d["index"]))
         return [[float(x) for x in item["embedding"]] for item in items]
+
+    def _post(self, texts: list[str]) -> dict[str, Any]:
+        """POST one batch with exponential backoff on rate-limit / transient errors.
+
+        Voyage's per-minute rate and token limits surface as 429; retrying with
+        backoff is what lets the embed reconciler drain a backlog instead of failing
+        the tick on a busy minute. Non-retryable errors (auth, bad request) raise
+        immediately; the final retryable failure propagates and the reconciler leaves
+        the batch for the next run.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(self._max_attempts):
+            try:
+                response = self._client.post(
+                    _VOYAGE_URL,
+                    headers={
+                        "Authorization": f"Bearer {self._api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={"input": texts, "model": self.model_id, "input_type": "document"},
+                )
+                response.raise_for_status()
+                result: dict[str, Any] = response.json()
+                return result
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in _RETRYABLE_STATUS:
+                    raise
+                last_exc = exc
+            except _RETRYABLE_NETWORK as exc:
+                last_exc = exc
+            if attempt < self._max_attempts - 1:
+                self._sleep(min(self._base_delay * 2**attempt, self._max_delay))
+        assert last_exc is not None  # loop ran at least once
+        raise last_exc

@@ -31,6 +31,7 @@ their own modules).
 from __future__ import annotations
 
 import hashlib
+import re
 from enum import StrEnum
 from typing import Any, NamedTuple
 
@@ -44,7 +45,12 @@ from filings_orchestrator.change_detection.taxonomy import (
 )
 from filings_orchestrator.cost import emit_llm_call
 
-DEFAULT_SYNTHESIS_MODEL = "claude-haiku-4-5-20251001"
+# The reduce is one call per filing — the lowest-volume, highest-judgment-value step in
+# the pipeline (it produces the headline direction, intensity, and thesis a reader sees
+# first). That is exactly where a stronger model earns its keep, and where the per-change
+# judge's cheap model (Haiku) proved unable to calibrate magnitude on the demo names. So
+# the reduce runs on Sonnet while the high-volume per-change judge stays on Haiku.
+DEFAULT_SYNTHESIS_MODEL = "claude-sonnet-4-6"
 
 
 class HeadlineDirection(StrEnum):
@@ -89,6 +95,31 @@ def coerce_intensity(value: object) -> HeadlineIntensity:
         except ValueError:
             return HeadlineIntensity.MODERATE
     return HeadlineIntensity.MODERATE
+
+
+_ITEM_TAG_RE = re.compile(r"<item>(.*?)</item>", re.DOTALL | re.IGNORECASE)
+_ANY_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def coerce_top_effects(value: object) -> list[str]:
+    """Salvage the top-effects list from a malformed model response instead of failing
+    the whole synthesis. The model occasionally returns the array as a single string —
+    sometimes wrapped in `<item>...</item>` markup (even leaking a stray tool token),
+    sometimes newline- or bullet-separated. A formatting glitch on this one field must
+    not sink the thesis and headline, so we coerce rather than reject."""
+    if isinstance(value, list):
+        return [s for s in (str(x).strip() for x in value) if s]
+    if isinstance(value, str):
+        items = _ITEM_TAG_RE.findall(value)
+        if not items:
+            items = re.split(r"[\n;]+", value)
+        cleaned = []
+        for item in items:
+            text = _ANY_TAG_RE.sub("", item).strip().lstrip("-*•").strip()
+            if text:
+                cleaned.append(text)
+        return cleaned
+    return []
 
 
 class Finding(NamedTuple):
@@ -147,6 +178,11 @@ class DisclosureSynthesis(BaseModel):
     def _coerce_intensity(cls, value: object) -> HeadlineIntensity:
         return coerce_intensity(value)
 
+    @field_validator("top_effects", mode="before")
+    @classmethod
+    def _coerce_top_effects(cls, value: object) -> list[str]:
+        return coerce_top_effects(value)
+
 
 _SYSTEM_PROMPT = (
     "You are given the material year-over-year changes a company made to its 10-K Risk "
@@ -161,14 +197,24 @@ _SYSTEM_PROMPT = (
     "softened risk factor often reflects reorganization or boilerplate cleanup rather "
     "than a genuinely resolved risk.\n"
     "- mixed: meaningful worsening AND meaningful easing are both present.\n\n"
-    "INTENSITY — how much the OVERALL risk picture moved, weighing changes by how much "
-    "they matter, NOT by counting them:\n"
-    "- major: a severe single change (e.g. a new going-concern, delisting, or covenant "
-    "breach) OR broad worsening across many themes.\n"
-    "- moderate: a real but contained shift.\n"
-    "- minor: a few localized changes, nothing severe and no broad pattern — the overall "
-    "picture barely moved. Several individually-material but modest changes can still be "
-    "minor in aggregate.\n\n"
+    "INTENSITY — how much the OVERALL risk picture moved. Judge on an absolute scale on "
+    "which MOST filings are minor or moderate; 'major' is reserved for genuine distress, "
+    "not merely for a filing with several serious-sounding risks. Weigh severity, do NOT "
+    "count changes:\n"
+    "- major: EITHER (a) a named existential or solvency risk newly raised or sharply "
+    "escalated — going-concern doubt, a delisting notice, bankruptcy, a covenant "
+    "breach/default, or a material capital shortfall — OR (b) pervasive worsening "
+    "spanning five or more distinct themes. If neither is clearly present, it is NOT major.\n"
+    "- moderate: a real, substantive worsening that falls short of the major bar — a "
+    "significant new litigation, a sizeable impairment or restructuring, or worsening "
+    "concentrated in two to four themes.\n"
+    "- minor: a handful of localized or incremental changes, nothing severe and no broad "
+    "pattern — the overall picture barely moved. A few individually-material but modest "
+    "changes (a new customer-concentration note, a routine regulatory-watch item) are "
+    "minor in aggregate.\n"
+    "Calibration: a filing newly disclosing going-concern doubt and a covenant breach is "
+    "'major'; a filing whose only material changes are a new 10%-customer-concentration "
+    "note and a regulatory-watch item is 'minor'.\n\n"
     "Then write the thesis and the top effects. Compose only from the changes provided — "
     "do not introduce risks that are not among them, and do not restate every change. "
     "Write plainly and specifically. Submit your synthesis with the tool, exactly once."

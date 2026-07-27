@@ -125,6 +125,26 @@ def test_headline_axes_coerce_unknown_values() -> None:
     assert v.headline_intensity is HeadlineIntensity.MODERATE  # unknown intensity -> moderate
 
 
+def test_top_effects_salvaged_from_item_markup() -> None:
+    # The model sometimes returns the array as an <item>-tagged string (even leaking a
+    # stray tool token) instead of a JSON list; salvage it rather than fail the verdict.
+    raw = "\n<item>NYSE delisting notice</item>\n<item>Workforce cut to 56%</item>\n</invoke>"
+    v = DisclosureSynthesis(
+        headline_direction="worsening", headline_intensity="major", thesis="t", top_effects=raw
+    )
+    assert v.top_effects == ["NYSE delisting notice", "Workforce cut to 56%"]
+
+
+def test_top_effects_salvaged_from_newline_string() -> None:
+    v = DisclosureSynthesis(
+        headline_direction="worsening",
+        headline_intensity="minor",
+        thesis="t",
+        top_effects="- first effect\n- second effect",
+    )
+    assert v.top_effects == ["first effect", "second effect"]
+
+
 def test_synthesize_raises_without_tool_call() -> None:
     with pytest.raises(RuntimeError):
         synthesize(_NoToolModel(), findings=[], model_name="m")

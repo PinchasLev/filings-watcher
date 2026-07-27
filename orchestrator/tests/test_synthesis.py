@@ -21,6 +21,7 @@ from filings_orchestrator.change_detection import (
     DisclosureSynthesis,
     Finding,
     HeadlineDirection,
+    HeadlineIntensity,
     MaterialityVerdict,
     RiskChangeCategory,
     RiskChangeDirection,
@@ -82,12 +83,14 @@ def engine(tmp_path: Path) -> Engine:
 
 
 def _synth(
-    direction: HeadlineDirection = HeadlineDirection.DETERIORATING,
+    direction: HeadlineDirection = HeadlineDirection.WORSENING,
+    intensity: HeadlineIntensity = HeadlineIntensity.MAJOR,
     thesis: str = "It got worse.",
     effects: list[str] | None = None,
 ) -> DisclosureSynthesis:
     return DisclosureSynthesis(
         headline_direction=direction,
+        headline_intensity=intensity,
         thesis=thesis,
         top_effects=effects or ["impairment", "layoffs"],
     )
@@ -102,7 +105,8 @@ def test_synthesize_parses_and_renders_findings() -> None:
         Finding(RiskChangeCategory.RESTRUCTURING_WORKFORCE, RiskChangeDirection.WORSE, "layoffs"),
     ]
     result = synthesize(model, findings=findings, model_name="m", accession_number="a")
-    assert result.headline_direction is HeadlineDirection.DETERIORATING
+    assert result.headline_direction is HeadlineDirection.WORSENING
+    assert result.headline_intensity is HeadlineIntensity.MAJOR
     assert result.thesis == "It got worse."
     assert result.top_effects == ["impairment", "layoffs"]
     # the distilled findings (theme | direction | explanation) are what the reduce sees
@@ -110,9 +114,15 @@ def test_synthesize_parses_and_renders_findings() -> None:
     assert "liquidity_going_concern | worse" in model.last_user and "cash short" in model.last_user
 
 
-def test_headline_direction_coerces_unknown_to_mixed() -> None:
-    v = DisclosureSynthesis(headline_direction="worsening-ish", thesis="t", top_effects=["a"])
-    assert v.headline_direction is HeadlineDirection.MIXED
+def test_headline_axes_coerce_unknown_values() -> None:
+    v = DisclosureSynthesis(
+        headline_direction="worsening-ish",
+        headline_intensity="catastrophic",
+        thesis="t",
+        top_effects=["a"],
+    )
+    assert v.headline_direction is HeadlineDirection.MIXED  # unknown direction -> mixed
+    assert v.headline_intensity is HeadlineIntensity.MODERATE  # unknown intensity -> moderate
 
 
 def test_synthesize_raises_without_tool_call() -> None:
@@ -224,7 +234,8 @@ def test_insert_synthesis_round_trip_and_idempotent(engine: Engine) -> None:
             target=target,
             judge_version=_JUDGE_V,
             synthesis_version=_SYNTH_V,
-            headline_direction="deteriorating",
+            headline_direction="worsening",
+            headline_intensity="major",
             material_count=3,
             worse_count=2,
             eased_count=1,
@@ -248,9 +259,12 @@ def test_insert_synthesis_round_trip_and_idempotent(engine: Engine) -> None:
 
 def test_synthesis_pass_stores_model_headline_and_code_counts(engine: Engine) -> None:
     _seed_verdicts(engine, ["worse", "worse", "worse", "worse", "eased"])
-    # The model deliberately returns STABLE though the raw counts lean worse — proving
-    # the stored headline is the model's holistic judgment, while the counts are code's.
-    model = _FakeModel([_synth(direction=HeadlineDirection.STABLE, thesis="all minor")])
+    # The model deliberately returns MINOR intensity though five material changes lean
+    # worse — proving the stored headline is the model's holistic judgment (severity, not
+    # volume), while the counts are code's.
+    model = _FakeModel(
+        [_synth(direction=HeadlineDirection.WORSENING, intensity=HeadlineIntensity.MINOR)]
+    )
     counts = synthesis_pass(
         engine, model, model_name="m", judge_ver=_JUDGE_V, synth_ver=_SYNTH_V, limit=10
     )
@@ -258,12 +272,12 @@ def test_synthesis_pass_stores_model_headline_and_code_counts(engine: Engine) ->
     with engine.begin() as conn:
         row = conn.execute(
             text(
-                "SELECT headline_direction, material_count, worse_count, eased_count, thesis "
-                "FROM filing_change_synthesis"
+                "SELECT headline_direction, headline_intensity, material_count, worse_count, "
+                "eased_count FROM filing_change_synthesis"
             )
         ).one()
-    # headline = the model's judgment; counts (5 material, 4 worse, 1 eased) = code-rolled
-    assert row == ("stable", 5, 4, 1, "all minor")
+    # headline (direction + intensity) = the model's judgment; counts = code-rolled
+    assert row == ("worsening", "minor", 5, 4, 1)
 
     # Second pass: everything synthesized for these versions -> nothing to do.
     again = synthesis_pass(

@@ -16,6 +16,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/PinchasLev/filings-watcher/service/internal/store"
 )
@@ -164,6 +165,72 @@ func disclosureChangeLabel(changeType string) string {
 		return "Removed"
 	default:
 		return changeType
+	}
+}
+
+// disclosureDirectionLabel maps a per-change risk direction to a badge word. This
+// is the *meaning* of a change (did the risk get worse or ease), which leads the
+// display over the mechanical added/changed/dropped.
+func disclosureDirectionLabel(direction string) string {
+	switch direction {
+	case "worse":
+		return "Worse"
+	case "eased":
+		return "Eased"
+	case "neutral":
+		return "Neutral"
+	default:
+		return direction
+	}
+}
+
+// riskShiftLabel composes the filing-level headline from its two axes — e.g.
+// ("major", "worsening") -> "Major worsening". These are separate judgments
+// (which way vs. how much), so the label carries both (ADR 0043).
+func riskShiftLabel(intensity, direction string) string {
+	switch intensity {
+	case "major", "moderate", "minor":
+		return strings.Title(intensity) + " " + direction //nolint:staticcheck // ASCII enum values.
+	default:
+		return strings.Title(direction) //nolint:staticcheck // ASCII enum values.
+	}
+}
+
+// disclosureCategoryLabel maps a governed risk-theme value to a human label. The
+// vocabulary is fixed (ADR 0043); an unmapped value falls back to a title-cased
+// de-underscored form so nothing is silently blank.
+func disclosureCategoryLabel(category string) string {
+	switch category {
+	case "liquidity_going_concern":
+		return "Liquidity & going concern"
+	case "debt_capital_structure":
+		return "Debt & capital structure"
+	case "impairment_asset_value":
+		return "Impairment & asset value"
+	case "restructuring_workforce":
+		return "Restructuring & workforce"
+	case "litigation_legal":
+		return "Litigation & legal"
+	case "regulatory_compliance":
+		return "Regulatory & compliance"
+	case "ma_strategic":
+		return "M&A & strategic"
+	case "operations_supply_chain":
+		return "Operations & supply chain"
+	case "market_competition":
+		return "Market & competition"
+	case "technology_cybersecurity":
+		return "Technology & cybersecurity"
+	case "governance_controls":
+		return "Governance & controls"
+	case "macro_geopolitical":
+		return "Macro & geopolitical"
+	case "environmental_climate":
+		return "Environmental & climate"
+	case "other":
+		return "Other"
+	default:
+		return strings.Title(strings.ReplaceAll(category, "_", " ")) //nolint:staticcheck // ASCII values.
 	}
 }
 

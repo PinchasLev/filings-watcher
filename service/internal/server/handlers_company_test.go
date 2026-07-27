@@ -128,17 +128,29 @@ func TestCompanyPageRendersDisclosureChanges(t *testing.T) {
 	fake := &fakeStore{
 		companyResult: &store.Company{CIK: "0001234567", Ticker: "ACME", CompanyName: "Acme Corp"},
 		disclosureChanges: []store.DisclosureChangeGroup{{
-			Accession:     "0001234567-26-000010",
-			CurrentPeriod: "2025-12-31",
-			PriorPeriod:   "2024-12-31",
-			Changes: []store.DisclosureChange{{
-				Heading:     "Going concern doubt.",
-				ChangeType:  "added",
-				Category:    "going-concern",
-				Explanation: "New going-concern risk disclosed this year.",
-				Confidence:  0.95,
-				NeedsReview: true,
-				Similarity:  &sim,
+			Accession:         "0001234567-26-000010",
+			CurrentPeriod:     "2025-12-31",
+			PriorPeriod:       "2024-12-31",
+			HasSynthesis:      true,
+			HeadlineDirection: "worsening",
+			HeadlineIntensity: "major",
+			MaterialCount:     1,
+			WorseCount:        1,
+			EasedCount:        0,
+			Thesis:            "Risk profile deteriorated with a new going-concern disclosure.",
+			TopEffects:        []string{"New going-concern liquidity risk"},
+			Themes: []store.DisclosureTheme{{
+				Category: "liquidity_going_concern",
+				Changes: []store.DisclosureChange{{
+					Heading:     "Going concern doubt.",
+					ChangeType:  "added",
+					Direction:   "worse",
+					Category:    "liquidity_going_concern",
+					Explanation: "New going-concern risk disclosed this year.",
+					Confidence:  0.95,
+					NeedsReview: true,
+					Similarity:  &sim,
+				}},
 			}},
 		}},
 	}
@@ -152,11 +164,16 @@ func TestCompanyPageRendersDisclosureChanges(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"Disclosure changes",
+		"Risk Radar",
 		"2025-12-31", "2024-12-31", // both fiscal periods shown
+		"Major worsening",                  // riskShiftLabel(major, worsening)
+		"1 material",                       // counts line
+		"Risk profile deteriorated",        // synthesis thesis
+		"New going-concern liquidity risk", // a top effect
+		"Liquidity &amp; going concern",    // categoryLabel(liquidity_going_concern), HTML-escaped
+		"Worse",                            // dirLabel("worse") badge
 		"New",                              // changeLabel("added")
-		"going-concern",                    // category badge
-		"Going concern doubt.",             // heading
+		"Going concern doubt.",             // heading (in the collapsed drilldown)
 		"New going-concern risk disclosed", // explanation
 		"needs review",                     // review flag
 		"0001234567-26-000010-index.htm",   // EDGAR citation link

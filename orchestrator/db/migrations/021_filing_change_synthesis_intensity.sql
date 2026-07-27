@@ -1,0 +1,12 @@
+-- 021: add `headline_intensity` to filing_change_synthesis (ADR 0043, amended).
+--
+-- Portable SQL — must compile and run identically on SQLite and Postgres.
+--
+-- The headline is two independent judgments: DIRECTION (which way — already stored in
+-- headline_direction) and INTENSITY (how much the overall picture moved). A single
+-- label conflated them, so every filing read the same word; splitting magnitude into
+-- its own axis restores the contrast (a going-concern collapse vs. three modest new
+-- risks). Additive with a NOT NULL DEFAULT so existing rows stay valid; those rows
+-- were synthesized under an earlier synthesis_version and are superseded by a
+-- re-derive under the new version (the reduce prompt changed → new version).
+ALTER TABLE filing_change_synthesis ADD COLUMN headline_intensity TEXT NOT NULL DEFAULT 'moderate';

@@ -39,19 +39,21 @@ Present each filing's disclosure changes as an **inverted pyramid** — answer i
 five seconds, story in thirty, evidence on demand — backed by three additions to
 the pipeline and surface:
 
-### 1. A headline: a judged direction + honest counts
+### 1. A headline: two judged axes + honest counts
 
-At the top, a **categorical** risk-shift verdict (Deteriorating / Mixed / Stable /
-Improving) and the raw counts (worse / eased / material, with the two periods
-compared). The magnitude contrast — Plug Power's forty against Coca-Cola's two —
-sits right beside the label; that contrast is part of the read.
+At the top, a **two-axis** risk-shift verdict — a **direction** (worsening / easing /
+mixed) and an **intensity** (major / moderate / minor) — plus the raw counts (worse /
+eased / material, with the two periods compared). Composed for display, that reads
+"Major worsening" or "Minor worsening"; the intensity axis is what carries the
+Plug-Power-vs-Coca-Cola contrast in the *label*, not only in the counts.
 
-The headline direction is **judged by the synthesis reduce** (§2) as a holistic,
-severity-aware read of all the changes at once, and the **counts are computed by
-code** and shown beside it as an independent factual cross-check. It is **not** a
-numeric distress score on a scale — a "0.73" invites "how did you compute that?", a
-question we cannot defend without a validated model, and it drags us back toward the
-black-box *signal* framing we abandoned for comprehension.
+Both axes are **judged by the synthesis reduce** (§2) as a holistic, severity-aware
+read of all the changes at once; the **counts are computed by code** and shown beside
+them as an independent factual cross-check. Neither axis is a **numeric distress
+score** — a "0.73" invites "how did you compute that?", a question we cannot defend
+without a validated model, and it drags us back toward the black-box *signal* framing
+we abandoned for comprehension. Two coarse categorical axes are the ceiling; we do not
+add a third or a scale.
 
 > **Amended 2026-07-26.** This ADR originally had *code* roll up the headline from
 > the per-change directions. That was wrong: materiality is captured as a *boolean*,
@@ -76,12 +78,29 @@ black-box *signal* framing we abandoned for comprehension.
 > improvement. Positive business outlook does not live in 1A at all — it lives in
 > MD&A and the numbers, which is a later arc.
 >
-> This headline is therefore scoped to the **risk-factor section**: "Deteriorating"
+> This headline is therefore scoped to the **risk-factor section**: "worsening"
 > means *disclosed risks worsened*, not *the company is doing badly*. The synthesis
 > row is keyed by section, so when MD&A and the numbers (B) arrive they are separate
 > per-section reads; composing them into a single whole-company headline — including
 > the high-value case where risk factors worsen while the outlook stays rosy (the
 > A×B divergence signal) — is a deliberate later step, not built toward now.
+>
+> **Amended 2026-07-27 — split into two axes.** The first cut of the reduce-judged
+> headline was a *single* categorical direction (deteriorating / improving / mixed /
+> stable). We ran it on the four demo names and every one came back "deteriorating,"
+> Coca-Cola (three modest but genuinely material worsenings) included. The failure was
+> structural, not a bad prompt: one label was carrying two independent facts — *which
+> way* the risk moved and *how much* the overall picture moved — and collapsed to the
+> more salient one (direction), so the magnitude contrast vanished from the label and
+> survived only in the counts. The fix is to model the two facts as two axes:
+> **direction** (worsening / easing / mixed) and **intensity** (major / moderate /
+> minor). This is not added complexity — the original four labels *decompose* into the
+> grid (deteriorating = worsening × major/moderate; stable = minor; improving = easing
+> × major/moderate; mixed = mixed), which is the proof the single label was conflating
+> them. Both remain coarse LLM judgments (no score); the eased-side skepticism and the
+> section-scoping above are unchanged. We hold the line at two axes — a third
+> ("business outlook") is a *different section's* signal that composes in later, not a
+> field on the risk-factor verdict.
 
 ### 2. A synthesis paragraph: a Stage-3 reduce
 
@@ -219,9 +238,10 @@ versioned and re-derivable, and the evidence sits one click beneath it for
 verification.
 
 **Committed to:** direction and category as first-class, validated fields; a
-reduce-judged categorical headline beside code-computed counts, never an LLM score;
-synthesis as a bounded reduce over distilled findings; governed themes with rich,
-ungoverned drilldown detail; and concrete-for-A, generalizing only when B is real.
+reduce-judged two-axis headline (direction + intensity) beside code-computed counts,
+never an LLM score; synthesis as a bounded reduce over distilled findings; governed
+themes with rich, ungoverned drilldown detail; and concrete-for-A, generalizing only
+when B is real.
 
 **Accepted losses / deferrals:** the cross-company discovery feed and its naming;
 B, MD&A, and the A×B divergence as synthesis inputs; and any trend/baseline view —
@@ -239,10 +259,12 @@ Built one at a time, off fresh `main`, in order.
    pytest (migrations have two appliers).
 2. **Synthesis reduce + storage** *(LLM reduce + persistence)* — a `synthesize`
    step that, per filing, reduces the distilled material verdicts into a judged
-   headline direction, a thesis paragraph, and a top-effects list, while code
-   computes the counts shown beside the headline; a migration for a synthesis table
-   keyed by (accession, section, model, judge_version, synthesis_version); a
-   cost-capped, resumable, gap-driven reconciler CLI.
+   headline (direction + intensity), a thesis paragraph, and a top-effects list, while
+   code computes the counts shown beside the headline; a migration for a synthesis
+   table keyed by (accession, section, model, judge_version, synthesis_version); a
+   cost-capped, resumable, gap-driven reconciler CLI. (The intensity axis was added in
+   a follow-up once the single-axis headline was measured to under-discriminate — see
+   the §1 amendment.)
 3. **Surface reorganized (Go read side)** — replace the flat list with the
    inverted pyramid: headline direction + counts, the synthesis paragraph + top
    effects, then a theme-grouped, collapsible drilldown that preserves each

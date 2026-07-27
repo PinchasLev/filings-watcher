@@ -131,6 +131,7 @@ def synthesis_pass(
             judge_version=judge_ver,
             synthesis_version=synth_ver,
             headline_direction=synth.headline_direction.value,
+            headline_intensity=synth.headline_intensity.value,
             material_count=len(verdicts),
             worse_count=worse,
             eased_count=eased,

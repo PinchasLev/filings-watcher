@@ -1940,6 +1940,7 @@ def insert_change_synthesis(
     judge_version: str,
     synthesis_version: str,
     headline_direction: str,
+    headline_intensity: str,
     material_count: int,
     worse_count: int,
     eased_count: int,
@@ -1956,16 +1957,17 @@ def insert_change_synthesis(
                 """
                 INSERT INTO filing_change_synthesis (
                     accession_number, section, model_id, judge_version, synthesis_version,
-                    headline_direction, material_count, worse_count, eased_count,
-                    neutral_count, thesis, top_effects, synthesized_at
+                    headline_direction, headline_intensity, material_count, worse_count,
+                    eased_count, neutral_count, thesis, top_effects, synthesized_at
                 ) VALUES (
                     :accession_number, :section, :model_id, :judge_version, :synthesis_version,
-                    :headline_direction, :material_count, :worse_count, :eased_count,
-                    :neutral_count, :thesis, :top_effects, :synthesized_at
+                    :headline_direction, :headline_intensity, :material_count, :worse_count,
+                    :eased_count, :neutral_count, :thesis, :top_effects, :synthesized_at
                 )
                 ON CONFLICT (accession_number, section, model_id, judge_version, synthesis_version)
                 DO UPDATE SET
                     headline_direction = excluded.headline_direction,
+                    headline_intensity = excluded.headline_intensity,
                     material_count     = excluded.material_count,
                     worse_count        = excluded.worse_count,
                     eased_count        = excluded.eased_count,
@@ -1982,6 +1984,7 @@ def insert_change_synthesis(
                 "judge_version": judge_version,
                 "synthesis_version": synthesis_version,
                 "headline_direction": headline_direction,
+                "headline_intensity": headline_intensity,
                 "material_count": material_count,
                 "worse_count": worse_count,
                 "eased_count": eased_count,

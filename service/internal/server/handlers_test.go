@@ -54,6 +54,10 @@ type fakeStore struct {
 
 	disclosureChanges    []store.DisclosureChangeGroup
 	disclosureChangesErr error
+	radarRows            []store.RiskRadarRow
+	radarTotal           int
+	radarCounts          store.RiskRadarCounts
+	radarErr             error
 	notableClusters      []store.InsiderCluster
 
 	liveEventsResult []store.Event
@@ -170,6 +174,16 @@ func (f *fakeStore) CompanyDisclosureChanges(
 	_ context.Context, _ string, _ int,
 ) ([]store.DisclosureChangeGroup, error) {
 	return f.disclosureChanges, f.disclosureChangesErr
+}
+
+func (f *fakeStore) RecentDisclosureChanges(
+	_ context.Context, _ string, _, _ int,
+) ([]store.RiskRadarRow, int, error) {
+	return f.radarRows, f.radarTotal, f.radarErr
+}
+
+func (f *fakeStore) RiskRadarIntensityCounts(_ context.Context) (store.RiskRadarCounts, error) {
+	return f.radarCounts, f.radarErr
 }
 
 func (f *fakeStore) NotableInsiderActivity(_ context.Context, _ int, _ float64, _ int) ([]store.InsiderCluster, error) {

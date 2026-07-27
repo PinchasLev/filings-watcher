@@ -140,6 +140,9 @@ type Store interface {
 	// Disclosure change-detection surfacing (ADR 0042): a company's material
 	// year-over-year risk-factor changes, grouped by filing.
 	CompanyDisclosureChanges(ctx context.Context, cik string, limit int) ([]DisclosureChangeGroup, error)
+	// Risk Radar (/radar): cross-company feed of headline verdicts + filter counts.
+	RecentDisclosureChanges(ctx context.Context, intensity string, limit, offset int) ([]RiskRadarRow, int, error)
+	RiskRadarIntensityCounts(ctx context.Context) (RiskRadarCounts, error)
 	// NotableInsiderActivity backs the /insiders feed: recent cluster buys.
 	NotableInsiderActivity(ctx context.Context, windowDays int, minValue float64, limit int) ([]InsiderCluster, error)
 	// Events layer (ADR 0027/0028). Each filing's current view is the wholesale

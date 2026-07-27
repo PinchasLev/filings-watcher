@@ -1,0 +1,63 @@
+{{- /* Risk Radar: cross-company feed of material year-over-year risk-factor shifts. */ -}}
+{{define "title"}}Risk Radar — recent material disclosure changes{{end}}
+{{define "content"}}
+<section class="company-header">
+  <h2>Risk Radar</h2>
+  <p class="reasoning">
+    Companies whose <strong>10-K Risk Factors materially shifted</strong> versus the prior year, newest first. Each line is an AI reading of how the risk picture moved &mdash; direction and intensity &mdash; with the exact change counts; open a company for the full evidence, grouped by theme. Not investment advice.
+  </p>
+</section>
+
+<nav class="filter-nav" aria-label="Filter by intensity">
+  <a href="/radar" {{if eq .ActiveIntensity ""}}class="active"{{end}}>
+    All <span class="count">{{.Counts.Total}}</span>
+  </a>
+  <a href="/radar?intensity=major" {{if eq .ActiveIntensity "major"}}class="active"{{end}}>
+    Major <span class="count">{{.Counts.Major}}</span>
+  </a>
+  <a href="/radar?intensity=moderate" {{if eq .ActiveIntensity "moderate"}}class="active"{{end}}>
+    Moderate <span class="count">{{.Counts.Moderate}}</span>
+  </a>
+  <a href="/radar?intensity=minor" {{if eq .ActiveIntensity "minor"}}class="active"{{end}}>
+    Minor <span class="count">{{.Counts.Minor}}</span>
+  </a>
+</nav>
+
+{{if .Rows}}
+  <section>
+    {{range .Rows}}
+      <article class="filing-card">
+        <h3>
+          <a href="/companies/{{.CIK}}">{{if .Ticker}}{{.Ticker}} &mdash; {{end}}{{.CompanyName}}</a>
+        </h3>
+        <div class="filing-meta">
+          <span class="badge shift shift-{{.HeadlineIntensity}}">{{riskShiftLabel .HeadlineIntensity .HeadlineDirection}}</span>
+          <span>{{.MaterialCount}} material &middot; {{.WorseCount}} worse / {{.EasedCount}} eased</span>
+          <span>fiscal period {{.CurrentPeriod}}</span>
+          {{if .FiledAt}}<span>filed {{.FiledAt}}</span>{{end}}
+        </div>
+        {{if .Thesis}}<p class="reasoning">{{.Thesis}}</p>{{end}}
+        <small><a href="/companies/{{.CIK}}">See the themed changes &rarr;</a></small>
+      </article>
+    {{end}}
+  </section>
+
+  {{if or .PrevURL .NextURL}}
+    <nav class="pagination" aria-label="Pagination">
+      {{if .PrevURL}}
+        <a href="{{.PrevURL}}">&larr; Newer</a>
+      {{else}}
+        <span class="disabled">&larr; Newer</span>
+      {{end}}
+      <span>{{.RangeStart}}-{{.RangeEnd}} of {{.FilteredTotal}}</span>
+      {{if .NextURL}}
+        <a href="{{.NextURL}}">Older &rarr;</a>
+      {{else}}
+        <span class="disabled">Older &rarr;</span>
+      {{end}}
+    </nav>
+  {{end}}
+{{else}}
+  <p>No disclosure changes on record{{if .ActiveIntensity}} at this intensity{{end}} yet.</p>
+{{end}}
+{{end}}

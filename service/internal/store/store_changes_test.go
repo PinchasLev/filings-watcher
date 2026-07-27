@@ -225,6 +225,73 @@ func TestCompanyDisclosureChangesAttachesSynthesis(t *testing.T) {
 	}
 }
 
+func radarExec(t *testing.T, db *sql.DB, q string, args ...any) {
+	t.Helper()
+	if _, err := db.Exec(q, args...); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+}
+
+func TestRecentDisclosureChanges(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+	const periodicCols = `(accession_number, cik, company_name, form, filed_at,
+		period_of_report, fiscal_year, parsed, block_count, ingested_at)`
+	// Alpha filed later than Beta, and is in cik_tickers (canonical name + ticker).
+	radarExec(t, raw, `INSERT INTO periodic_filings `+periodicCols+`
+		VALUES ('acc-a','0000000111','Alpha Corp','10-K','2026-03-01','2025-12-31',2025,1,0,'t')`)
+	radarExec(t, raw, `INSERT INTO periodic_filings `+periodicCols+`
+		VALUES ('acc-b','0000000222','Beta Inc','10-K','2026-02-01','2025-12-31',2025,1,0,'t')`)
+	radarExec(t, raw, `INSERT INTO cik_tickers (cik, ticker, company_name, updated_at)
+		VALUES ('0000000111','ALPH','Alpha Corporation','t')`)
+	insSynthesis(t, raw, "acc-a", "worsening", "major", 44, 35, 9, "Alpha thesis.", `["x"]`, "t1")
+	insSynthesis(t, raw, "acc-b", "worsening", "minor", 3, 3, 0, "Beta thesis.", `["y"]`, "t1")
+	_ = raw.Close()
+
+	s := openStore(t, dbPath)
+	ctx := context.Background()
+
+	rows, total, err := s.RecentDisclosureChanges(ctx, "", 40, 0)
+	if err != nil {
+		t.Fatalf("RecentDisclosureChanges: %v", err)
+	}
+	if total != 2 || len(rows) != 2 {
+		t.Fatalf("all: total=%d rows=%d, want 2/2", total, len(rows))
+	}
+	// Newest filed first: Alpha (03-01) before Beta (02-01).
+	if rows[0].Accession != "acc-a" || rows[1].Accession != "acc-b" {
+		t.Errorf("order = %q, %q, want acc-a, acc-b", rows[0].Accession, rows[1].Accession)
+	}
+	// Alpha's identity comes from cik_tickers (canonical name + ticker).
+	if rows[0].Ticker != "ALPH" || rows[0].CompanyName != "Alpha Corporation" {
+		t.Errorf("alpha identity = %q %q, want ALPH / Alpha Corporation", rows[0].Ticker, rows[0].CompanyName)
+	}
+	if rows[0].HeadlineIntensity != "major" || rows[0].MaterialCount != 44 || rows[0].WorseCount != 35 {
+		t.Errorf("alpha headline = %+v", rows[0])
+	}
+	// Beta is absent from cik_tickers: empty ticker, as-filed name.
+	if rows[1].Ticker != "" || rows[1].CompanyName != "Beta Inc" {
+		t.Errorf("beta identity = %q %q, want empty / Beta Inc", rows[1].Ticker, rows[1].CompanyName)
+	}
+
+	// Intensity filter.
+	maj, majTotal, err := s.RecentDisclosureChanges(ctx, "major", 40, 0)
+	if err != nil {
+		t.Fatalf("RecentDisclosureChanges(major): %v", err)
+	}
+	if majTotal != 1 || len(maj) != 1 || maj[0].Accession != "acc-a" {
+		t.Errorf("major filter = total %d rows %d, want just acc-a", majTotal, len(maj))
+	}
+
+	// Filter-chip counts.
+	counts, err := s.RiskRadarIntensityCounts(ctx)
+	if err != nil {
+		t.Fatalf("RiskRadarIntensityCounts: %v", err)
+	}
+	if counts.Total != 2 || counts.Major != 1 || counts.Minor != 1 || counts.Moderate != 0 {
+		t.Errorf("counts = %+v, want total 2 / major 1 / minor 1 / moderate 0", counts)
+	}
+}
+
 func TestCompanyDisclosureChangesUsesLatestVerdict(t *testing.T) {
 	dbPath, raw := freshDBPath(t)
 	const cik = "0000000123"

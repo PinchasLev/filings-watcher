@@ -56,6 +56,124 @@ type DisclosureChangeGroup struct {
 	Themes []DisclosureTheme
 }
 
+// RiskRadarRow is one filing's headline verdict in the cross-company feed: a
+// scannable "what moved" line that links through to the per-company page for the
+// full evidence. Ticker is empty when the issuer is absent from SEC's ticker file.
+type RiskRadarRow struct {
+	CIK               string
+	CompanyName       string
+	Ticker            string
+	Accession         string
+	CurrentPeriod     string
+	FiledAt           string
+	HeadlineDirection string
+	HeadlineIntensity string
+	MaterialCount     int
+	WorseCount        int
+	EasedCount        int
+	Thesis            string
+}
+
+// RiskRadarCounts is the per-intensity tally behind the feed's filter chips.
+type RiskRadarCounts struct {
+	Total    int
+	Major    int
+	Moderate int
+	Minor    int
+}
+
+// latestSynthesisPredicate keeps only the newest synthesis per (filing, section),
+// so a re-synthesis (new prompt/model) supersedes rather than double-listing.
+const latestSynthesisPredicate = `
+	s.synthesized_at = (
+		SELECT MAX(s2.synthesized_at) FROM filing_change_synthesis s2
+		 WHERE s2.accession_number = s.accession_number AND s2.section = s.section)`
+
+// RecentDisclosureChanges returns the cross-company feed of filing-level headline
+// verdicts, newest filing first, optionally filtered to one intensity
+// ("major"|"moderate"|"minor"; "" for all). Returns the page and the filtered total.
+func (s *store) RecentDisclosureChanges(
+	ctx context.Context, intensity string, limit, offset int,
+) ([]RiskRadarRow, int, error) {
+	var total int
+	countQ := `
+		SELECT COUNT(*)
+		  FROM filing_change_synthesis s
+		 WHERE ` + latestSynthesisPredicate + `
+		   AND (? = '' OR s.headline_intensity = ?)`
+	if err := s.db.QueryRowContext(ctx, countQ, intensity, intensity).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("risk radar count: %w", err)
+	}
+
+	const q = `
+		SELECT pf.cik,
+		       COALESCE(ct.company_name, pf.company_name),
+		       COALESCE(ct.ticker, ''),
+		       s.accession_number, pf.period_of_report, pf.filed_at,
+		       s.headline_direction, s.headline_intensity,
+		       s.material_count, s.worse_count, s.eased_count, s.thesis
+		  FROM filing_change_synthesis s
+		  JOIN periodic_filings pf ON pf.accession_number = s.accession_number
+		  LEFT JOIN cik_tickers ct ON ct.cik = pf.cik
+		 WHERE ` + latestSynthesisPredicate + `
+		   AND (? = '' OR s.headline_intensity = ?)
+		 ORDER BY pf.filed_at DESC, s.material_count DESC, s.accession_number
+		 LIMIT ? OFFSET ?`
+	rows, err := s.db.QueryContext(ctx, q, intensity, intensity, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("risk radar: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []RiskRadarRow
+	for rows.Next() {
+		var r RiskRadarRow
+		if err := rows.Scan(
+			&r.CIK, &r.CompanyName, &r.Ticker, &r.Accession, &r.CurrentPeriod, &r.FiledAt,
+			&r.HeadlineDirection, &r.HeadlineIntensity, &r.MaterialCount, &r.WorseCount,
+			&r.EasedCount, &r.Thesis,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan risk radar row: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, total, rows.Err()
+}
+
+// RiskRadarIntensityCounts returns the per-intensity tally over the latest
+// synthesis per filing, for the feed's filter chips.
+func (s *store) RiskRadarIntensityCounts(ctx context.Context) (RiskRadarCounts, error) {
+	const q = `
+		SELECT s.headline_intensity, COUNT(*)
+		  FROM filing_change_synthesis s
+		 WHERE ` + latestSynthesisPredicate + `
+		 GROUP BY s.headline_intensity`
+	rows, err := s.db.QueryContext(ctx, q)
+	if err != nil {
+		return RiskRadarCounts{}, fmt.Errorf("risk radar counts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var c RiskRadarCounts
+	for rows.Next() {
+		var intensity string
+		var n int
+		if err := rows.Scan(&intensity, &n); err != nil {
+			return RiskRadarCounts{}, fmt.Errorf("scan risk radar count: %w", err)
+		}
+		c.Total += n
+		switch intensity {
+		case "major":
+			c.Major = n
+		case "moderate":
+			c.Moderate = n
+		case "minor":
+			c.Minor = n
+		}
+	}
+	return c, rows.Err()
+}
+
 // CompanyDisclosureChanges returns a company's material risk-factor changes,
 // grouped by filing (newest fiscal period first), capped at `limit` changes, each
 // filing carrying its synthesis headline/thesis and its evidence grouped by theme.

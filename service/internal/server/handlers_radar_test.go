@@ -26,7 +26,7 @@ func TestRadarPageRendersFeed(t *testing.T) {
 			MaterialCount:     44,
 			WorseCount:        35,
 			EasedCount:        9,
-			Thesis:            "Alpha faces major, broad-based deterioration.",
+			Thesis:            "Alpha faces major, broad-based deterioration this year. This second sentence carries detail that belongs on the company page, not the feed.",
 		}},
 	}
 
@@ -41,15 +41,35 @@ func TestRadarPageRendersFeed(t *testing.T) {
 	for _, want := range []string{
 		"Risk Radar",
 		"ALPH", "Alpha Corporation", // company identity
-		"/companies/0000000111",          // link through to the per-company page
-		"Major worsening",                // composed headline
-		"44 material",                    // counts
-		"Alpha faces major, broad-based", // thesis
-		`href="/radar?intensity=major"`,  // filter chip
-		"2025-12-31",                     // fiscal period
+		"/companies/0000000111#risk-radar",             // deep-link to the section
+		"Major worsening",                              // composed headline
+		"44 material",                                  // counts
+		"Alpha faces major, broad-based deterioration", // the lead sentence
+		`href="/radar?intensity=major"`,                // filter chip
+		"2025-12-31",                                   // fiscal period
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected radar body to contain %q", want)
+		}
+	}
+	// The feed shows only the lead sentence; the rest stays on the company page.
+	if strings.Contains(body, "belongs on the company page") {
+		t.Errorf("feed should show only the first sentence, not the full thesis")
+	}
+}
+
+func TestFirstSentence(t *testing.T) {
+	cases := map[string]string{
+		"A short lead sentence here. And a second one.": "A short lead sentence here.",
+		"No terminal punctuation at all":                "No terminal punctuation at all",
+		// An early abbreviation ("U.S.") must not truncate the lead sentence.
+		"The U.S. economy weakened and margins compressed sharply. More detail follows here.": "The U.S. economy weakened and margins compressed sharply.",
+		// A decimal is safe (period followed by a digit, not a space).
+		"Shares fell below $1.00 and a delisting notice followed within the quarter. Next.": "Shares fell below $1.00 and a delisting notice followed within the quarter.",
+	}
+	for in, want := range cases {
+		if got := server.FirstSentenceForTest(in); got != want {
+			t.Errorf("firstSentence(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

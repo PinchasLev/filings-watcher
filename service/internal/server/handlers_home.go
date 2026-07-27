@@ -51,6 +51,7 @@ var templateFuncs = template.FuncMap{
 	"dirLabel":       disclosureDirectionLabel,
 	"categoryLabel":  disclosureCategoryLabel,
 	"riskShiftLabel": riskShiftLabel,
+	"firstSentence":  firstSentence,
 	"liveWindowURL":  liveWindowURL,
 	"relTime":        relTimeFromISO,
 	// utcDateTime is the server-side fallback for the <time> elements on

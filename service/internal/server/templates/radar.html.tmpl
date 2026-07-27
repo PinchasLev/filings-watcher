@@ -4,7 +4,7 @@
 <section class="company-header">
   <h2>Risk Radar</h2>
   <p class="reasoning">
-    Companies whose <strong>10-K Risk Factors materially shifted</strong> versus the prior year, newest first. Each line is an AI reading of how the risk picture moved &mdash; direction and intensity &mdash; with the exact change counts; open a company for the full evidence, grouped by theme. Not investment advice.
+    Where a company's <strong>10-K risk disclosures shifted materially</strong> year over year, newest first. Direction and intensity are an AI reading of the changes; the counts are exact. Open a company for the themed detail. Not investment advice.
   </p>
 </section>
 
@@ -36,8 +36,8 @@
           <span>fiscal period {{.CurrentPeriod}}</span>
           {{if .FiledAt}}<span>filed {{.FiledAt}}</span>{{end}}
         </div>
-        {{if .Thesis}}<p class="reasoning">{{.Thesis}}</p>{{end}}
-        <small><a href="/companies/{{.CIK}}">See the themed changes &rarr;</a></small>
+        {{if .Thesis}}<p class="reasoning">{{firstSentence .Thesis}}</p>{{end}}
+        <small><a href="/companies/{{.CIK}}#risk-radar">See the themed changes &rarr;</a></small>
       </article>
     {{end}}
   </section>

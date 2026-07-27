@@ -234,6 +234,23 @@ func disclosureCategoryLabel(category string) string {
 	}
 }
 
+// firstSentence returns a thesis's lead sentence, for the scannable Risk Radar
+// feed — the full thesis stays on the company page. It cuts at the first
+// sentence-ending period followed by whitespace, but skips a boundary in the
+// first few words so an early abbreviation ("U.S.", "e.g.") does not truncate
+// mid-thought. Returns the whole string when no boundary is found. (Decimals like
+// "$1.00" are safe: the period there is followed by a digit, not a space.)
+func firstSentence(s string) string {
+	s = strings.TrimSpace(s)
+	const minLen = 20
+	for i := minLen; i+1 < len(s); i++ {
+		if s[i] == '.' && (s[i+1] == ' ' || s[i+1] == '\n') {
+			return s[:i+1]
+		}
+	}
+	return s
+}
+
 // companyPageURL builds the prev/next pagination link for the company view.
 // Returns the empty string when disabled or the target offset is negative —
 // the template renders an empty URL as a disabled control.

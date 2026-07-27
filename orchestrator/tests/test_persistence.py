@@ -164,6 +164,7 @@ def test_apply_migrations_creates_tables_and_records_version() -> None:
         "017_filing_diffs",
         "018_block_change_verdicts",
         "019_block_change_verdict_direction",
+        "020_filing_change_synthesis",
     ]
 
     with engine.begin() as conn:

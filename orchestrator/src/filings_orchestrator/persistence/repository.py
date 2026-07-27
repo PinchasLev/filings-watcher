@@ -1844,3 +1844,150 @@ def insert_change_verdict(
                 "judged_at": judged_at,
             },
         )
+
+
+class SynthesisTarget(NamedTuple):
+    """A (filing, section, embedding-model) that has material verdicts but no
+    synthesis yet for the current judge/synthesis versions."""
+
+    accession_number: str
+    section: str
+    model_id: str
+
+
+class MaterialVerdict(NamedTuple):
+    """A material change verdict loaded for the synthesis reduce and its counts.
+    category and direction are the governed string values as stored."""
+
+    category: str
+    direction: str
+    explanation: str
+    confidence: float
+
+
+def select_filings_needing_synthesis(
+    engine: Engine, judge_version: str, synthesis_version: str, limit: int
+) -> list[SynthesisTarget]:
+    """Return up to `limit` filings that have at least one material verdict under
+    `judge_version` but no synthesis under (judge_version, synthesis_version) yet.
+
+    A left join against filing_change_synthesis for these versions finds the gap, so
+    the synthesizer is a resumable reconciler: a re-judge (new judge_version) or a
+    reduce-prompt change (new synthesis_version) reopens the gap and re-derives.
+    """
+    sql = text(
+        """
+        SELECT DISTINCT v.accession_number, v.section, v.model_id
+          FROM block_change_verdicts v
+          LEFT JOIN filing_change_synthesis s
+                 ON s.accession_number = v.accession_number AND s.section = v.section
+                AND s.model_id = v.model_id AND s.judge_version = :judge_version
+                AND s.synthesis_version = :synthesis_version
+         WHERE v.judge_version = :judge_version
+           AND v.is_material = 1
+           AND s.accession_number IS NULL
+         ORDER BY v.accession_number, v.section
+         LIMIT :limit
+        """
+    )
+    with engine.begin() as conn:
+        rows = conn.execute(
+            sql,
+            {
+                "judge_version": judge_version,
+                "synthesis_version": synthesis_version,
+                "limit": limit,
+            },
+        ).fetchall()
+    return [SynthesisTarget(str(r[0]), str(r[1]), str(r[2])) for r in rows]
+
+
+def load_material_verdicts(
+    engine: Engine, *, accession_number: str, section: str, model_id: str, judge_version: str
+) -> list[MaterialVerdict]:
+    """Load a filing's material verdicts (highest confidence first) for the reduce
+    and the code-rolled counts."""
+    sql = text(
+        """
+        SELECT category, direction, explanation, confidence
+          FROM block_change_verdicts
+         WHERE accession_number = :accession_number AND section = :section
+           AND model_id = :model_id AND judge_version = :judge_version
+           AND is_material = 1
+         ORDER BY confidence DESC, change_seq
+        """
+    )
+    with engine.begin() as conn:
+        rows = conn.execute(
+            sql,
+            {
+                "accession_number": accession_number,
+                "section": section,
+                "model_id": model_id,
+                "judge_version": judge_version,
+            },
+        ).fetchall()
+    return [
+        MaterialVerdict(str(r[0] or "other"), str(r[1] or "neutral"), str(r[2] or ""), float(r[3]))
+        for r in rows
+    ]
+
+
+def insert_change_synthesis(
+    engine: Engine,
+    *,
+    target: SynthesisTarget,
+    judge_version: str,
+    synthesis_version: str,
+    headline_direction: str,
+    material_count: int,
+    worse_count: int,
+    eased_count: int,
+    neutral_count: int,
+    thesis: str,
+    top_effects: list[str],
+    synthesized_at: str,
+) -> None:
+    """Store one filing synthesis. Idempotent on the (filing, section, model, judge,
+    synthesis) version key — re-running under the same versions overwrites."""
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO filing_change_synthesis (
+                    accession_number, section, model_id, judge_version, synthesis_version,
+                    headline_direction, material_count, worse_count, eased_count,
+                    neutral_count, thesis, top_effects, synthesized_at
+                ) VALUES (
+                    :accession_number, :section, :model_id, :judge_version, :synthesis_version,
+                    :headline_direction, :material_count, :worse_count, :eased_count,
+                    :neutral_count, :thesis, :top_effects, :synthesized_at
+                )
+                ON CONFLICT (accession_number, section, model_id, judge_version, synthesis_version)
+                DO UPDATE SET
+                    headline_direction = excluded.headline_direction,
+                    material_count     = excluded.material_count,
+                    worse_count        = excluded.worse_count,
+                    eased_count        = excluded.eased_count,
+                    neutral_count      = excluded.neutral_count,
+                    thesis             = excluded.thesis,
+                    top_effects        = excluded.top_effects,
+                    synthesized_at     = excluded.synthesized_at
+                """
+            ),
+            {
+                "accession_number": target.accession_number,
+                "section": target.section,
+                "model_id": target.model_id,
+                "judge_version": judge_version,
+                "synthesis_version": synthesis_version,
+                "headline_direction": headline_direction,
+                "material_count": material_count,
+                "worse_count": worse_count,
+                "eased_count": eased_count,
+                "neutral_count": neutral_count,
+                "thesis": thesis,
+                "top_effects": json.dumps(top_effects),
+                "synthesized_at": synthesized_at,
+            },
+        )

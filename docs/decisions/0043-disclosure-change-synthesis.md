@@ -39,22 +39,49 @@ Present each filing's disclosure changes as an **inverted pyramid** — answer i
 five seconds, story in thirty, evidence on demand — backed by three additions to
 the pipeline and surface:
 
-### 1. A headline: categorical direction + honest counts
+### 1. A headline: a judged direction + honest counts
 
 At the top, a **categorical** risk-shift verdict (Deteriorating / Mixed / Stable /
-Improving) and the raw counts (`38 escalated · 2 new · 3 eased`, with the two
-periods compared). The magnitude contrast — Plug Power's forty against Coca-Cola's
-two — *becomes* the headline instead of being buried; that contrast is the whole
-thesis of the feature.
+Improving) and the raw counts (worse / eased / material, with the two periods
+compared). The magnitude contrast — Plug Power's forty against Coca-Cola's two —
+sits right beside the label; that contrast is part of the read.
 
-The headline direction is **computed by code** rolling up the per-change
-directions. It is emphatically **not** an LLM-produced composite, and **not** a
-numeric distress score on a scale — a "0.73" invites "how did you compute that?",
-a question we cannot defend without a validated model, and it drags us back toward
-the black-box *signal* framing we deliberately abandoned for comprehension. A
-categorical direction plus honest counts conveys the same at-a-glance read with
-none of the false precision, and it is bounded-operator clean: the LLM judges each
-change's direction; code aggregates.
+The headline direction is **judged by the synthesis reduce** (§2) as a holistic,
+severity-aware read of all the changes at once, and the **counts are computed by
+code** and shown beside it as an independent factual cross-check. It is **not** a
+numeric distress score on a scale — a "0.73" invites "how did you compute that?", a
+question we cannot defend without a validated model, and it drags us back toward the
+black-box *signal* framing we abandoned for comprehension.
+
+> **Amended 2026-07-26.** This ADR originally had *code* roll up the headline from
+> the per-change directions. That was wrong: materiality is captured as a *boolean*,
+> so a count is severity-blind — a new going-concern and a reworded boilerplate risk
+> both count as "one material worse." No count threshold can tell that a single
+> severe change is not "stable," nor that seven marginal worsenings are. The reduce
+> is the *only* actor that reads every finding with its meaning at once, so it is the
+> only one that can weigh severity. Judging the net direction is **comprehension, not
+> arithmetic** — reading forty findings and characterizing the whole — which is the
+> model's strength, not a forbidden calculation. The bounded-operator boundary is
+> preserved exactly: **code still owns every number** (the counts), and those counts
+> sit beside the label so the two signals keep each other honest (a "Stable" label
+> next to "38 worse / 0 eased" is a visible contradiction and a natural place for a
+> later sanity flag). `Mixed` is principled here — the model picks it when *meaningful*
+> worsening and *meaningful* easing coexist, not when counts happen to balance.
+>
+> The two sides of the ledger are handled symmetrically in the pipeline, but the
+> *eased* side is inherently noisier: Item 1A is a downside-only disclosure by SEC
+> rule (Reg S-K Item 105), so a removed or softened risk is ambiguous (genuine
+> resolution vs. reorganization/boilerplate cleanup) in a way a newly-added risk is
+> not. The reduce is instructed to be skeptical that easing reflects real
+> improvement. Positive business outlook does not live in 1A at all — it lives in
+> MD&A and the numbers, which is a later arc.
+>
+> This headline is therefore scoped to the **risk-factor section**: "Deteriorating"
+> means *disclosed risks worsened*, not *the company is doing badly*. The synthesis
+> row is keyed by section, so when MD&A and the numbers (B) arrive they are separate
+> per-section reads; composing them into a single whole-company headline — including
+> the high-value case where risk factors worsen while the outlook stays rosy (the
+> A×B divergence signal) — is a deliberate later step, not built toward now.
 
 ### 2. A synthesis paragraph: a Stage-3 reduce
 
@@ -127,11 +154,12 @@ bonus we collect when B exists, not a design we carry its weight for now.
 ### Bounded-operator boundaries
 
 The LLM judges each change's category (from the governed enum), direction, and
-one-line explanation, and writes the synthesis paragraph from those distilled
-judgments. **Code** aggregates the headline direction and counts, groups by theme,
-and stores/versions the synthesis. The LLM never computes the roll-up or a score;
-code never writes prose. Every LLM output is validated (enum membership, schema)
-before code trusts it.
+one-line explanation; the reduce then judges the filing's headline direction and
+writes the thesis and top-effects from those distilled judgments. **Code** computes
+the counts, groups by theme, and stores/versions the synthesis. The division is
+clean: **numbers are code's job, judgment is the model's** — the LLM never computes a
+count or a score, and code never writes prose or characterizes a direction. Every LLM
+output is validated (enum membership, schema) before code trusts it.
 
 ## Alternatives considered
 
@@ -191,9 +219,9 @@ versioned and re-derivable, and the evidence sits one click beneath it for
 verification.
 
 **Committed to:** direction and category as first-class, validated fields; a
-code-computed categorical headline, never an LLM score; synthesis as a bounded
-reduce over distilled findings; governed themes with rich, ungoverned drilldown
-detail; and concrete-for-A, generalizing only when B is real.
+reduce-judged categorical headline beside code-computed counts, never an LLM score;
+synthesis as a bounded reduce over distilled findings; governed themes with rich,
+ungoverned drilldown detail; and concrete-for-A, generalizing only when B is real.
 
 **Accepted losses / deferrals:** the cross-company discovery feed and its naming;
 B, MD&A, and the A×B divergence as synthesis inputs; and any trend/baseline view —
@@ -210,10 +238,11 @@ Built one at a time, off fresh `main`, in order.
    `judge_version`. Exercise the migration under `go test -race ./...` as well as
    pytest (migrations have two appliers).
 2. **Synthesis reduce + storage** *(LLM reduce + persistence)* — a `synthesize`
-   step that, per filing, code-rolls the headline direction and counts and reduces
-   the distilled material verdicts into a thesis paragraph and top-effects list;
-   a migration for a synthesis table keyed by (accession, section) with a
-   `synthesis_version`; a cost-capped, resumable, gap-driven reconciler CLI.
+   step that, per filing, reduces the distilled material verdicts into a judged
+   headline direction, a thesis paragraph, and a top-effects list, while code
+   computes the counts shown beside the headline; a migration for a synthesis table
+   keyed by (accession, section, model, judge_version, synthesis_version); a
+   cost-capped, resumable, gap-driven reconciler CLI.
 3. **Surface reorganized (Go read side)** — replace the flat list with the
    inverted pyramid: headline direction + counts, the synthesis paragraph + top
    effects, then a theme-grouped, collapsible drilldown that preserves each

@@ -28,6 +28,15 @@ from filings_orchestrator.change_detection.sectioning import (
     RiskFactorBlock,
     segment_risk_factors,
 )
+from filings_orchestrator.change_detection.synthesis import (
+    DEFAULT_SYNTHESIS_MODEL,
+    DisclosureSynthesis,
+    Finding,
+    HeadlineDirection,
+    build_synthesizer,
+    synthesis_version,
+    synthesize,
+)
 from filings_orchestrator.change_detection.taxonomy import (
     RiskChangeCategory,
     RiskChangeDirection,
@@ -36,17 +45,24 @@ from filings_orchestrator.change_detection.taxonomy import (
 __all__ = [
     "DEFAULT_JUDGE_MODEL",
     "DEFAULT_MODEL",
+    "DEFAULT_SYNTHESIS_MODEL",
     "BlockChange",
     "DiffResult",
+    "DisclosureSynthesis",
     "Embedder",
+    "Finding",
+    "HeadlineDirection",
     "MaterialityVerdict",
     "RiskChangeCategory",
     "RiskChangeDirection",
     "RiskFactorBlock",
     "VoyageEmbedder",
     "build_judge",
+    "build_synthesizer",
     "diff_blocks",
     "judge_change",
     "judge_version",
     "segment_risk_factors",
+    "synthesis_version",
+    "synthesize",
 ]

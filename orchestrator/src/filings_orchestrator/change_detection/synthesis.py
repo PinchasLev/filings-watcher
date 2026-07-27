@@ -154,10 +154,12 @@ class DisclosureSynthesis(BaseModel):
     )
     thesis: str = Field(
         description=(
-            "2-4 sentences, consistent with the headline: what materially changed in "
-            "this company's risk disclosures versus the prior year and why it matters to "
-            "a risk-monitoring reader. Lead with the most significant shift. Concrete and "
-            "specific; no preamble, no hedging, no restating the instructions."
+            "2-3 sentences in a terse, declarative analyst register, consistent with the "
+            "headline. State the findings directly — do NOT narrate the document ('this "
+            "filing reveals / introduces / shows / paints…'); write the finding, not the "
+            "act of disclosing it. The FIRST sentence must stand alone as the single most "
+            "important takeaway (it may be displayed by itself). Concrete and specific; no "
+            "preamble, no hedging, no editorializing, no restating the instructions."
         )
     )
     top_effects: list[str] = Field(
@@ -216,8 +218,10 @@ _SYSTEM_PROMPT = (
     "'major'; a filing whose only material changes are a new 10%-customer-concentration "
     "note and a regulatory-watch item is 'minor'.\n\n"
     "Then write the thesis and the top effects. Compose only from the changes provided — "
-    "do not introduce risks that are not among them, and do not restate every change. "
-    "Write plainly and specifically. Submit your synthesis with the tool, exactly once."
+    "introduce no risk not among them, and do not restate every change. Write in a terse, "
+    "declarative analyst register: state the findings, do not narrate the filing (avoid "
+    "'this filing reveals / introduces / paints…'), and make the first sentence stand on "
+    "its own as the key takeaway. Submit your synthesis with the tool, exactly once."
 )
 
 

@@ -54,8 +54,11 @@
 </section>
 
 {{if .DisclosureChanges}}
-  <section class="disclosure-changes">
-    <h3>Risk Radar <small>(year-over-year Risk Factors)</small></h3>
+  <section id="risk-radar" class="disclosure-changes">
+    <div class="section-head">
+      <h3>Risk Radar <small>(year-over-year Risk Factors)</small></h3>
+      <a class="back-link" href="/radar">&larr; All Risk Radar</a>
+    </div>
     {{range .DisclosureChanges}}
       <div class="diff-group">
         {{if .HasSynthesis}}

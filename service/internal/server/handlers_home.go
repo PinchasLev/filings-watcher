@@ -39,17 +39,20 @@ var templateFS embed.FS
 // string dereferencing, the EDGAR URL construction, and confidence-
 // percentage math.
 var templateFuncs = template.FuncMap{
-	"eventLabel":    eventLabel,
-	"derefStr":      derefStr,
-	"anchorLabel":   anchorLabel,
-	"edgarURL":      edgarFilingURL,
-	"mul":           func(a, b float64) float64 { return a * b },
-	"usd":           usdCompact,
-	"usdp":          usdCompactPtr,
-	"txnLabel":      insiderTxnLabel,
-	"changeLabel":   disclosureChangeLabel,
-	"liveWindowURL": liveWindowURL,
-	"relTime":       relTimeFromISO,
+	"eventLabel":     eventLabel,
+	"derefStr":       derefStr,
+	"anchorLabel":    anchorLabel,
+	"edgarURL":       edgarFilingURL,
+	"mul":            func(a, b float64) float64 { return a * b },
+	"usd":            usdCompact,
+	"usdp":           usdCompactPtr,
+	"txnLabel":       insiderTxnLabel,
+	"changeLabel":    disclosureChangeLabel,
+	"dirLabel":       disclosureDirectionLabel,
+	"categoryLabel":  disclosureCategoryLabel,
+	"riskShiftLabel": riskShiftLabel,
+	"liveWindowURL":  liveWindowURL,
+	"relTime":        relTimeFromISO,
 	// utcDateTime is the server-side fallback for the <time> elements on
 	// the live tape. JS localizes them to the viewer's timezone on
 	// render; if JS is blocked, the operator still sees an honest UTC

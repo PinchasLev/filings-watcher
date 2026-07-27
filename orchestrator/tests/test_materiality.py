@@ -6,6 +6,7 @@ Anthropic config is needed. The DB is a tmp SQLite with migrations applied.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -17,6 +18,8 @@ from filings_orchestrator.change_detection import (
     BlockChange,
     DiffResult,
     MaterialityVerdict,
+    RiskChangeCategory,
+    RiskChangeDirection,
     RiskFactorBlock,
     judge_change,
     judge_version,
@@ -69,7 +72,11 @@ def engine(tmp_path: Path) -> Engine:
 
 def _verdict(material: bool, conf: float) -> MaterialityVerdict:
     return MaterialityVerdict(
-        is_material=material, confidence=conf, category="x", explanation="because"
+        is_material=material,
+        confidence=conf,
+        category=RiskChangeCategory.LIQUIDITY_GOING_CONCERN,
+        direction=RiskChangeDirection.WORSE,
+        explanation="because",
     )
 
 
@@ -217,6 +224,69 @@ def test_insert_verdict_round_trip_and_idempotent(engine: Engine) -> None:
         ).fetchall()
     assert len(rows) == 1  # overwrote under the same version, no duplicate
     assert rows[0] == (0, 1)
+
+
+# --- governed vocabulary (ADR 0043) ---
+
+
+def test_category_and_direction_accept_governed_values() -> None:
+    v = MaterialityVerdict(
+        is_material=True,
+        confidence=0.9,
+        category="restructuring_workforce",
+        direction="eased",
+        explanation="x",
+    )
+    assert v.category is RiskChangeCategory.RESTRUCTURING_WORKFORCE
+    assert v.direction is RiskChangeDirection.EASED
+
+
+def test_category_coerces_unknown_to_other() -> None:
+    # A stray, out-of-vocabulary label must degrade to the catch-all, never fail the verdict.
+    v = MaterialityVerdict(
+        is_material=True,
+        confidence=0.9,
+        category="going-concern-ish",
+        direction="worse",
+        explanation="x",
+    )
+    assert v.category is RiskChangeCategory.OTHER
+
+
+def test_direction_coerces_unknown_to_neutral() -> None:
+    v = MaterialityVerdict(
+        is_material=False, confidence=0.5, category="other", direction="sideways", explanation="x"
+    )
+    assert v.direction is RiskChangeDirection.NEUTRAL
+
+
+def test_judge_schema_advertises_governed_enums() -> None:
+    # The bound tool schema must expose the allowed values so the model picks from them.
+    schema = json.dumps(MaterialityVerdict.model_json_schema())
+    assert "liquidity_going_concern" in schema and "restructuring_workforce" in schema
+    assert '"worse"' in schema and '"eased"' in schema and '"neutral"' in schema
+
+
+def test_verdict_persists_category_and_direction(engine: Engine) -> None:
+    _seed_diff(engine)
+    change = select_changes_needing_verdict(engine, _VERSION, limit=1)[0]
+    insert_change_verdict(
+        engine,
+        change=change,
+        judge_version=_VERSION,
+        verdict=MaterialityVerdict(
+            is_material=True,
+            confidence=0.9,
+            category=RiskChangeCategory.RESTRUCTURING_WORKFORCE,
+            direction=RiskChangeDirection.WORSE,
+            explanation="layoffs deepened",
+        ),
+        needs_review=False,
+        judged_at="t",
+    )
+    with engine.begin() as conn:
+        row = conn.execute(text("SELECT category, direction FROM block_change_verdicts")).one()
+    assert row == ("restructuring_workforce", "worse")
 
 
 # --- judge_pass ---

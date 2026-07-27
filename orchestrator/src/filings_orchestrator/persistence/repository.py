@@ -1811,16 +1811,19 @@ def insert_change_verdict(
                 """
                 INSERT INTO block_change_verdicts (
                     accession_number, section, model_id, change_seq, judge_version,
-                    is_material, confidence, category, explanation, needs_review, judged_at
+                    is_material, confidence, category, direction, explanation,
+                    needs_review, judged_at
                 ) VALUES (
                     :accession_number, :section, :model_id, :change_seq, :judge_version,
-                    :is_material, :confidence, :category, :explanation, :needs_review, :judged_at
+                    :is_material, :confidence, :category, :direction, :explanation,
+                    :needs_review, :judged_at
                 )
                 ON CONFLICT (accession_number, section, model_id, change_seq, judge_version)
                 DO UPDATE SET
                     is_material  = excluded.is_material,
                     confidence   = excluded.confidence,
                     category     = excluded.category,
+                    direction    = excluded.direction,
                     explanation  = excluded.explanation,
                     needs_review = excluded.needs_review,
                     judged_at    = excluded.judged_at
@@ -1834,7 +1837,8 @@ def insert_change_verdict(
                 "judge_version": judge_version,
                 "is_material": 1 if verdict.is_material else 0,
                 "confidence": verdict.confidence,
-                "category": verdict.category,
+                "category": verdict.category.value,
+                "direction": verdict.direction.value,
                 "explanation": verdict.explanation,
                 "needs_review": 1 if needs_review else 0,
                 "judged_at": judged_at,

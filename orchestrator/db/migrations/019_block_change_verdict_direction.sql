@@ -1,0 +1,15 @@
+-- 019: add `direction` to block_change_verdicts (ADR 0043).
+--
+-- Portable SQL — must compile and run identically on SQLite and Postgres. The
+-- application supplies all values.
+--
+-- Direction (worse / eased / neutral) is the LLM's judgment of how a change moved
+-- the risk — the *meaning* of the change, which leads the read surface, versus the
+-- mechanical added/changed/dropped. Additive with a NOT NULL DEFAULT so existing
+-- rows remain valid; those rows were judged under an earlier judge_version and are
+-- superseded by a re-judge under the new version that populates direction for real.
+--
+-- The governed `category` column already exists (migration 018); ADR 0043 only
+-- constrains its values to a bounded vocabulary at the application layer, which
+-- needs no schema change.
+ALTER TABLE block_change_verdicts ADD COLUMN direction TEXT NOT NULL DEFAULT 'neutral';

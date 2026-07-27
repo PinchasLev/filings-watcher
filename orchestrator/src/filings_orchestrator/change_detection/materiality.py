@@ -20,8 +20,16 @@ from typing import Any
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from filings_orchestrator.change_detection.taxonomy import (
+    RiskChangeCategory,
+    RiskChangeDirection,
+    coerce_category,
+    coerce_direction,
+    render_category_guidance,
+    render_direction_guidance,
+)
 from filings_orchestrator.cost import emit_llm_call
 
 DEFAULT_JUDGE_MODEL = "claude-haiku-4-5-20251001"
@@ -50,19 +58,36 @@ class MaterialityVerdict(BaseModel):
             "ambiguous or you are unsure whether it is substantive or cosmetic."
         ),
     )
-    category: str = Field(
+    category: RiskChangeCategory = Field(
         description=(
-            "A short label for the change, e.g. 'going-concern', 'new litigation', "
-            "'restructuring', 'debt/covenant', 'customer concentration', or "
-            "'ESG/boilerplate', 'reworded' for immaterial ones."
+            "The single theme this change belongs to, chosen from the governed set. "
+            "Use 'other' only when no specific theme fits."
+        )
+    )
+    direction: RiskChangeDirection = Field(
+        description=(
+            "Which way the change moved the risk: 'worse' (increased / newly disclosed "
+            "/ escalated), 'eased' (decreased / resolved / removed), or 'neutral' (no "
+            "real change in risk level — rewording or reorganization). Judge by the "
+            "change in risk, not by whether the block was added, revised, or dropped."
         )
     )
     explanation: str = Field(
         description="At most 25 words: why the change is or is not material, citing what shifted."
     )
 
+    @field_validator("category", mode="before")
+    @classmethod
+    def _coerce_category(cls, value: object) -> RiskChangeCategory:
+        return coerce_category(value)
 
-_SYSTEM_PROMPT = (
+    @field_validator("direction", mode="before")
+    @classmethod
+    def _coerce_direction(cls, value: object) -> RiskChangeDirection:
+        return coerce_direction(value)
+
+
+_SYSTEM_PROMPT_BASE = (
     "You compare a company's latest 10-K Risk Factors to the prior year's and judge "
     "whether a specific change is MATERIAL: a substantive new or worsened business, "
     "financial, or legal risk a reasonable investor or credit analyst would act on — "
@@ -74,8 +99,19 @@ _SYSTEM_PROMPT = (
     "substance. Judge the CHANGE, not the passage — an unremarkable risk factor that "
     "was merely reworded is not material even if it reads as serious. Bias toward "
     "is_material=false unless the change clearly matters, and lower your confidence "
-    "when the change is ambiguous. Submit your judgment with the tool, exactly once."
+    "when the change is ambiguous.\n\n"
+    "Also tag each change with its THEME (category) and its DIRECTION.\n\n"
+    "Themes — pick the single best fit:\n"
+    f"{render_category_guidance()}\n\n"
+    "Direction — how the change moved the risk:\n"
+    f"{render_direction_guidance()}\n\n"
+    "Submit your judgment with the tool, exactly once."
 )
+
+# Kept as the hashed prompt so judge_version tracks any change to the base wording OR
+# the governed vocabulary (both are folded into _SYSTEM_PROMPT_BASE above): a vocab
+# change yields a new judge_version, so verdicts re-judge rather than reinterpret.
+_SYSTEM_PROMPT = _SYSTEM_PROMPT_BASE
 
 
 def judge_version(model_name: str = DEFAULT_JUDGE_MODEL) -> str:

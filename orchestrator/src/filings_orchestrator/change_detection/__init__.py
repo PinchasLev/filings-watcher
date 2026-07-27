@@ -28,6 +28,10 @@ from filings_orchestrator.change_detection.sectioning import (
     RiskFactorBlock,
     segment_risk_factors,
 )
+from filings_orchestrator.change_detection.taxonomy import (
+    RiskChangeCategory,
+    RiskChangeDirection,
+)
 
 __all__ = [
     "DEFAULT_JUDGE_MODEL",
@@ -36,6 +40,8 @@ __all__ = [
     "DiffResult",
     "Embedder",
     "MaterialityVerdict",
+    "RiskChangeCategory",
+    "RiskChangeDirection",
     "RiskFactorBlock",
     "VoyageEmbedder",
     "build_judge",

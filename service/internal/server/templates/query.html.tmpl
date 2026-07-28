@@ -1,0 +1,74 @@
+{{- /* Read-only SQL console. Tailnet-only — lives under /ops/* so Caddy 404s it publicly. */ -}}
+{{- /* Standalone HTML — does not extend layout.html.tmpl. */ -}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Filings Radar — query console</title>
+<style>
+  :root { --bg: #fafafa; --card: #fff; --border: #e5e5e5; --muted: #6b7280; --text: #111827; --primary: #2563eb; --err: #b91c1c; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+  .container { max-width: 1100px; margin: 0 auto; padding: 1.5rem 1.25rem 3rem; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; padding-bottom: 0.75rem; border-bottom: 1px solid var(--border); }
+  header h1 { margin: 0; font-size: 1.15rem; font-weight: 600; }
+  header h1 .ops-tag { color: var(--muted); font-weight: 400; margin-left: 0.4rem; font-size: 0.95rem; }
+  header .back { font-size: 0.85rem; color: var(--muted); text-decoration: none; }
+  header .back:hover { color: var(--primary); }
+  .intro { color: var(--muted); font-size: 0.9rem; margin: 1.25rem 0; }
+  form { margin: 1rem 0; }
+  textarea { width: 100%; min-height: 6rem; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.85rem; padding: 0.6rem 0.75rem; border: 1px solid var(--border); border-radius: 0.4rem; resize: vertical; }
+  button { margin-top: 0.6rem; padding: 0.45rem 1.1rem; background: var(--primary); color: #fff; border: none; border-radius: 0.4rem; font-size: 0.9rem; cursor: pointer; }
+  .examples { font-size: 0.8rem; color: var(--muted); margin: 0.5rem 0 0; }
+  .examples a { color: var(--primary); text-decoration: none; margin-right: 0.9rem; white-space: nowrap; }
+  .examples a:hover { text-decoration: underline; }
+  .error { color: var(--err); background: #fef2f2; border: 1px solid #fecaca; border-radius: 0.4rem; padding: 0.6rem 0.8rem; font-family: ui-monospace, monospace; font-size: 0.85rem; }
+  .result-meta { color: var(--muted); font-size: 0.8rem; margin: 1rem 0 0.4rem; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.83rem; }
+  th, td { text-align: left; padding: 0.35rem 0.6rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.72rem; }
+  td { font-variant-numeric: tabular-nums; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 0.5rem; }
+  footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.75rem; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>Filings Radar <span class="ops-tag">/ query</span></h1>
+    <span><a class="back" href="/ops/traffic">traffic &rarr;</a> &nbsp; <a class="back" href="/ops/">ops</a></span>
+  </header>
+
+  <p class="intro">
+    Read-only SQL over the raw logs (operator-only, tailnet-reachable, public 404). Single <code>SELECT</code>/<code>WITH</code> query, capped at 500 rows. The ad-hoc slice-and-dice beside the canned panels.
+  </p>
+
+  <form method="get" action="/ops/query">
+    <textarea name="sql" placeholder="SELECT ...">{{.Query}}</textarea>
+    <div class="examples">
+      {{range .Examples}}<a href="/ops/query?sql={{.SQL | urlquery}}">{{.Label}}</a>{{end}}
+    </div>
+    <button type="submit">Run</button>
+  </form>
+
+  {{if .Error}}
+    <p class="error">{{.Error}}</p>
+  {{else if .Columns}}
+    <p class="result-meta">{{.RowCount}} row{{if ne .RowCount 1}}s{{end}}{{if .Truncated}} (capped at 500){{end}}.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>{{range .Columns}}<th>{{.}}</th>{{end}}</tr></thead>
+        <tbody>
+          {{range .Rows}}<tr>{{range .}}<td>{{.}}</td>{{end}}</tr>{{end}}
+        </tbody>
+      </table>
+    </div>
+  {{else if .Query}}
+    <p class="result-meta">No rows.</p>
+  {{end}}
+
+  <footer>Rendered at {{.RenderedAt}}.</footer>
+</div>
+</body>
+</html>

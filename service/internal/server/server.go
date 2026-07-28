@@ -53,6 +53,10 @@ type storer interface {
 	SpendDataStartDate(ctx context.Context) (string, error)
 	AtomSnapshotFreshness(ctx context.Context) (*string, error)
 	DailyIndexCursorFreshness(ctx context.Context) (*string, error)
+	// Visit tracking: the middleware logs page views; /ops reads the summary.
+	LogPageView(ctx context.Context, path, referrerHost, clientKind, visitorHash, viewedAt string) error
+	PageViewSummary(ctx context.Context) (store.PageViewStats, error)
+	RunReadOnlyQuery(ctx context.Context, query string) (cols []string, rows [][]string, truncated bool, err error)
 }
 
 // New returns an http.Handler with all routes registered.
@@ -67,7 +71,10 @@ func New(s storer) http.Handler {
 	mux.HandleFunc("GET /live", handleLive(s))
 	mux.HandleFunc("GET /api/live-events", handleLiveEvents(s))
 	mux.HandleFunc("GET /static/live.js", handleLiveScript())
+	mux.HandleFunc("GET /ops/traffic", handleTraffic(s))
+	mux.HandleFunc("GET /ops/query", handleQueryConsole(s))
 	mux.HandleFunc("GET /ops/", handleOps(s))
 	mux.HandleFunc("GET /", handleHome(s))
-	return mux
+	// Wrap with page-view logging so /ops can show engagement (visit tracking).
+	return logPageViews(s, mux)
 }

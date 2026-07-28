@@ -1,0 +1,92 @@
+{{- /* Traffic dashboard. Tailnet-only — lives under /ops/* so Caddy 404s it publicly. */ -}}
+{{- /* Standalone HTML — does not extend layout.html.tmpl. */ -}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="120">
+<title>Filings Radar — traffic</title>
+<style>
+  :root { --bg: #fafafa; --card: #fff; --border: #e5e5e5; --muted: #6b7280; --text: #111827; --primary: #2563eb; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+  .container { max-width: 1100px; margin: 0 auto; padding: 1.5rem 1.25rem 3rem; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; padding-bottom: 0.75rem; border-bottom: 1px solid var(--border); }
+  header h1 { margin: 0; font-size: 1.15rem; font-weight: 600; letter-spacing: -0.01em; }
+  header h1 .ops-tag { color: var(--muted); font-weight: 400; margin-left: 0.4rem; font-size: 0.95rem; }
+  header .back { font-size: 0.85rem; color: var(--muted); text-decoration: none; }
+  header .back:hover { color: var(--primary); }
+  .intro { color: var(--muted); font-size: 0.9rem; margin: 1.5rem 0; }
+  .stat-row { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); margin-top: 1rem; }
+  .panel { background: var(--card); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.1rem 1.2rem; }
+  .panel + .panel { margin-top: 1rem; }
+  .stat-row > .panel + .panel { margin-top: 0; }
+  .panel h2 { margin: 0 0 0.7rem; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+  .stat { margin: 0; font-size: 1.9rem; font-weight: 600; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .sub { color: var(--muted); font-size: 0.85rem; margin: 0.4rem 0 0; }
+  .ops-list { list-style: none; margin: 0; padding: 0; font-size: 0.9rem; }
+  .ops-list li { display: flex; justify-content: space-between; gap: 1rem; padding: 0.3rem 0; border-bottom: 1px solid var(--border); }
+  .ops-list li:last-child { border-bottom: none; }
+  .ops-list .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .ops-list a { color: inherit; text-decoration: none; }
+  .ops-list a:hover { text-decoration: underline; }
+  footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.75rem; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>Filings Radar <span class="ops-tag">/ traffic</span></h1>
+    <span><a class="back" href="/ops/query">query &rarr;</a> &nbsp; <a class="back" href="/ops/">&larr; ops</a></span>
+  </header>
+
+  <p class="intro">
+    Operator-only engagement view (tailnet-reachable, public 404). Privacy-light: no cookies, no stored IPs. Unique visitors use a day-rotating hash, so they are per-day counts, not returning visitors. Auto-refreshes every 120 seconds.
+  </p>
+
+  <section class="stat-row">
+    <article class="panel">
+      <h2>Human page views</h2>
+      <p class="stat">{{.Traffic.HumanViews24h}}</p>
+      <p class="sub">last 24h &middot; {{.Traffic.HumanViews7d}} in 7d &middot; {{.Traffic.HumanViews30d}} in 30d.</p>
+    </article>
+    <article class="panel">
+      <h2>Unique visitors</h2>
+      <p class="stat">{{.Traffic.UniquesToday}}</p>
+      <p class="sub">today &middot; {{.Traffic.Uniques30d}} visitor-days in 30d. Day-rotating hash; no cookie, no stored IP.</p>
+    </article>
+    <article class="panel">
+      <h2>Automated &amp; crawler (30d)</h2>
+      <p class="stat">{{.Traffic.Automated30d}}</p>
+      <p class="sub">automated (scripts / tools) &mdash; the API-appetite signal. {{.Traffic.Crawler30d}} crawler views (indexers, bots).</p>
+    </article>
+  </section>
+
+  <article class="panel">
+    <h2>Most-viewed pages (30d, human)</h2>
+    {{if .Traffic.TopPaths}}
+      <ul class="ops-list">
+        {{range .Traffic.TopPaths}}<li><span>{{.Path}}</span><span class="n">{{.Count}}</span></li>{{end}}
+      </ul>
+    {{else}}<p class="sub">No human page views recorded yet.</p>{{end}}
+  </article>
+
+  <article class="panel">
+    <h2>Most-viewed companies (30d, human)</h2>
+    {{if .Traffic.TopCompanies}}
+      <ul class="ops-list">
+        {{range .Traffic.TopCompanies}}
+          <li>
+            <span><a href="/companies/{{.CIK}}">{{if .Ticker}}{{.Ticker}} &mdash; {{end}}{{if .CompanyName}}{{.CompanyName}}{{else}}CIK {{.CIK}}{{end}}</a></span>
+            <span class="n">{{.Count}}</span>
+          </li>
+        {{end}}
+      </ul>
+    {{else}}<p class="sub">No company pages viewed yet.</p>{{end}}
+  </article>
+
+  <footer>Rendered at {{.RenderedAt}}.</footer>
+</div>
+</body>
+</html>

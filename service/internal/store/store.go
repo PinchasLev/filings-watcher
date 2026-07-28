@@ -184,6 +184,13 @@ type Store interface {
 	// reconciler can stall silently for days, so the dashboard surfaces this
 	// second freshness signal alongside it.
 	DailyIndexCursorFreshness(ctx context.Context) (*string, error)
+	// Visit tracking (page_views): the web middleware logs a view per human page
+	// request; /ops reads the engagement summary.
+	LogPageView(ctx context.Context, path, referrerHost, clientKind, visitorHash, viewedAt string) error
+	PageViewSummary(ctx context.Context) (PageViewStats, error)
+	// RunReadOnlyQuery backs the tailnet-only /ops/query console: ad-hoc SELECT over
+	// the raw logs, returning column names and stringified rows.
+	RunReadOnlyQuery(ctx context.Context, query string) (cols []string, rows [][]string, truncated bool, err error)
 	Close() error
 }
 

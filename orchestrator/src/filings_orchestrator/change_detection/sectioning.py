@@ -6,6 +6,17 @@ line-level chunks produce noisy, boilerplate-dominated diffs while risk-factor-l
 blocks isolate real changes. In a 10-K each risk factor is introduced by a **bold
 header** (typically a full sentence), so we split Item 1A at bold headers.
 
+Locating the section is the harder problem, because filers vary: some title the
+heading "Item 1A. Risk Factors", some "Item 1A—Risk Factors" (an em/en-dash), and
+some (Nike, McDonald's) put "Item 1A" only in the table of contents and title the real
+heading just "Risk Factors"; some don't bold it at all (Intel, JPMorgan). So the
+locator anchors on a bold "Risk Factors" heading (with an optional, dash-tolerant Item
+1A prefix) and falls back to the specific "Item 1A … Risk Factors" text when no bold
+heading exists, disambiguating the real section from the table of contents by span
+size. A filing whose section can't be located, or whose extraction is degenerate,
+yields no blocks — a coverage gap that is queryable (block_count = 0) and logged, not
+a silent drop.
+
 Filers format their HTML differently, so this is best-effort with a fallback: when
 no usable bold-header structure is found (older or oddly-formatted filings), we fall
 back to merging paragraphs into fixed-size blocks. Either way each block carries a
@@ -45,11 +56,32 @@ _FALLBACK_TARGET_CHARS = 1800
 _BOLD_WEIGHTS = frozenset({"bold", "bolder", "600", "700", "800", "900"})
 _FONT_WEIGHT_RE = re.compile(r"font-weight\s*:\s*(\w+)")
 
-# Item 1A opens the Risk Factors section; Item 1B (Unresolved Staff Comments) or
-# Item 2 (Properties) closes it. Both appear twice in a 10-K — once in the table of
-# contents, once as the real heading — so we pick the widest span (see _locate).
-_ITEM_1A_RE = re.compile(r"item[\s ]*1a[\.\:\s]")
-_ITEM_END_RE = re.compile(r"item[\s ]*(?:1b|2)[\.\:\s]")
+# The Risk Factors section opens with a heading that filers title variously: "Item
+# 1A. Risk Factors", "Item 1A[dash]Risk Factors" (em/en-dash), or simply "Risk Factors" —
+# several large filers (Nike, McDonald's) put "Item 1A" only in the table of contents
+# and title the real section heading just "Risk Factors". So we anchor on the phrase
+# "risk factors" at the start of a bold heading, with an OPTIONAL Item-1A prefix and a
+# dash-tolerant separator, rather than on "Item 1A" text.
+# Separators seen between "Item 1A" and "Risk Factors": period, colon, whitespace, and
+# em/en-dash/hyphen (Costco writes "Item 1A[dash]Risk Factors"). Escaped to keep the source
+# ASCII (ruff RUF001).
+_SEP = r"[\s.:\u2014\u2013-]"
+_RF_HEADING_RE = re.compile(rf"(?:item\s*1a\b{_SEP}*)?risk\s+factors\b")
+# The more SPECIFIC anchor for the non-bold fallback: requires the "Item 1A" prefix, so
+# it does not match the many inline "…these risk factors…" mentions in prose.
+_ITEM1A_RF_RE = re.compile(rf"item\s*1a\b{_SEP}*risk\s+factors\b")
+# The section closes at the next item — 1B (Unresolved Staff Comments), 1C
+# (Cybersecurity), or 2 (Properties). Matched as text (for filers whose next heading
+# isn't bold, e.g. Nike) OR as a bold heading by name (for filers who drop the item
+# number from real headings, e.g. McDonald's "Properties").
+_END_ITEM_RE = re.compile(rf"item[\s ]*(?:1b|1c|2){_SEP}")
+_END_HEADING_RE = re.compile(
+    r"(?:item\s*(?:1b|1c|2)\b|unresolved\s+staff|properties\b|legal\s+proceedings|mine\s+safety)"
+)
+# A located section shorter than this is a false locate — a table-of-contents entry
+# (Item 1A → Item 1B a line apart) or an inline cross-reference — not the real section,
+# which dwarfs it. Also the floor below which a parse is treated as degenerate.
+_MIN_SECTION_CHARS = 1500
 
 
 class RiskFactorBlock(BaseModel):
@@ -128,36 +160,54 @@ def _coalesced_segments(html: str) -> tuple[list[_Segment], str]:
     return segments, joined_lower
 
 
-def _locate_item_1a(joined_lower: str, segments: list[_Segment]) -> tuple[int, int] | None:
-    """Find the character span of the Risk Factors section: from the "Item 1A"
-    heading to the next "Item 1B"/"Item 2" after it.
-
-    The section start must be a real HEADING, i.e. an "Item 1A" match that falls inside
-    a bold segment — not an inline cross-reference like "see Item 1A. Risk Factors
-    below" that filers place in Item 1 (which would start the span early and swallow
-    the Business section), nor an inline back-reference from within a risk factor
-    (which would confuse a purely positional rule). Both were seen on real filings —
-    AMC/Peloton over-captured Item 1, Ford has inline references inside the section.
-    Among the heading candidates, the widest span to the next Item 1B/2 wins. If none
-    of the matches are bold (a filing whose headings carry no bold styling), fall back
-    to all matches so we still return something."""
-    starts = [m.start() for m in _ITEM_1A_RE.finditer(joined_lower)]
-    ends = [m.start() for m in _ITEM_END_RE.finditer(joined_lower)]
-
-    def _is_heading(pos: int) -> bool:
-        return any(seg.bold and seg.start <= pos < seg.end for seg in segments)
-
-    heading_starts = [s for s in starts if _is_heading(s)]
-    candidates = heading_starts or starts
+def _widest_span(starts: list[int], ends: list[int]) -> tuple[int, int] | None:
+    """The widest (start -> nearest following end) at least `_MIN_SECTION_CHARS` long,
+    or None. The size floor rejects table-of-contents entries and inline references
+    (whose nearest end is a line away); the real section dwarfs them."""
     best: tuple[int, int] | None = None
-    for s in candidates:
+    for s in starts:
         after = [e for e in ends if e > s]
         if not after:
             continue
         span = (s, min(after))
+        if span[1] - span[0] < _MIN_SECTION_CHARS:
+            continue
         if best is None or (span[1] - span[0]) > (best[1] - best[0]):
             best = span
     return best
+
+
+def _locate_risk_factors(joined_lower: str, segments: list[_Segment]) -> tuple[int, int] | None:
+    """Find the character span of the Risk Factors section, in two tiers.
+
+    Section ends: the next item (1B/1C/2) as text, or a bold next-section heading by
+    name (for filers who drop the item number from real headings, e.g. McDonald's
+    "Properties").
+
+    1. Primary: BOLD heading segments whose text *begins* with the risk-factors pattern.
+       Requiring bold + start-of-segment excludes both the (usually non-bold) TOC entry
+       and inline references ("see Item 1A. Risk Factors"), which sit mid-paragraph.
+    2. Fallback (filers who do not bold the heading, e.g. Intel, JPMorgan): anchor on the
+       specific "Item 1A ... Risk Factors" text — specific enough not to match the many
+       inline "these risk factors" mentions — and take the widest valid span.
+    """
+    ends = [m.start() for m in _END_ITEM_RE.finditer(joined_lower)]
+    ends += [
+        seg.start
+        for seg in segments
+        if seg.bold and _END_HEADING_RE.match(seg.text.strip().lower())
+    ]
+    ends.sort()
+
+    bold_starts = [
+        seg.start for seg in segments if seg.bold and _RF_HEADING_RE.match(seg.text.strip().lower())
+    ]
+    span = _widest_span(bold_starts, ends)
+    if span is not None:
+        return span
+
+    ref_starts = [m.start() for m in _ITEM1A_RF_RE.finditer(joined_lower)]
+    return _widest_span(ref_starts, ends)
 
 
 def _segments_in_span(segments: list[_Segment], span: tuple[int, int]) -> list[_Segment]:
@@ -221,7 +271,7 @@ def segment_risk_factors(html: str) -> list[RiskFactorBlock]:
     structure. Blocks shorter than `_MIN_BLOCK_CHARS` are dropped.
     """
     segments, joined_lower = _coalesced_segments(html)
-    span = _locate_item_1a(joined_lower, segments)
+    span = _locate_risk_factors(joined_lower, segments)
     if span is None:
         return []
 
@@ -247,4 +297,10 @@ def segment_risk_factors(html: str) -> list[RiskFactorBlock]:
                 block_hash=_block_hash(normalized),
             )
         )
+    # Degenerate-parse guard: if the surviving content is implausibly small for a Risk
+    # Factors section, treat it as a failed extraction and emit nothing — better a
+    # visibly-absent filing (queryable via block_count = 0) than a misleading headline
+    # synthesized from a fragment (the Carnival 2-block case).
+    if sum(len(b.text) for b in blocks) < _MIN_SECTION_CHARS:
+        return []
     return blocks

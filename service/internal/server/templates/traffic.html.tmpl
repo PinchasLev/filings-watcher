@@ -57,9 +57,14 @@
       <p class="sub">today &middot; {{.Traffic.Uniques30d}} visitor-days in 30d. Day-rotating hash; no cookie, no stored IP.</p>
     </article>
     <article class="panel">
-      <h2>Automated &amp; crawler (30d)</h2>
+      <h2>Automated (30d)</h2>
       <p class="stat">{{.Traffic.Automated30d}}</p>
-      <p class="sub">automated (scripts / tools) &mdash; the API-appetite signal. {{.Traffic.Crawler30d}} crawler views (indexers, bots).</p>
+      <p class="sub">script / tool views &mdash; the API-appetite signal (incl. spoofed-browser scrapers from cloud IPs).</p>
+    </article>
+    <article class="panel">
+      <h2>Crawlers (30d)</h2>
+      <p class="stat">{{.Traffic.Crawler30d}}</p>
+      <p class="sub">search indexers and link-preview bots.</p>
     </article>
   </section>
 

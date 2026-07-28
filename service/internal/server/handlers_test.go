@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -58,6 +59,13 @@ type fakeStore struct {
 	radarTotal           int
 	radarCounts          store.RiskRadarCounts
 	radarErr             error
+	pageViewStats        store.PageViewStats
+	pageViewErr          error
+	loggedViews          atomic.Int32
+	queryCols            []string
+	queryRows            [][]string
+	queryTruncated       bool
+	queryErr             error
 	notableClusters      []store.InsiderCluster
 
 	liveEventsResult []store.Event
@@ -184,6 +192,19 @@ func (f *fakeStore) RecentDisclosureChanges(
 
 func (f *fakeStore) RiskRadarIntensityCounts(_ context.Context) (store.RiskRadarCounts, error) {
 	return f.radarCounts, f.radarErr
+}
+
+func (f *fakeStore) LogPageView(_ context.Context, _, _, _, _, _ string) error {
+	f.loggedViews.Add(1)
+	return nil
+}
+
+func (f *fakeStore) PageViewSummary(_ context.Context) (store.PageViewStats, error) {
+	return f.pageViewStats, f.pageViewErr
+}
+
+func (f *fakeStore) RunReadOnlyQuery(_ context.Context, _ string) ([]string, [][]string, bool, error) {
+	return f.queryCols, f.queryRows, f.queryTruncated, f.queryErr
 }
 
 func (f *fakeStore) NotableInsiderActivity(_ context.Context, _ int, _ float64, _ int) ([]store.InsiderCluster, error) {

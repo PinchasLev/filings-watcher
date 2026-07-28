@@ -1,6 +1,6 @@
-# SSM document that installs the periodic ingest under systemd: eleven
-# wrapper scripts, eleven timer-driven oneshot service units (plus an OnFailure
-# OOM-notify handler), eleven timers, and a shared classifier resource slice
+# SSM document that installs the periodic ingest under systemd: twelve
+# wrapper scripts, twelve timer-driven oneshot service units (plus an OnFailure
+# OOM-notify handler), twelve timers, and a shared classifier resource slice
 # (ADR 0035) — the Atom feed (ADR 0029, near-real-time), the daily-index
 # reconciliation backstop (ADR 0021, evening cluster per ADR 0029), the classify
 # reconciler that heals orphaned filings (ADR 0030), the alarm drainer
@@ -10,7 +10,8 @@
 # the ingest-freshness check that alarms when the daily-index cursor
 # falls behind (ADR 0041, its own dead-man's-switch on the reconciler), and the
 # change-detection pipeline (ADR 0042) — scan-periodic (10-K ingest, evening
-# cluster) feeding the embed-blocks, diff-filings, and judge-changes reconcilers.
+# cluster) feeding the embed-blocks, diff-filings, judge-changes, and synthesize-changes
+# reconcilers (the last turns material verdicts into Risk Radar cards, ADR 0043).
 # The operator runs this once per host (e.g., after the first deploy on a new
 # instance).
 #
@@ -80,7 +81,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
 
   content = jsonencode({
     schemaVersion = "2.2"
-    description   = "Install + enable the systemd timers for scan-atom-feed (30s), scan-daily-index (evening cluster), reclassify-orphans (20m reconciler), alarm-drain (2m alert delivery), host-heartbeat (5m dead-man's-switch), scan-form4 (evening insider ingest), check-ingest-freshness (1h cursor-staleness alarm), and the change-detection pipeline (scan-periodic evening + embed-blocks/diff-filings/judge-changes reconcilers, ADR 0042)"
+    description   = "Install + enable the systemd timers for scan-atom-feed (30s), scan-daily-index (evening cluster), reclassify-orphans (20m reconciler), alarm-drain (2m alert delivery), host-heartbeat (5m dead-man's-switch), scan-form4 (evening insider ingest), check-ingest-freshness (1h cursor-staleness alarm), and the change-detection pipeline (scan-periodic evening + embed-blocks/diff-filings/judge-changes/synthesize-changes reconcilers, ADR 0042/0043)"
     mainSteps = [{
       action = "aws:runShellScript"
       name   = "install"
@@ -388,6 +389,36 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "TICK_EOF",
           "chmod 0755 /usr/local/bin/filings-judge-changes-tick",
           "chown root:root /usr/local/bin/filings-judge-changes-tick",
+          # synthesize-changes: reduce each filing's material change verdicts into a
+          # read (headline + thesis + top effects, ADR 0043). The stage after the judge
+          # and the last LLM-bearing stage of the change-detection funnel. Same env shape
+          # as judge — LLM-bearing (Sonnet) + cost-capped, load_config requires Anthropic
+          # + LangSmith + EDGAR even though it fetches nothing from EDGAR. Under the slice.
+          # Without this reconciler the judge can mark changes material but nothing turns
+          # them into Risk Radar cards, so coverage silently stalls (the gap that left the
+          # re-backfilled large-caps un-surfaced until a manual run drained them).
+          "cat > /usr/local/bin/filings-synthesize-changes-tick <<'TICK_EOF'",
+          "#!/bin/bash",
+          "set -euo pipefail",
+          "ANTHROPIC_API_KEY=$(aws ssm get-parameter --name /filings-watcher/anthropic-api-key --with-decryption --query Parameter.Value --output text --region ${var.aws_region})",
+          "LANGSMITH_API_KEY=$(aws ssm get-parameter --name /filings-watcher/langsmith-api-key --with-decryption --query Parameter.Value --output text --region ${var.aws_region})",
+          "EDGAR_USER_AGENT=$(aws ssm get-parameter --name /filings-watcher/edgar-user-agent --with-decryption --query Parameter.Value --output text --region ${var.aws_region})",
+          "export ANTHROPIC_API_KEY LANGSMITH_API_KEY EDGAR_USER_AGENT",
+          "export FILINGS_DB_PATH=/var/lib/filings-watcher/filings.db",
+          "export ANTHROPIC_DAILY_COST_CAP_USD=5.00",
+          "export ANTHROPIC_DAILY_COST_WARN_USD=4.00",
+          "RELEASE_SHA=$(basename $(readlink -f /opt/filings-watcher/current))",
+          "export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317",
+          "export OTEL_EXPORTER_OTLP_PROTOCOL=grpc",
+          "export OTEL_SERVICE_NAME=filings-orchestrator",
+          "export OTEL_RESOURCE_ATTRIBUTES=service.namespace=filings-watcher,service.version=$RELEASE_SHA",
+          "export OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental",
+          "export TRACELOOP_TRACE_CONTENT=false",
+          "cd /opt/filings-watcher/current/orchestrator",
+          "exec /home/filings/.local/bin/uv run --no-sync synthesize-changes",
+          "TICK_EOF",
+          "chmod 0755 /usr/local/bin/filings-synthesize-changes-tick",
+          "chown root:root /usr/local/bin/filings-synthesize-changes-tick",
           "install -d -o filings -g filings -m 0755 /var/lib/filings-watcher",
           # --- Classifier resource slice (memory isolation, ADR 0035) ---
           # All Anthropic-classifying ticks (daily-index, atom-feed, reclassify-
@@ -816,6 +847,44 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "[Install]",
           "WantedBy=timers.target",
           "TIMER_EOF",
+          # synthesize-changes: OnUnitInactiveSec reconciler, the reduce stage after the
+          # judge; LLM-bearing (Sonnet) + cost-capped like judge-changes; in the slice
+          # with the OOM notifier. Staggered one minute behind the judge's boot arm so a
+          # fresh boot judges before it synthesizes.
+          "cat > /etc/systemd/system/filings-synthesize-changes.service <<'SERVICE_EOF'",
+          "[Unit]",
+          "Description=filings-watcher change synthesis / Risk Radar reduce (ADR 0043)",
+          "Documentation=https://github.com/PinchasLev/filings-watcher",
+          "After=network-online.target",
+          "Wants=network-online.target",
+          "OnFailure=filings-oom-notify@%n.service",
+          "",
+          "[Service]",
+          "Type=oneshot",
+          "User=filings",
+          "Group=filings",
+          "TimeoutStartSec=12m",
+          "ExecStart=/usr/bin/flock -n --conflict-exit-code=0 /var/lib/filings-watcher/synthesize-changes.lock /usr/local/bin/filings-synthesize-changes-tick",
+          "StandardOutput=journal",
+          "StandardError=journal",
+          "SyslogIdentifier=filings-synthesize-changes",
+          "Slice=filings-classify.slice",
+          "NoNewPrivileges=true",
+          "PrivateTmp=true",
+          "SERVICE_EOF",
+          "cat > /etc/systemd/system/filings-synthesize-changes.timer <<'TIMER_EOF'",
+          "[Unit]",
+          "Description=Periodic change-synthesis reconciler (Risk Radar reduce, ADR 0043)",
+          "Documentation=https://github.com/PinchasLev/filings-watcher",
+          "",
+          "[Timer]",
+          "Unit=filings-synthesize-changes.service",
+          "OnUnitInactiveSec=20min",
+          "OnBootSec=7min",
+          "",
+          "[Install]",
+          "WantedBy=timers.target",
+          "TIMER_EOF",
           # --- Classifier OOM-kill notifier (OnFailure handler unit, ADR 0035) ---
           # Templated, started by OnFailure= on the three classifier services. NOT
           # enabled or timed — instantiated only when a classifier tick fails. %i is
@@ -848,6 +917,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "systemctl enable filings-embed-blocks.timer",
           "systemctl enable filings-diff-filings.timer",
           "systemctl enable filings-judge-changes.timer",
+          "systemctl enable filings-synthesize-changes.timer",
           # Fire one Atom invocation now so OnUnitInactiveSec has a
           # reference timestamp; subsequent invocations are scheduled 30
           # seconds after each one exits. systemctl start --no-block
@@ -879,6 +949,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "systemctl start --no-block filings-embed-blocks.service",
           "systemctl start --no-block filings-diff-filings.service",
           "systemctl start --no-block filings-judge-changes.service",
+          "systemctl start --no-block filings-synthesize-changes.service",
           "systemctl start filings-daily-index.timer",
           "systemctl start filings-atom-feed.timer",
           "systemctl start filings-reclassify-orphans.timer",
@@ -891,6 +962,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "systemctl start filings-embed-blocks.timer",
           "systemctl start filings-diff-filings.timer",
           "systemctl start filings-judge-changes.timer",
+          "systemctl start filings-synthesize-changes.timer",
           "systemctl status --no-pager filings-daily-index.timer || true",
           "systemctl status --no-pager filings-atom-feed.timer || true",
           "systemctl status --no-pager filings-reclassify-orphans.timer || true",
@@ -902,7 +974,8 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "systemctl status --no-pager filings-embed-blocks.timer || true",
           "systemctl status --no-pager filings-diff-filings.timer || true",
           "systemctl status --no-pager filings-judge-changes.timer || true",
-          "echo \"install + enable complete: daily-index, atom-feed, reclassify-orphans, alarm-drain, host-heartbeat, scan-form4, check-ingest-freshness, and the change-detection pipeline (scan-periodic, embed-blocks, diff-filings, judge-changes)\"",
+          "systemctl status --no-pager filings-synthesize-changes.timer || true",
+          "echo \"install + enable complete: daily-index, atom-feed, reclassify-orphans, alarm-drain, host-heartbeat, scan-form4, check-ingest-freshness, and the change-detection pipeline (scan-periodic, embed-blocks, diff-filings, judge-changes, synthesize-changes)\"",
         ]
       }
     }]

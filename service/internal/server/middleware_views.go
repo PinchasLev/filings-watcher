@@ -55,8 +55,9 @@ func logPageViews(s pageViewLogger, next http.Handler) http.Handler {
 		}
 		path := r.URL.Path
 		host := referrerHost(r.Referer())
-		kind := classifyClient(r.UserAgent())
-		hash := visitorDayHash(clientIP(r), r.UserAgent())
+		ip := clientIP(r)
+		kind := classifyClient(r.UserAgent(), ip)
+		hash := visitorDayHash(ip, r.UserAgent())
 		viewedAt := time.Now().UTC().Format(time.RFC3339)
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -133,11 +134,12 @@ var toolMarkers = []string{
 	"scrapy", "headless", "phantomjs", "puppeteer", "playwright", "restsharp",
 }
 
-// classifyClient buckets a User-Agent into human / crawler / automated. Order
-// matters: known crawlers first, then tools, then real browsers; an unknown
-// non-browser UA is treated as automated, and an empty UA as automated (a script,
-// not a crawler that would identify itself).
-func classifyClient(ua string) string {
+// classifyClient buckets a request into human / crawler / automated from its
+// User-Agent and client IP. Order matters: self-identifying crawlers first, then
+// tool UAs, then the datacenter-IP check (a browser-looking UA from a cloud range is
+// a spoofed scraper, not a human), then real browsers; an unknown non-browser UA, or
+// an empty one, is automated.
+func classifyClient(ua, ip string) string {
 	u := strings.ToLower(strings.TrimSpace(ua))
 	if u == "" {
 		return clientAutomated
@@ -151,6 +153,10 @@ func classifyClient(ua string) string {
 		if strings.Contains(u, m) {
 			return clientAutomated
 		}
+	}
+	// A browser UA from a datacenter/hosting IP is a spoofed scraper, not a visitor.
+	if isDatacenterIP(ip) {
+		return clientAutomated
 	}
 	if strings.Contains(u, "mozilla") || strings.Contains(u, "applewebkit") || strings.Contains(u, "gecko") {
 		return clientHuman

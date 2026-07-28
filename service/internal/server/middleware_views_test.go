@@ -3,20 +3,43 @@ package server
 import "testing"
 
 func TestClassifyClient(t *testing.T) {
-	cases := map[string]string{
-		"Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 Chrome/120": clientHuman,
-		"Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)":      clientHuman,
-		"Googlebot/2.1 (+http://www.google.com/bot.html)":             clientCrawler,
-		"facebookexternalhit/1.1":                                     clientCrawler,
-		"curl/8.4.0":                                                  clientAutomated,
-		"python-requests/2.31.0":                                      clientAutomated,
-		"Go-http-client/2.0":                                          clientAutomated,
-		"":                                                            clientAutomated,
-		"SomeRandomClient/1.0":                                        clientAutomated,
+	const browser = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/122"
+	// A non-datacenter IP (TEST-NET-3, reserved) so UA-based cases classify by UA.
+	const homeIP = "203.0.113.7"
+	type tc struct {
+		ua, ip, want string
 	}
-	for ua, want := range cases {
-		if got := classifyClient(ua); got != want {
-			t.Errorf("classifyClient(%q) = %q, want %q", ua, got, want)
+	for _, c := range []tc{
+		{browser, homeIP, clientHuman},
+		{"Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", homeIP, clientHuman},
+		{"Googlebot/2.1 (+http://www.google.com/bot.html)", homeIP, clientCrawler},
+		{"facebookexternalhit/1.1", homeIP, clientCrawler},
+		{"curl/8.4.0", homeIP, clientAutomated},
+		{"python-requests/2.31.0", homeIP, clientAutomated},
+		{"", homeIP, clientAutomated},
+		{"SomeRandomClient/1.0", homeIP, clientAutomated},
+		// The observed case: a spoofed browser UA from an Alibaba Cloud IP -> automated.
+		{browser, "47.76.93.214", clientAutomated},
+		// A self-identified crawler from a datacenter is still a crawler.
+		{"Googlebot/2.1", "34.64.1.1", clientCrawler},
+	} {
+		if got := classifyClient(c.ua, c.ip); got != c.want {
+			t.Errorf("classifyClient(%q, %q) = %q, want %q", c.ua, c.ip, got, c.want)
+		}
+	}
+}
+
+func TestIsDatacenterIP(t *testing.T) {
+	datacenter := []string{"47.76.93.214", "47.76.83.75", "34.64.1.1", "159.65.10.20"}
+	for _, ip := range datacenter {
+		if !isDatacenterIP(ip) {
+			t.Errorf("isDatacenterIP(%q) = false, want true", ip)
+		}
+	}
+	notDatacenter := []string{"203.0.113.7", "8.8.8.8", "1.1.1.1", "", "not-an-ip"}
+	for _, ip := range notDatacenter {
+		if isDatacenterIP(ip) {
+			t.Errorf("isDatacenterIP(%q) = true, want false", ip)
 		}
 	}
 }

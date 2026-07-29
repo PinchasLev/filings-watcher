@@ -82,7 +82,8 @@ func main() {
 	// duration). The span name shown here is the surface name, not the
 	// per-request name — the contrib package fills the route in. RecoverPanic
 	// sits inside the span wrapper so a panic still yields a recorded span.
-	handler := otelhttp.NewHandler(server.RecoverPanic(emitter, server.New(s)), "filings-server")
+	appServer := server.New(s)
+	handler := otelhttp.NewHandler(server.RecoverPanic(emitter, appServer), "filings-server")
 
 	// Graceful shutdown. systemd sends SIGTERM on stop/restart and waits
 	// TimeoutStopSec (default 90s) before SIGKILL. We listen for SIGTERM
@@ -120,5 +121,8 @@ func main() {
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			logger.Error("server shutdown error", "error", err)
 		}
+		// Requests have drained; wait for any best-effort page-view writes those
+		// requests fanned out so a detached write does not outlive the process.
+		appServer.Wait()
 	}
 }

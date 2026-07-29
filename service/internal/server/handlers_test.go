@@ -269,6 +269,21 @@ func migrationsDir(t *testing.T) string {
 }
 
 // seededStore returns a fresh Store with one filing and one classification.
+// newTestServer starts an httptest server over the app Server and, at cleanup,
+// closes it and drains its in-flight page-view writes. It is registered after
+// seededStore's t.TempDir (so, LIFO, it runs first), guaranteeing a detached view
+// write finishes before the temp DB directory is removed — otherwise that write
+// races os.RemoveAll and fails the test with "directory not empty".
+func newTestServer(t *testing.T, s *server.Server) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(s)
+	t.Cleanup(func() {
+		ts.Close()
+		s.Wait()
+	})
+	return ts
+}
+
 func seededStore(t *testing.T) store.Store {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
@@ -327,8 +342,7 @@ func seededStore(t *testing.T) store.Store {
 }
 
 func TestHealthEndpoint(t *testing.T) {
-	srv := httptest.NewServer(server.New(seededStore(t)))
-	defer srv.Close()
+	srv := newTestServer(t, server.New(seededStore(t)))
 
 	resp, err := http.Get(srv.URL + "/health")
 	if err != nil {
@@ -348,8 +362,7 @@ func TestHealthEndpoint(t *testing.T) {
 }
 
 func TestListFilingsEndpoint(t *testing.T) {
-	srv := httptest.NewServer(server.New(seededStore(t)))
-	defer srv.Close()
+	srv := newTestServer(t, server.New(seededStore(t)))
 
 	resp, err := http.Get(srv.URL + "/filings")
 	if err != nil {
@@ -378,8 +391,7 @@ func TestListFilingsEndpoint(t *testing.T) {
 }
 
 func TestFilingDetailEndpoint_Success(t *testing.T) {
-	srv := httptest.NewServer(server.New(seededStore(t)))
-	defer srv.Close()
+	srv := newTestServer(t, server.New(seededStore(t)))
 
 	resp, err := http.Get(srv.URL + "/filings/0001-26-001")
 	if err != nil {
@@ -403,8 +415,7 @@ func TestFilingDetailEndpoint_Success(t *testing.T) {
 }
 
 func TestFilingDetailEndpoint_NotFound(t *testing.T) {
-	srv := httptest.NewServer(server.New(seededStore(t)))
-	defer srv.Close()
+	srv := newTestServer(t, server.New(seededStore(t)))
 
 	resp, err := http.Get(srv.URL + "/filings/does-not-exist")
 	if err != nil {
@@ -417,8 +428,7 @@ func TestFilingDetailEndpoint_NotFound(t *testing.T) {
 }
 
 func TestListFilings_LimitClampedToMax(t *testing.T) {
-	srv := httptest.NewServer(server.New(seededStore(t)))
-	defer srv.Close()
+	srv := newTestServer(t, server.New(seededStore(t)))
 
 	resp, err := http.Get(srv.URL + "/filings?limit=10000")
 	if err != nil {

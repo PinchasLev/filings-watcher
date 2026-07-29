@@ -6,6 +6,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/PinchasLev/filings-watcher/service/internal/store"
@@ -59,8 +60,18 @@ type storer interface {
 	RunReadOnlyQuery(ctx context.Context, query string) (cols []string, rows [][]string, truncated bool, err error)
 }
 
-// New returns an http.Handler with all routes registered.
-func New(s storer) http.Handler {
+// Server is the app's HTTP handler. It also tracks the best-effort page-view
+// writes the view-logging middleware fans out to background goroutines, so they
+// can be drained (Wait) before the process — or, in tests, the temp DB directory —
+// goes away. Without that, a detached write can outlive the request and race a
+// graceful shutdown or a test's t.TempDir cleanup.
+type Server struct {
+	handler http.Handler
+	views   sync.WaitGroup
+}
+
+// New returns a *Server with all routes registered. It is an http.Handler.
+func New(s storer) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
 	mux.HandleFunc("GET /filings", handleListFilings(s))
@@ -75,6 +86,20 @@ func New(s storer) http.Handler {
 	mux.HandleFunc("GET /ops/query", handleQueryConsole(s))
 	mux.HandleFunc("GET /ops/", handleOps(s))
 	mux.HandleFunc("GET /", handleHome(s))
+	srv := &Server{}
 	// Wrap with page-view logging so /ops can show engagement (visit tracking).
-	return logPageViews(s, mux)
+	srv.handler = logPageViews(s, &srv.views, mux)
+	return srv
+}
+
+// ServeHTTP dispatches to the wrapped handler.
+func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	srv.handler.ServeHTTP(w, r)
+}
+
+// Wait blocks until every in-flight page-view write has finished. Call it after
+// http.Server.Shutdown on a graceful stop; tests call it (before their temp DB
+// directory is removed) so a late write can never race the teardown.
+func (srv *Server) Wait() {
+	srv.views.Wait()
 }

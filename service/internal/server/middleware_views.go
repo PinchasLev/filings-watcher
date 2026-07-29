@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -47,7 +48,10 @@ type pageViewLogger interface {
 }
 
 // logPageViews wraps a handler, recording a view for each GET to a tracked page.
-func logPageViews(s pageViewLogger, next http.Handler) http.Handler {
+// The write runs off the request path in a goroutine registered on `wg`, so the
+// server can drain in-flight writes on shutdown (and tests before temp-dir
+// teardown) rather than leaving a detached write to outlive the request.
+func logPageViews(s pageViewLogger, wg *sync.WaitGroup, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		next.ServeHTTP(w, r)
 		if r.Method != http.MethodGet || !isTrackedPage(r.URL.Path) {
@@ -59,7 +63,10 @@ func logPageViews(s pageViewLogger, next http.Handler) http.Handler {
 		kind := classifyClient(r.UserAgent(), ip)
 		hash := visitorDayHash(ip, r.UserAgent())
 		viewedAt := time.Now().UTC().Format(time.RFC3339)
+		// Add before launching (on the request path) so Wait can never miss it.
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 			_ = s.LogPageView(ctx, path, host, kind, hash, viewedAt)

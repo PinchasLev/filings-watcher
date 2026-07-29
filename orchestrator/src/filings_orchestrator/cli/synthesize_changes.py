@@ -33,10 +33,15 @@ from filings_orchestrator.change_detection import (
     DEFAULT_SYNTHESIS_MODEL,
     DisclosureSynthesis,
     Finding,
+    HeadlineDirection,
+    HeadlineIntensity,
+    build_standing_synthesizer,
     build_synthesizer,
     judge_version,
+    standing_synthesis_version,
     synthesis_version,
     synthesize,
+    synthesize_standing,
 )
 from filings_orchestrator.change_detection.taxonomy import (
     RiskChangeDirection,
@@ -56,12 +61,18 @@ from filings_orchestrator.persistence import open_engine
 from filings_orchestrator.persistence.repository import (
     daily_cost_usd,
     insert_change_synthesis,
+    load_filing_section_text,
     load_material_verdicts,
+    select_filings_needing_stable_synthesis,
     select_filings_needing_synthesis,
 )
 
 # Filings synthesized per run — one LLM reduce each; a backlog drains across runs.
 _DEFAULT_MAX_PER_RUN = 100
+
+# The stable path reads the current section text; bound it so a pathological section
+# does not blow the prompt (a real Item 1A is well under this).
+_STANDING_SECTION_CHAR_BUDGET = 120_000
 
 
 def _synthesize_one(
@@ -144,6 +155,79 @@ def synthesis_pass(
     return {"synthesized": synthesized, "failed": failed, "candidates": len(targets)}
 
 
+def stable_synthesis_pass(
+    engine: Engine,
+    model: object,
+    *,
+    model_name: str,
+    judge_ver: str,
+    standing_ver: str,
+    limit: int,
+) -> dict[str, int]:
+    """Summarize stable filings (diffed, zero material changes) into a standing-risk read.
+    "No change" is not "no risk": these filings carry real, unchanged risk, so they earn a
+    card summarizing what those standing risks ARE rather than falling off the radar (ADR
+    0043). Code fixes the headline to STABLE / NONE (the change picture did not move); the
+    reduce writes only the prose. A filing whose reduce keeps failing is left for the next
+    run (no row stored)."""
+    synthesized = failed = 0
+    targets = select_filings_needing_stable_synthesis(engine, judge_ver, standing_ver, limit)
+    for target in targets:
+        section_text = load_filing_section_text(
+            engine,
+            accession_number=target.accession_number,
+            section=target.section,
+            max_chars=_STANDING_SECTION_CHAR_BUDGET,
+        )
+        if not section_text.strip():
+            continue  # no block text (raced away / empty) — skip cleanly
+
+        try:
+            summary = with_retries(
+                partial(
+                    synthesize_standing,
+                    model,
+                    section_text=section_text,
+                    model_name=model_name,
+                    accession_number=target.accession_number,
+                ),
+                log_context={"accession": target.accession_number, "section": target.section},
+            )
+        except Exception as exc:
+            failed += 1
+            emit(
+                "change_synthesis_failed",
+                accession_number=target.accession_number,
+                section=target.section,
+                stable=True,
+                error_class=type(exc).__name__,
+                message=str(exc),
+            )
+            continue
+
+        insert_change_synthesis(
+            engine,
+            target=target,
+            judge_version=judge_ver,
+            synthesis_version=standing_ver,
+            headline_direction=HeadlineDirection.STABLE.value,
+            headline_intensity=HeadlineIntensity.NONE.value,
+            material_count=0,
+            worse_count=0,
+            eased_count=0,
+            neutral_count=0,
+            thesis=summary.thesis,
+            top_effects=summary.top_risks,
+            synthesized_at=datetime.now(UTC).isoformat(),
+        )
+        synthesized += 1
+    return {
+        "stable_synthesized": synthesized,
+        "stable_failed": failed,
+        "stable_candidates": len(targets),
+    }
+
+
 def main() -> None:
     setup_otel()
     import argparse
@@ -214,15 +298,32 @@ def main() -> None:
             )
             sys.exit(1)
 
+        judge_ver = judge_version(judge_model)
         model = build_synthesizer(model_name)
         counts = synthesis_pass(
             engine,
             model,
             model_name=model_name,
-            judge_ver=judge_version(judge_model),
+            judge_ver=judge_ver,
             synth_ver=synthesis_version(model_name),
             limit=limit,
         )
+
+        # Stable filings (diffed, zero material changes) get a standing-risk summary from a
+        # second reduce. It shares the per-run budget — change synthesis runs first, and the
+        # stable pass takes whatever of `limit` remains — so both drain across runs without a
+        # tick's LLM calls exceeding `limit`. Uses its own bound model + version.
+        remaining = max(0, limit - counts["synthesized"])
+        stable_counts = stable_synthesis_pass(
+            engine,
+            build_standing_synthesizer(model_name),
+            model_name=model_name,
+            judge_ver=judge_ver,
+            standing_ver=standing_synthesis_version(model_name),
+            limit=remaining,
+        )
+        counts.update(stable_counts)
+
         duration_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
         span.set_attribute("source", "synthesize")
         span.set_attribute("synthesized", counts["synthesized"])

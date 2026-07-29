@@ -45,8 +45,8 @@ type DisclosureChangeGroup struct {
 	PriorPeriod   string
 
 	HasSynthesis      bool
-	HeadlineDirection string // "worsening" | "easing" | "mixed"
-	HeadlineIntensity string // "major" | "moderate" | "minor"
+	HeadlineDirection string // "worsening" | "easing" | "mixed" | "stable" (no changes)
+	HeadlineIntensity string // "major" | "moderate" | "minor" | "none" (stable)
 	MaterialCount     int
 	WorseCount        int
 	EasedCount        int
@@ -100,6 +100,7 @@ func (s *store) RecentDisclosureChanges(
 		SELECT COUNT(*)
 		  FROM filing_change_synthesis s
 		 WHERE ` + latestSynthesisPredicate + `
+		   AND s.headline_direction <> 'stable'
 		   AND (? = '' OR s.headline_intensity = ?)`
 	if err := s.db.QueryRowContext(ctx, countQ, intensity, intensity).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("risk radar count: %w", err)
@@ -116,6 +117,7 @@ func (s *store) RecentDisclosureChanges(
 		  JOIN periodic_filings pf ON pf.accession_number = s.accession_number
 		  LEFT JOIN cik_tickers ct ON ct.cik = pf.cik
 		 WHERE ` + latestSynthesisPredicate + `
+		   AND s.headline_direction <> 'stable'
 		   AND (? = '' OR s.headline_intensity = ?)
 		 ORDER BY pf.filed_at DESC, s.material_count DESC, s.accession_number
 		 LIMIT ? OFFSET ?`
@@ -147,6 +149,7 @@ func (s *store) RiskRadarIntensityCounts(ctx context.Context) (RiskRadarCounts, 
 		SELECT s.headline_intensity, COUNT(*)
 		  FROM filing_change_synthesis s
 		 WHERE ` + latestSynthesisPredicate + `
+		   AND s.headline_direction <> 'stable'
 		 GROUP BY s.headline_intensity`
 	rows, err := s.db.QueryContext(ctx, q)
 	if err != nil {
@@ -192,11 +195,79 @@ func (s *store) CompanyDisclosureChanges(
 	if err := s.attachDisclosureSynthesis(ctx, cik, ptrs, byAccession); err != nil {
 		return nil, err
 	}
+	// A stable filing (diffed, zero material changes) has a synthesis but no evidence, so
+	// the evidence query above never surfaces it. Append those as themeless groups so a
+	// company whose risks held steady reads as "unchanged — here are the standing risks"
+	// rather than being absent (ADR 0043).
+	stable, err := s.companyStableSyntheses(ctx, cik, byAccession)
+	if err != nil {
+		return nil, err
+	}
+	ptrs = append(ptrs, stable...)
+	// Newest fiscal period first across changed and stable alike (ISO period ends sort
+	// lexically); StableSort keeps the evidence query's within-period ordering.
+	sort.SliceStable(ptrs, func(i, j int) bool {
+		return ptrs[i].CurrentPeriod > ptrs[j].CurrentPeriod
+	})
 	out := make([]DisclosureChangeGroup, len(ptrs))
 	for i, p := range ptrs {
 		out[i] = *p
 	}
 	return out, nil
+}
+
+// companyStableSyntheses loads a company's stable-filing standing-risk summaries
+// (headline_direction='stable') as themeless groups — one per filing that was diffed
+// against its prior year with zero material changes. Skips any accession already present
+// as an evidence group (a changed filing is never also stable, but the guard is cheap).
+func (s *store) companyStableSyntheses(
+	ctx context.Context, cik string, byAccession map[string]*DisclosureChangeGroup,
+) ([]*DisclosureChangeGroup, error) {
+	const q = `
+		SELECT s.accession_number, pf.period_of_report, ppf.period_of_report,
+		       s.thesis, s.top_effects
+		  FROM filing_change_synthesis s
+		  JOIN periodic_filings pf ON pf.accession_number = s.accession_number
+		  LEFT JOIN filing_diffs d
+		    ON d.accession_number = s.accession_number AND d.section = s.section
+		   AND d.model_id = s.model_id
+		  LEFT JOIN periodic_filings ppf ON ppf.accession_number = d.prior_accession_number
+		 WHERE pf.cik = ? AND s.headline_direction = 'stable'
+		   AND ` + latestSynthesisPredicate
+	rows, err := s.db.QueryContext(ctx, q, cik)
+	if err != nil {
+		return nil, fmt.Errorf("company stable synthesis: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []*DisclosureChangeGroup
+	for rows.Next() {
+		var (
+			acc, thesis, topEffectsJSON string
+			curPeriod, priorPeriod      sql.NullString
+		)
+		if err := rows.Scan(&acc, &curPeriod, &priorPeriod, &thesis, &topEffectsJSON); err != nil {
+			return nil, fmt.Errorf("scan stable synthesis: %w", err)
+		}
+		if _, ok := byAccession[acc]; ok {
+			continue
+		}
+		var topEffects []string
+		if topEffectsJSON != "" {
+			_ = json.Unmarshal([]byte(topEffectsJSON), &topEffects)
+		}
+		out = append(out, &DisclosureChangeGroup{
+			Accession:         acc,
+			CurrentPeriod:     curPeriod.String,
+			PriorPeriod:       priorPeriod.String,
+			HasSynthesis:      true,
+			HeadlineDirection: "stable",
+			HeadlineIntensity: "none",
+			Thesis:            thesis,
+			TopEffects:        topEffects,
+		})
+	}
+	return out, rows.Err()
 }
 
 // disclosureChangeEvidence loads the material changes, grouped by filing and then by

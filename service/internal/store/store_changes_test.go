@@ -316,3 +316,54 @@ func TestCompanyDisclosureChangesUsesLatestVerdict(t *testing.T) {
 		t.Errorf("groups = %d, want 0 (latest verdict is immaterial)", len(groups))
 	}
 }
+
+func TestStableSynthesisRendersOnCompanyPageAndExcludedFromFeed(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+	const cik = "0000000123"
+	insPeriodic(t, raw, "prior", cik, "2024-12-31")
+	insPeriodic(t, raw, "current", cik, "2025-12-31")
+	insDiff(t, raw, "current", "prior") // diffed, but no material changes -> stable
+	insSynthesis(t, raw, "current", "stable", "none", 0, 0, 0,
+		"Standing risks concentrated in supply chain.", `["supply concentration","fx exposure"]`, "t1")
+	_ = raw.Close()
+
+	s := openStore(t, dbPath)
+
+	// Company page: the stable filing surfaces as a themeless standing-risk group.
+	groups, err := s.CompanyDisclosureChanges(context.Background(), cik, 40)
+	if err != nil {
+		t.Fatalf("CompanyDisclosureChanges: %v", err)
+	}
+	if len(groups) != 1 {
+		t.Fatalf("groups = %d, want 1 (stable filing)", len(groups))
+	}
+	g := groups[0]
+	if !g.HasSynthesis || g.HeadlineDirection != "stable" || g.HeadlineIntensity != "none" {
+		t.Errorf("headline = %+v, want stable/none with synthesis", g)
+	}
+	if g.PriorPeriod != "2024-12-31" {
+		t.Errorf("PriorPeriod = %q, want 2024-12-31 (from the diff)", g.PriorPeriod)
+	}
+	if len(g.Themes) != 0 {
+		t.Errorf("themes = %d, want 0 (no material evidence)", len(g.Themes))
+	}
+	if len(g.TopEffects) != 2 || g.Thesis == "" {
+		t.Errorf("standing risks = %+v / thesis %q", g.TopEffects, g.Thesis)
+	}
+
+	// Movement feed: a stable filing is "what did not move" — excluded from the feed.
+	rows, total, err := s.RecentDisclosureChanges(context.Background(), "", 50, 0)
+	if err != nil {
+		t.Fatalf("RecentDisclosureChanges: %v", err)
+	}
+	if total != 0 || len(rows) != 0 {
+		t.Errorf("feed total = %d / rows %d, want 0 (stable excluded)", total, len(rows))
+	}
+	counts, err := s.RiskRadarIntensityCounts(context.Background())
+	if err != nil {
+		t.Fatalf("RiskRadarIntensityCounts: %v", err)
+	}
+	if counts.Total != 0 {
+		t.Errorf("counts.Total = %d, want 0 (stable excluded)", counts.Total)
+	}
+}

@@ -63,16 +63,25 @@
       <div class="diff-group">
         {{if .HasSynthesis}}
           <div class="risk-headline">
-            <span class="badge shift shift-{{.HeadlineIntensity}}">{{riskShiftLabel .HeadlineIntensity .HeadlineDirection}}</span>
-            <span class="risk-counts">{{.MaterialCount}} material &middot; {{.WorseCount}} worse / {{.EasedCount}} eased</span>
+            {{if eq .HeadlineDirection "stable"}}
+              <span class="badge shift shift-none">Unchanged</span>
+            {{else}}
+              <span class="badge shift shift-{{.HeadlineIntensity}}">{{riskShiftLabel .HeadlineIntensity .HeadlineDirection}}</span>
+              <span class="risk-counts">{{.MaterialCount}} material &middot; {{.WorseCount}} worse / {{.EasedCount}} eased</span>
+            {{end}}
           </div>
         {{end}}
         <p class="diff-periods">
-          Fiscal period ending <strong>{{.CurrentPeriod}}</strong>{{if .PriorPeriod}} versus <strong>{{.PriorPeriod}}</strong>{{end}}
+          {{if eq .HeadlineDirection "stable"}}
+            Risk Factors materially unchanged in fiscal period ending <strong>{{.CurrentPeriod}}</strong>{{if .PriorPeriod}} versus <strong>{{.PriorPeriod}}</strong>{{end}}
+          {{else}}
+            Fiscal period ending <strong>{{.CurrentPeriod}}</strong>{{if .PriorPeriod}} versus <strong>{{.PriorPeriod}}</strong>{{end}}
+          {{end}}
           &mdash; <a href="{{edgarURL .Accession}}" rel="noopener" target="_blank">view filing on EDGAR &rarr;</a>
         </p>
         {{if .Thesis}}<p class="risk-thesis">{{.Thesis}}</p>{{end}}
         {{if .TopEffects}}
+          {{if eq .HeadlineDirection "stable"}}<p class="top-effects-label">Principal standing risks</p>{{end}}
           <ul class="top-effects">
             {{range .TopEffects}}<li>{{.}}</li>{{end}}
           </ul>
@@ -95,7 +104,7 @@
         {{end}}
       </div>
     {{end}}
-    <small>Material year-over-year changes to this company's Risk Factors (Item&nbsp;1A), found by comparing each annual report to the prior year and judged for materiality. The headline direction and intensity are an AI reading of the changes as a whole; the counts are exact. Fiscal periods are the reporting period ends. Not investment advice.</small>
+    <small>Material year-over-year changes to this company's Risk Factors (Item&nbsp;1A), found by comparing each annual report to the prior year and judged for materiality. The headline direction and intensity are an AI reading of the changes as a whole; the counts are exact. A filing marked <em>Unchanged</em> had no material change from the prior year; its summary describes the company's standing risks, which remain in force. Fiscal periods are the reporting period ends. Not investment advice.</small>
   </section>
 {{end}}
 

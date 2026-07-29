@@ -273,3 +273,42 @@ Built one at a time, off fresh `main`, in order.
 **Explicitly deferred to later arcs:** the cross-company feed and section naming ·
 B / MD&A / A×B as synthesis inputs · the source-agnostic finding abstraction ·
 trend and baseline views.
+
+## Amendment: stable filings get a standing-risk summary
+
+The synthesis above only fires when a filing has ≥1 material change. A filing diffed
+against its prior year with **zero** material changes therefore produced no synthesis
+and fell off the radar entirely — but "no change" is not "no risk." A stable filer
+still carries real, material risk; it simply did not move year-over-year. Surfacing
+that ("Caterpillar's risk factors were materially unchanged") is itself a signal, and
+absence is not a non-result.
+
+So a stable filing gets a **standing-risk summary**: a second reduce that reads the
+**current** Risk Factors section (there is no diff to reduce) and summarizes the
+company's principal *standing* risks — what they ARE, not what changed. It is stored in
+the same `filing_change_synthesis` table with `headline_direction = 'stable'` and
+`headline_intensity = 'none'` (all counts zero), so no migration is needed.
+
+Design boundaries held:
+
+- **Trigger precisely.** "Stable" means *diffed, fully judged, zero material changes* —
+  never "could not diff." A single-year filing (no prior) or an unparseable one (no
+  diff row) is *not* stable, just uncovered; calling it stable would be a lie. The gap
+  query keys on `filing_diffs`, excludes any filing with an un-judged change (so we
+  never pre-empt the judge), and is disjoint from the change-synthesis gap query.
+- **Own version.** `standing_synthesis_version` is separate from `synthesis_version`
+  (model + a hash of its own, distinct prompt), so the two reduce paths re-derive
+  independently.
+- **The badge stays honest.** `intensity = 'none'` is code-set (never the model): the
+  magnitude axis measures *change*, and a stable filing's change magnitude is zero. The
+  standing-risk *severity* lives in the prose (thesis + top standing risks), not the
+  badge — so the same badge never means two different things.
+- **Surface split.** Stable cards render on the **company page** (the "state of this
+  company" view: "Unchanged — and here are the standing risks"), but are **excluded
+  from the cross-company movement feed and its counts** — that feed answers "what
+  *moved*," and stable filings would swamp it. A future "stable" filter chip could
+  admit them to the feed on demand.
+
+The stable pass shares the reconciler's per-run budget (change synthesis runs first;
+the stable pass takes the remainder), so a tick's LLM calls stay bounded by `--limit`
+and both drain across runs.

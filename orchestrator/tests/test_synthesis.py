@@ -26,10 +26,12 @@ from filings_orchestrator.change_detection import (
     RiskChangeCategory,
     RiskChangeDirection,
     RiskFactorBlock,
+    StandingRiskSummary,
+    standing_synthesis_version,
     synthesis_version,
     synthesize,
 )
-from filings_orchestrator.cli.synthesize_changes import synthesis_pass
+from filings_orchestrator.cli.synthesize_changes import stable_synthesis_pass, synthesis_pass
 from filings_orchestrator.persistence import apply_migrations, open_engine
 from filings_orchestrator.persistence.repository import (
     SynthesisTarget,
@@ -37,8 +39,10 @@ from filings_orchestrator.persistence.repository import (
     insert_change_verdict,
     insert_filing_diff,
     insert_periodic_filing,
+    load_filing_section_text,
     load_material_verdicts,
     select_changes_needing_verdict,
+    select_filings_needing_stable_synthesis,
     select_filings_needing_synthesis,
 )
 
@@ -159,8 +163,12 @@ def test_synthesis_version_is_stable_and_names_model() -> None:
 # --- persistence: seed a diff + verdicts, then gap/load/insert ---
 
 
-def _seed_verdicts(engine: Engine, directions: list[str], *, material: bool = True) -> None:
-    """Seed one filing pair with a diff and one verdict per given direction."""
+def _seed_verdicts(
+    engine: Engine, directions: list[str], *, material: bool = True, judge: bool = True
+) -> None:
+    """Seed one filing pair with a diff and one verdict per given direction. With
+    judge=False the changes are left un-judged (no verdict rows), to exercise the
+    stable path's "wait for the judge" guard."""
     insert_periodic_filing(
         engine,
         accession_number="prior",
@@ -203,6 +211,8 @@ def _seed_verdicts(engine: Engine, directions: list[str], *, material: bool = Tr
         result=DiffResult(changes=changes, added=0, changed=len(directions), carried=0, dropped=0),
         computed_at="t",
     )
+    if not judge:
+        return
     pending = select_changes_needing_verdict(engine, _JUDGE_V, limit=100)
     for change, direction in zip(pending, directions, strict=True):
         insert_change_verdict(
@@ -304,3 +314,94 @@ def test_synthesis_pass_stores_model_headline_and_code_counts(engine: Engine) ->
         engine, _FakeModel([]), model_name="m", judge_ver=_JUDGE_V, synth_ver=_SYNTH_V, limit=10
     )
     assert again["candidates"] == 0
+
+
+# --- stable path: diffed, zero material changes -> standing-risk summary ---
+
+
+_STANDING_V = "test-standing-v1"
+
+
+class _StandingResponse:
+    def __init__(self, args: dict[str, Any]) -> None:
+        self.tool_calls = [{"name": "submit_standing_summary", "args": args, "id": "t"}]
+        self.usage_metadata: dict[str, Any] = {}
+
+
+class _FakeStandingModel:
+    """Returns the given standing summaries in order; records the last prompt."""
+
+    def __init__(self, results: list[StandingRiskSummary]) -> None:
+        self._it = iter(results)
+        self.last_user: str | None = None
+
+    def invoke(self, messages: list[Any]) -> _StandingResponse:
+        self.last_user = messages[-1].content
+        return _StandingResponse(next(self._it).model_dump(mode="json"))
+
+
+def test_standing_version_is_distinct_from_change_version() -> None:
+    # The two reduce paths carry independent versions so each re-derives on its own prompt.
+    assert standing_synthesis_version("claude-x").startswith("claude-x+standing-")
+    assert standing_synthesis_version("claude-x") != synthesis_version("claude-x")
+
+
+def test_stable_gap_finds_fully_judged_immaterial_filing(engine: Engine) -> None:
+    # All changes judged immaterial -> stable (not empty). Disjoint from the change gap.
+    _seed_verdicts(engine, ["neutral", "neutral"], material=False)
+    stable = select_filings_needing_stable_synthesis(engine, _JUDGE_V, _STANDING_V, limit=10)
+    assert stable == [SynthesisTarget("current", _SECTION, _MODEL)]
+    assert select_filings_needing_synthesis(engine, _JUDGE_V, _SYNTH_V, limit=10) == []
+
+
+def test_stable_gap_excludes_filing_with_a_material_change(engine: Engine) -> None:
+    _seed_verdicts(engine, ["worse"], material=True)
+    assert select_filings_needing_stable_synthesis(engine, _JUDGE_V, _STANDING_V, limit=10) == []
+
+
+def test_stable_gap_waits_for_unjudged_changes(engine: Engine) -> None:
+    # A diff with changes not yet judged must NOT be called stable — it may yet be material.
+    _seed_verdicts(engine, ["changed", "changed"], judge=False)
+    assert select_filings_needing_stable_synthesis(engine, _JUDGE_V, _STANDING_V, limit=10) == []
+
+
+def test_load_filing_section_text_concatenates_blocks(engine: Engine) -> None:
+    _seed_verdicts(engine, ["neutral", "neutral"], material=False)
+    text_out = load_filing_section_text(
+        engine, accession_number="current", section=_SECTION, max_chars=10_000
+    )
+    assert "new 0" in text_out and "new 1" in text_out
+
+
+def test_stable_pass_stores_stable_headline_and_standing_risks(engine: Engine) -> None:
+    _seed_verdicts(engine, ["neutral", "neutral"], material=False)
+    model = _FakeStandingModel(
+        [StandingRiskSummary(thesis="Concentrated supplier exposure.", top_risks=["supply", "fx"])]
+    )
+    counts = stable_synthesis_pass(
+        engine, model, model_name="m", judge_ver=_JUDGE_V, standing_ver=_STANDING_V, limit=10
+    )
+    assert counts == {"stable_synthesized": 1, "stable_failed": 0, "stable_candidates": 1}
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                "SELECT headline_direction, headline_intensity, material_count, thesis, "
+                "top_effects FROM filing_change_synthesis"
+            )
+        ).one()
+    assert row[0] == "stable" and row[1] == "none" and row[2] == 0
+    assert row[3] == "Concentrated supplier exposure."
+    assert json.loads(row[4]) == ["supply", "fx"]
+    # the reduce is fed the current section text, not distilled verdicts
+    assert model.last_user is not None and "new 0" in model.last_user
+
+    # Re-run: stored for this standing version -> nothing to do.
+    again = stable_synthesis_pass(
+        engine,
+        _FakeStandingModel([]),
+        model_name="m",
+        judge_ver=_JUDGE_V,
+        standing_ver=_STANDING_V,
+        limit=10,
+    )
+    assert again["stable_candidates"] == 0

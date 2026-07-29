@@ -1933,6 +1933,91 @@ def load_material_verdicts(
     ]
 
 
+def select_filings_needing_stable_synthesis(
+    engine: Engine, judge_version: str, synthesis_version: str, limit: int
+) -> list[SynthesisTarget]:
+    """Return up to `limit` STABLE filings needing a standing-risk summary: a filing
+    that was diffed against its prior year but has ZERO material verdicts and no stable
+    synthesis yet under (judge_version, synthesis_version).
+
+    Disjoint from select_filings_needing_synthesis, which requires >= 1 material verdict.
+    Guards against labelling a filing "stable" before the judge has finished: a filing
+    with any un-judged change (a block_change with no verdict for this judge_version) is
+    excluded, so a filing qualifies only once judging is complete — whether it ended with
+    zero changes at all (e.g. a section unchanged year-over-year) or all changes judged
+    immaterial. Keyed on filing_diffs, so only successfully-diffed filings qualify (a
+    single-year or unparseable filing has no diff row and is never called stable)."""
+    sql = text(
+        """
+        SELECT fd.accession_number, fd.section, fd.model_id
+          FROM filing_diffs fd
+         WHERE NOT EXISTS (
+                 SELECT 1 FROM block_change_verdicts v
+                  WHERE v.accession_number = fd.accession_number AND v.section = fd.section
+                    AND v.model_id = fd.model_id AND v.judge_version = :judge_version
+                    AND v.is_material = 1)
+           AND NOT EXISTS (
+                 SELECT 1 FROM block_changes bc
+                  WHERE bc.accession_number = fd.accession_number AND bc.section = fd.section
+                    AND bc.model_id = fd.model_id
+                    AND NOT EXISTS (
+                          SELECT 1 FROM block_change_verdicts v2
+                           WHERE v2.accession_number = bc.accession_number
+                             AND v2.section = bc.section AND v2.model_id = bc.model_id
+                             AND v2.change_seq = bc.change_seq
+                             AND v2.judge_version = :judge_version))
+           AND NOT EXISTS (
+                 SELECT 1 FROM filing_change_synthesis s
+                  WHERE s.accession_number = fd.accession_number AND s.section = fd.section
+                    AND s.model_id = fd.model_id AND s.judge_version = :judge_version
+                    AND s.synthesis_version = :synthesis_version)
+         ORDER BY fd.accession_number, fd.section
+         LIMIT :limit
+        """
+    )
+    with engine.begin() as conn:
+        rows = conn.execute(
+            sql,
+            {
+                "judge_version": judge_version,
+                "synthesis_version": synthesis_version,
+                "limit": limit,
+            },
+        ).fetchall()
+    return [SynthesisTarget(str(r[0]), str(r[1]), str(r[2])) for r in rows]
+
+
+def load_filing_section_text(
+    engine: Engine, *, accession_number: str, section: str, max_chars: int
+) -> str:
+    """Concatenate a filing's section block text (heading + body, in block order) for the
+    standing-risk reduce, bounded to `max_chars`. The stable path has no diff to reduce,
+    so it summarizes the current section itself."""
+    sql = text(
+        """
+        SELECT heading, block_text
+          FROM filing_blocks
+         WHERE accession_number = :accession_number AND section = :section
+         ORDER BY block_index
+        """
+    )
+    with engine.begin() as conn:
+        rows = conn.execute(
+            sql, {"accession_number": accession_number, "section": section}
+        ).fetchall()
+    parts: list[str] = []
+    total = 0
+    for heading, body in rows:
+        chunk = (f"{heading}\n{body}" if heading else str(body)).strip()
+        if not chunk:
+            continue
+        parts.append(chunk)
+        total += len(chunk)
+        if total >= max_chars:
+            break
+    return "\n\n".join(parts)[:max_chars]
+
+
 def insert_change_synthesis(
     engine: Engine,
     *,

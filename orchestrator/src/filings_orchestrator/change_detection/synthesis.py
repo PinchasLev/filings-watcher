@@ -55,20 +55,32 @@ DEFAULT_SYNTHESIS_MODEL = "claude-sonnet-4-6"
 
 class HeadlineDirection(StrEnum):
     """Which way the filing's material risks moved, on balance — a holistic judgment
-    by the reduce. Magnitude lives in HeadlineIntensity, not here."""
+    by the reduce. Magnitude lives in HeadlineIntensity, not here.
+
+    STABLE is not a direction the reduce judges — code sets it for a filing that was
+    diffed against its prior year but had zero material changes. Such a filing gets a
+    standing-risk summary (what its unchanged risks ARE), not a change read: "no change"
+    is not "no risk" (ADR 0043)."""
 
     WORSENING = "worsening"
     EASING = "easing"
     MIXED = "mixed"
+    STABLE = "stable"
 
 
 class HeadlineIntensity(StrEnum):
     """How much the overall risk picture moved — the magnitude axis, judged by the
-    reduce weighing severity, not by counting changes."""
+    reduce weighing severity, not by counting changes.
+
+    NONE is the floor below MINOR: the change picture did not move at all. Code sets it
+    (never the reduce) for a stable filing, so the badge stays honest — the magnitude
+    axis measures change, and a stable filing's standing-risk severity lives in its prose,
+    not in this badge (ADR 0043)."""
 
     MAJOR = "major"
     MODERATE = "moderate"
     MINOR = "minor"
+    NONE = "none"
 
 
 def coerce_direction_headline(value: object) -> HeadlineDirection:
@@ -275,3 +287,112 @@ def synthesize(
     if not tool_calls:
         raise RuntimeError("model did not return a tool call; cannot extract synthesis")
     return DisclosureSynthesis.model_validate(tool_calls[0]["args"])
+
+
+# --- Standing-risk summary (the stable-filer path, ADR 0043) -----------------------
+#
+# A filing diffed against its prior year with ZERO material changes is stable, not
+# empty: its risk factors carry real, unchanged risk. This path summarizes that
+# standing risk profile from the CURRENT section text (there is no diff to reduce),
+# so a stable filer reads as "unchanged — and here is what the standing risks ARE"
+# rather than falling off the radar. Distinct model input (full section, not distilled
+# verdicts) and prompt, so it carries its own version.
+
+# Bound the section text fed to the reduce: one Sonnet call, but a pathological section
+# should not blow the prompt. Generous — a real Item 1A is well under this.
+_MAX_STANDING_SECTION_CHARS = 120_000
+
+
+class StandingRiskSummary(BaseModel):
+    """The stable-filer reduce's structured output — a summary of the company's
+    unchanged standing risks. No direction or intensity: code sets those to
+    STABLE / NONE (the filing did not change)."""
+
+    thesis: str = Field(
+        description=(
+            "2-3 sentences in a terse, declarative analyst register summarizing the "
+            "company's PRINCIPAL STANDING risks — the material risks it continues to "
+            "carry, unchanged from the prior year. The FIRST sentence must stand alone as "
+            "the single most consequential standing risk (it may be displayed by itself). "
+            "State the risks directly; do NOT narrate the document ('this filing lists / "
+            "describes…') and do NOT say the risks are unchanged (the reader already knows "
+            "that). Concrete and specific; no preamble, no hedging, no editorializing."
+        )
+    )
+    top_risks: list[str] = Field(
+        description=(
+            "The 3-5 most consequential standing risk factors, each a short phrase (<= 15 "
+            "words), ordered by importance. Draw only from the section text provided; do "
+            "not invent risks not present in it."
+        )
+    )
+
+    @field_validator("top_risks", mode="before")
+    @classmethod
+    def _coerce_top_risks(cls, value: object) -> list[str]:
+        return coerce_top_effects(value)
+
+
+_STANDING_SYSTEM_PROMPT = (
+    "You are given the current text of a company's 10-K Risk Factors section. This "
+    "year's risk factors are materially UNCHANGED from the prior year — nothing moved — "
+    "so there is no change to report. Your job is to summarize the company's PRINCIPAL "
+    "STANDING risks for a risk-monitoring reader (credit, procurement, insurance, or "
+    "counterparty-risk) who wants to know, at a glance, what material risks this company "
+    "carries even though they did not change.\n\n"
+    "Identify the few risks that most matter — the ones with the greatest potential to "
+    "impair the business, weighing severity, not order of appearance or length of "
+    "disclosure. Then write the thesis and the top standing risks. Compose only from the "
+    "section text provided — introduce no risk not in it, and do not restate every risk "
+    "factor. Write in a terse, declarative analyst register: state the risks, do not "
+    "narrate the filing (avoid 'this filing lists / describes…'), do not remark that the "
+    "risks are unchanged, and make the first sentence stand on its own as the single most "
+    "consequential standing risk. Submit your summary with the tool, exactly once."
+)
+
+
+def standing_synthesis_version(model_name: str = DEFAULT_SYNTHESIS_MODEL) -> str:
+    """Reproducibility tag for the STANDING-risk path = model + a hash of its own prompt.
+    Separate from synthesis_version so the two paths re-derive independently when either
+    prompt changes (a stable summary is not a change reduce)."""
+    prompt_sha = hashlib.sha256(_STANDING_SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:8]
+    return f"{model_name}+standing-{prompt_sha}"
+
+
+def build_standing_synthesizer(model_name: str = DEFAULT_SYNTHESIS_MODEL) -> Any:
+    """A Claude model bound to the standing-risk tool, forced to call it once."""
+    model = ChatAnthropic(model_name=model_name, timeout=60, stop=None, temperature=0)
+    tool_spec = {
+        "name": "submit_standing_summary",
+        "description": "Submit the standing-risk summary. Call exactly once.",
+        "input_schema": StandingRiskSummary.model_json_schema(),
+    }
+    return model.bind_tools(
+        [tool_spec], tool_choice={"type": "tool", "name": "submit_standing_summary"}
+    )
+
+
+def synthesize_standing(
+    model: Any,
+    *,
+    section_text: str,
+    model_name: str,
+    accession_number: str | None = None,
+) -> StandingRiskSummary:
+    """Summarize a stable filing's standing risks from its current section text via the
+    bound `model`. Records the call for cost accounting even if parsing fails."""
+    system_blocks: list[str | dict[Any, Any]] = [
+        {"type": "text", "text": _STANDING_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
+    ]
+    user = "The current Risk Factors section:\n" + section_text[:_MAX_STANDING_SECTION_CHARS]
+    response = model.invoke([SystemMessage(content=system_blocks), HumanMessage(content=user)])
+    emit_llm_call(
+        model=model_name,
+        stage="synthesis",
+        response=response,
+        accession_number=accession_number,
+    )
+    tool_calls = getattr(response, "tool_calls", None) or []
+    if not tool_calls:
+        raise RuntimeError("model did not return a tool call; cannot extract standing summary")
+    return StandingRiskSummary.model_validate(tool_calls[0]["args"])

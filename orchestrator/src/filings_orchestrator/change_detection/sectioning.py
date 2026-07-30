@@ -10,12 +10,15 @@ Locating the section is the harder problem, because filers vary: some title the
 heading "Item 1A. Risk Factors", some "Item 1A—Risk Factors" (an em/en-dash), and
 some (Nike, McDonald's) put "Item 1A" only in the table of contents and title the real
 heading just "Risk Factors"; some don't bold it at all (Intel, JPMorgan). So the
-locator anchors on a bold "Risk Factors" heading (with an optional, dash-tolerant Item
-1A prefix) and falls back to the specific "Item 1A … Risk Factors" text when no bold
-heading exists, disambiguating the real section from the table of contents by span
-size. A filing whose section can't be located, or whose extraction is degenerate,
-yields no blocks — a coverage gap that is queryable (block_count = 0) and logged, not
-a silent drop.
+locator works in three tiers: (1) a bold "Risk Factors" heading (with an optional,
+dash-tolerant Item 1A prefix); (2) the specific "Item 1A … Risk Factors" text when no
+bold heading exists — both disambiguating the real section from the table of contents by
+span size; and (3) for modern inline-XBRL filings (Intel, Microsoft, most large filers)
+whose heading is a CSS-styled table row — non-bold, with "Item 1A" and "Risk Factors" in
+separate cells and even a fragmented word ("Ris k Factors") — the filing's own table-of-
+contents anchor links, whose targets bound the section. A filing whose section can't be
+located by any tier, or whose extraction is degenerate, yields no blocks — a coverage gap
+that is queryable (block_count = 0) and logged, not a silent drop.
 
 Filers format their HTML differently, so this is best-effort with a fallback: when
 no usable bold-header structure is found (older or oddly-formatted filings), we fall
@@ -151,13 +154,8 @@ def _coalesced_segments(html: str) -> tuple[list[_Segment], str]:
         else:
             runs.append((bold, text))
 
-    segments: list[_Segment] = []
-    pos = 0
-    for bold, text in runs:
-        segments.append(_Segment(bold=bold, text=text, start=pos, end=pos + len(text)))
-        pos += len(text) + 1  # +1 for the "\n" join below
     joined_lower = "\n".join(text for _, text in runs).lower()
-    return segments, joined_lower
+    return _segments_from_runs(runs), joined_lower
 
 
 def _widest_span(starts: list[int], ends: list[int]) -> tuple[int, int] | None:
@@ -208,6 +206,80 @@ def _locate_risk_factors(joined_lower: str, segments: list[_Segment]) -> tuple[i
 
     ref_starts = [m.start() for m in _ITEM1A_RF_RE.finditer(joined_lower)]
     return _widest_span(ref_starts, ends)
+
+
+def _segments_from_runs(runs: list[tuple[bool, str]]) -> list[_Segment]:
+    """Build offset-carrying segments from (bold, text) runs — the tail shared by the
+    coalescer and the anchor locator."""
+    segments: list[_Segment] = []
+    pos = 0
+    for bold, text in runs:
+        segments.append(_Segment(bold=bold, text=text, start=pos, end=pos + len(text)))
+        pos += len(text) + 1
+    return segments
+
+
+def _find_by_anchor(soup: BeautifulSoup, target: str) -> Tag | None:
+    """The element a TOC link points at — by id, or the older <a name="..."> form."""
+    hit = soup.find(id=target) or soup.find(attrs={"name": target})
+    return hit if isinstance(hit, Tag) else None
+
+
+def _locate_via_toc_anchors(html: str) -> list[_Segment] | None:
+    """Third-tier locator for inline-XBRL filings whose Risk Factors heading is neither
+    bold nor contiguous in text — Intel, Microsoft, and most large filers now render
+    section headings as CSS-styled table rows (not <b>), split "Item 1A" and "Risk
+    Factors" across cells, and even fragment a word ("Ris k Factors") via tagged spans,
+    so both text tiers miss the start. Those filings carry an auto-generated table of
+    contents of in-page links, so we locate the section by its own anchor: the TOC link
+    whose text is "Risk Factors" points at the section's start id, and the next section's
+    link ("Unresolved Staff Comments" / "Item 1B" / …) bounds its end. We then walk the
+    DOM between the two, preserving each string's boldness so bold sub-headers (the
+    individual risk factors) still drive block splitting.
+
+    Returns None when no usable pair of TOC anchors resolves — a safe degrade to the same
+    no-blocks outcome as before, never a change to the healthy text-tier path.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    for el in soup(["script", "style"]):
+        el.decompose()
+
+    rf_target: str | None = None
+    end_target: str | None = None
+    for a in soup.find_all("a", href=True):
+        href = a.get("href")
+        if not isinstance(href, str) or not href.startswith("#") or len(href) < 2:
+            continue
+        text = _normalize_ws(a.get_text()).lower()
+        if rf_target is None:
+            if _RF_HEADING_RE.match(text):
+                rf_target = href[1:]
+        elif _END_HEADING_RE.match(text):
+            end_target = href[1:]
+            break
+    if rf_target is None or end_target is None:
+        return None
+
+    start_el = _find_by_anchor(soup, rf_target)
+    end_el = _find_by_anchor(soup, end_target)
+    if start_el is None or end_el is None:
+        return None
+
+    runs: list[tuple[bool, str]] = []
+    for node in start_el.next_elements:
+        if node is end_el:
+            break
+        if not isinstance(node, NavigableString):
+            continue
+        text = _normalize_ws(str(node))
+        if not text:
+            continue
+        bold = _is_bold(node)
+        if runs and runs[-1][0] == bold:
+            runs[-1] = (bold, runs[-1][1] + " " + text)
+        else:
+            runs.append((bold, text))
+    return _segments_from_runs(runs)
 
 
 def _segments_in_span(segments: list[_Segment], span: tuple[int, int]) -> list[_Segment]:
@@ -272,10 +344,18 @@ def segment_risk_factors(html: str) -> list[RiskFactorBlock]:
     """
     segments, joined_lower = _coalesced_segments(html)
     span = _locate_risk_factors(joined_lower, segments)
-    if span is None:
-        return []
+    if span is not None:
+        in_span = _segments_in_span(segments, span)
+    else:
+        # Third tier: inline-XBRL filings (Intel, Microsoft, …) whose heading is neither
+        # bold nor contiguous in text. Located via the filing's own table-of-contents
+        # anchors. Only reached when both text tiers fail, so the healthy path is
+        # unchanged; None here degrades to the same no-blocks outcome as before.
+        anchored = _locate_via_toc_anchors(html)
+        if anchored is None:
+            return []
+        in_span = anchored
 
-    in_span = _segments_in_span(segments, span)
     header_blocks = _split_on_headers(in_span)
     header_count = sum(1 for heading, _ in header_blocks if heading is not None)
     raw_blocks = (

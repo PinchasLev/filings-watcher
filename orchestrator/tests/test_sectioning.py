@@ -185,3 +185,67 @@ def test_hash_is_whitespace_invariant_but_content_sensitive() -> None:
     assert _normalize_ws("a  b\n c\t d") == "a b c d"
     assert _block_hash(_normalize_ws("Foo  bar")) == _block_hash(_normalize_ws("Foo bar"))
     assert _block_hash(_normalize_ws("Foo bar")) != _block_hash(_normalize_ws("Foo baz"))
+
+
+# --- tier 3: modern inline-XBRL filings located via table-of-contents anchors ---
+# Reproduces the Intel / Microsoft failure mode: a NON-bold Risk Factors heading laid out
+# as a table row (item number and title in separate cells), with the title's word
+# fragmented across tagged spans ("Ris" + "k" + " Factors") so the text tiers can't match
+# it — but an auto-generated TOC of in-page anchor links whose targets bound the section.
+
+
+def _inline_xbrl_tenk(*, fragment_heading: bool = True, with_end_anchor: bool = True) -> str:
+    title = "Ris<span>k</span> Factors" if fragment_heading else "Risk Factors"
+    end_link = (
+        '<tr><td><a href="#usc">Unresolved Staff Comments</a></td><td>30</td></tr>'
+        if with_end_anchor
+        else ""
+    )
+    toc = (
+        "<table>"
+        '<tr><td><a href="#biz">Business</a></td><td>1</td></tr>'
+        '<tr><td><a href="#rf">Risk Factors</a></td><td>14</td></tr>' + end_link + "</table>"
+    )
+    # Non-bold (font-weight:400) table-row heading — the tier-1/2 blind spot.
+    heading = (
+        '<div id="rf"><table><tr>'
+        '<td><span style="font-weight:400">Item 1A.</span></td>'
+        f'<td><span style="font-weight:400">{title}</span></td>'
+        "</tr></table></div>"
+    )
+    end = (
+        '<div id="usc"><div style="font-weight:bold">Item 1B. Unresolved Staff Comments</div>'
+        "<div>None.</div></div>"
+    )
+    return (
+        "<html><body>" + toc + heading + _factors_html(bold_factors=True) + end + "</body></html>"
+    )
+
+
+def test_inline_xbrl_located_via_toc_anchor() -> None:
+    blocks = segment_risk_factors(_inline_xbrl_tenk())
+    assert len(blocks) >= 3  # intro + bold-headed risk factors
+    joined = " ".join(b.text.lower() for b in blocks)
+    assert "going concern" in joined
+    assert "unresolved staff comments" not in joined  # the end anchor bounds the section
+    assert "none." not in joined
+
+
+def test_inline_xbrl_fragmented_heading_still_locates() -> None:
+    # The fragmented "Ris k Factors" heading is exactly what defeats the text tiers; the
+    # TOC anchor locates the section regardless of how the heading text is broken up.
+    frag = segment_risk_factors(_inline_xbrl_tenk(fragment_heading=True))
+    assert any("going concern" in b.text.lower() for b in frag)
+
+
+def test_inline_xbrl_without_end_anchor_degrades_to_empty() -> None:
+    # No next-section TOC link to bound the end -> safe degrade to no blocks, never an
+    # over-capture that swallows the rest of the document.
+    assert segment_risk_factors(_inline_xbrl_tenk(with_end_anchor=False)) == []
+
+
+def test_toc_anchor_tier_not_used_when_bold_heading_present() -> None:
+    # A normal bold-heading filing must still be located by tier 1 even if it also carries
+    # TOC anchors — the new tier only runs when the text tiers find nothing.
+    bold = segment_risk_factors(_tenk("Item 1A. Risk Factors"))
+    assert len(bold) == 4  # unchanged from the tier-1 standard case

@@ -128,3 +128,76 @@ def test_rate_limiter_blocks_when_quota_exceeded() -> None:
     elapsed = time.monotonic() - start
     # Should have slept close to a full second (allow some scheduling slack).
     assert 0.8 < elapsed < 1.5
+
+
+def test_periodic_filings_pages_older_submissions_for_firehose_filers() -> None:
+    from filings_orchestrator.edgar.filings import periodic_filings_for_cik
+
+    subs = {
+        "name": "JPMORGAN CHASE & CO",
+        "filings": {
+            "recent": {  # a firehose filer: recent spans <1yr, holds only the latest 10-K
+                "form": ["10-K", "8-K"],
+                "accessionNumber": ["0001-26-1", "0001-26-9"],
+                "filingDate": ["2026-02-13", "2026-01-05"],
+                "reportDate": ["2025-12-31", ""],
+                "primaryDocument": ["jpm-2026.htm", "ev.htm"],
+            },
+            "files": [  # older chunks, deliberately NOT in newest-first order
+                {"name": "CIK0000019617-submissions-001.json", "filingTo": "2019-01-01"},
+                {"name": "CIK0000019617-submissions-002.json", "filingTo": "2025-06-01"},
+            ],
+        },
+    }
+    page_002 = {  # the most-recent older chunk -> holds the prior-year 10-K
+        "form": ["10-K", "8-K"],
+        "accessionNumber": ["0001-25-1", "0001-25-4"],
+        "filingDate": ["2025-02-14", "2025-01-02"],
+        "reportDate": ["2024-12-31", ""],
+        "primaryDocument": ["jpm-2025.htm", "ev.htm"],
+    }
+    with respx.mock(assert_all_called=False) as mock:
+        mock.get("https://data.sec.gov/submissions/CIK0000019617.json").mock(
+            return_value=httpx.Response(200, json=subs)
+        )
+        p2 = mock.get("https://data.sec.gov/submissions/CIK0000019617-submissions-002.json").mock(
+            return_value=httpx.Response(200, json=page_002)
+        )
+        p1 = mock.get("https://data.sec.gov/submissions/CIK0000019617-submissions-001.json").mock(
+            return_value=httpx.Response(200, json={"form": []})
+        )
+        with EdgarClient(user_agent="filings-watcher tester@example.com") as client:
+            out = periodic_filings_for_cik("0000019617", "fallback", client, form="10-K", limit=2)
+    assert [f.accession_number for f in out] == ["0001-26-1", "0001-25-1"]  # newest first
+    assert out[0].company_name == "JPMORGAN CHASE & CO"  # name from submissions, not fallback
+    assert out[1].report_date == date(2024, 12, 31)
+    assert p2.called and not p1.called  # stopped once limit met (older page never fetched)
+
+
+def test_periodic_filings_uses_recent_when_it_has_enough() -> None:
+    from filings_orchestrator.edgar.filings import periodic_filings_for_cik
+
+    subs = {
+        "name": "ACME",
+        "filings": {
+            "recent": {
+                "form": ["10-K", "10-K", "8-K"],
+                "accessionNumber": ["a2", "a1", "b"],
+                "filingDate": ["2026-02-01", "2025-02-01", "2026-03-01"],
+                "reportDate": ["2025-12-31", "2024-12-31", ""],
+                "primaryDocument": ["a2.htm", "a1.htm", "b.htm"],
+            },
+            "files": [{"name": "unused.json", "filingTo": "2024-01-01"}],
+        },
+    }
+    with respx.mock(assert_all_called=False) as mock:
+        mock.get("https://data.sec.gov/submissions/CIK0000000123.json").mock(
+            return_value=httpx.Response(200, json=subs)
+        )
+        page = mock.get("https://data.sec.gov/submissions/unused.json").mock(
+            return_value=httpx.Response(200, json={"form": []})
+        )
+        with EdgarClient(user_agent="filings-watcher tester@example.com") as client:
+            out = periodic_filings_for_cik("0000000123", "ACME", client, form="10-K", limit=2)
+    assert [f.accession_number for f in out] == ["a2", "a1"]
+    assert not page.called  # recent had enough; no paging

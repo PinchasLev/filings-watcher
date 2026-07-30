@@ -249,3 +249,30 @@ def test_toc_anchor_tier_not_used_when_bold_heading_present() -> None:
     # TOC anchors — the new tier only runs when the text tiers find nothing.
     bold = segment_risk_factors(_tenk("Item 1A. Risk Factors"))
     assert len(bold) == 4  # unchanged from the tier-1 standard case
+
+
+# --- over-capture guard: inline-XBRL end markers undetected -> span runs too long ---
+
+
+def _oversize_tenk(body_reps: int) -> str:
+    body = "An adverse development could materially and adversely affect our business. " * body_reps
+    return (
+        "<html><body>"
+        '<div style="font-weight:bold">Item 1A. Risk Factors</div>'
+        f"<div>{body}</div>"
+        '<div style="font-weight:bold">Item 1B. Unresolved Staff Comments</div><div>None.</div>'
+        "</body></html>"
+    )
+
+
+def test_oversized_section_suppressed_as_over_capture() -> None:
+    # ~550k chars between the located start and end -> an over-capture (the Morgan Stanley
+    # case, where undetected Item 1B/1C/2 markers let the span run to Item 9A). Suppressed.
+    assert segment_risk_factors(_oversize_tenk(7500)) == []
+
+
+def test_large_section_under_cap_is_kept() -> None:
+    # A genuinely large (but plausible) section stays -> the guard never over-suppresses.
+    blocks = segment_risk_factors(_oversize_tenk(1500))  # ~110k chars
+    total = sum(len(b.text) for b in blocks)
+    assert blocks and 1500 < total < 400_000

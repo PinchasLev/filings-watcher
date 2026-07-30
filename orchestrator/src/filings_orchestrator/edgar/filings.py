@@ -54,6 +54,65 @@ def recent_8k_filings(
     )
 
 
+def load_ticker_index(client: EdgarClient) -> dict[str, tuple[str, str]]:
+    """Fetch the SEC ticker index once and return {TICKER: (cik_padded, company_name)}.
+
+    For bulk resolution (a coverage backfill of many tickers) — fetching the ~10 MB index
+    once beats `ticker_to_cik` per name.
+    """
+    payload = client.get_json(_TICKER_INDEX_URL)
+    index: dict[str, tuple[str, str]] = {}
+    for entry in payload.values():
+        if not isinstance(entry, dict) or "ticker" not in entry:
+            continue
+        cik_int = int(entry["cik_str"])
+        index[str(entry["ticker"]).upper()] = (f"{cik_int:010d}", str(entry["title"]))
+    return index
+
+
+def periodic_filings_for_cik(
+    cik: str,
+    company_name: str,
+    client: EdgarClient,
+    *,
+    form: str = "10-K",
+    limit: int = 2,
+    max_pages: int = 8,
+) -> list[Filing]:
+    """The `limit` most recent `form` filings for a CIK, newest first.
+
+    Reads the submissions `recent` block, then pages the older `filings.files` chunks when
+    `recent` holds fewer than `limit` of the form. This matters for firehose filers:
+    JPMorgan files ~25k documents a year, so its `recent` window spans under a year and
+    contains only the single latest annual 10-K — the prior years live in the paged files
+    (JPMorgan has 68). Pages are read most-recent-chunk first and capped at `max_pages`
+    (an annual filing's prior year is within the first page or two); results are then
+    sorted newest-first and de-duplicated, so ordering of the `files` array is irrelevant.
+    """
+    subs = client.get_json(f"https://data.sec.gov/submissions/CIK{cik}.json")
+    name = str(subs.get("name") or company_name)
+    meta = subs.get("filings", {})
+    out = _parse_recent_filings(meta.get("recent", {}), cik, name, "", limit, form)
+    if len(out) < limit:
+        pages = sorted(
+            meta.get("files", []), key=lambda f: str(f.get("filingTo", "")), reverse=True
+        )
+        for page_meta in pages[:max_pages]:
+            page = client.get_json(f"https://data.sec.gov/submissions/{page_meta['name']}")
+            out += _parse_recent_filings(page, cik, name, "", limit, form)
+            if len(out) >= limit:
+                break
+
+    seen: set[str] = set()
+    unique: list[Filing] = []
+    for filing in sorted(out, key=lambda f: f.filing_date, reverse=True):
+        if filing.accession_number in seen:
+            continue
+        seen.add(filing.accession_number)
+        unique.append(filing)
+    return unique[:limit]
+
+
 def _parse_recent_filings(
     recent: dict[str, Any],
     cik: str,

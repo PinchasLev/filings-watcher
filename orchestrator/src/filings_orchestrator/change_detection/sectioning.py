@@ -86,6 +86,17 @@ _END_HEADING_RE = re.compile(
 # which dwarfs it. Also the floor below which a parse is treated as degenerate.
 _MIN_SECTION_CHARS = 1500
 
+# The high-end degenerate guard. When the section's END markers (Item 1B/1C/2) are not
+# detected — e.g. an inline-XBRL filing that fragments those headings across table cells,
+# as it does the start — the span runs past Item 1A to a far-off later heading, swallowing
+# MD&A, financials, and controls (Morgan Stanley's 2025 10-K over-captured to 675k chars /
+# 646 blocks, its last block being Item 9A). A real Risk Factors section, even a large
+# bank's, is far smaller; a parse this size is an over-capture, so suppress it (0 blocks,
+# queryable) rather than emit blocks that would diff into nonsense. Generous, so a
+# genuinely large section is never suppressed. Correctly locating such a section's end is
+# the same fragmentation-tolerant-heading work as the opaque-anchor residual.
+_MAX_SECTION_CHARS = 400_000
+
 
 class RiskFactorBlock(BaseModel):
     """One risk factor (or fallback block) extracted from Item 1A.
@@ -377,10 +388,12 @@ def segment_risk_factors(html: str) -> list[RiskFactorBlock]:
                 block_hash=_block_hash(normalized),
             )
         )
-    # Degenerate-parse guard: if the surviving content is implausibly small for a Risk
-    # Factors section, treat it as a failed extraction and emit nothing — better a
-    # visibly-absent filing (queryable via block_count = 0) than a misleading headline
-    # synthesized from a fragment (the Carnival 2-block case).
-    if sum(len(b.text) for b in blocks) < _MIN_SECTION_CHARS:
+    # Degenerate-parse guard, both ends: emit nothing (block_count = 0, queryable) rather
+    # than misleading blocks when the surviving content is implausibly SMALL for a Risk
+    # Factors section (a false locate — the Carnival 2-block case) or implausibly LARGE (an
+    # over-capture past undetected end markers — the Morgan Stanley Item-9A case). Better a
+    # visibly-absent filing than a headline synthesized from a fragment or from half the 10-K.
+    total_chars = sum(len(b.text) for b in blocks)
+    if total_chars < _MIN_SECTION_CHARS or total_chars > _MAX_SECTION_CHARS:
         return []
     return blocks

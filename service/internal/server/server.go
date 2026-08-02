@@ -30,10 +30,9 @@ type storer interface {
 	CompanyInsiderPulse(ctx context.Context, cik string, windowDays int) (store.InsiderPulse, error)
 	CompanyInsiderTrades(ctx context.Context, cik string, limit int) ([]store.InsiderTrade, error)
 	CompanyDisclosureChanges(ctx context.Context, cik string, limit int) ([]store.DisclosureChangeGroup, error)
-	// Risk Radar (/radar): the cross-company feed of filing-level headline verdicts
-	// and its per-intensity filter counts.
-	RecentDisclosureChanges(ctx context.Context, intensity string, limit, offset int) ([]store.RiskRadarRow, int, error)
-	RiskRadarIntensityCounts(ctx context.Context) (store.RiskRadarCounts, error)
+	// Risk Radar (/radar): the cross-company feed of filings with company-specific
+	// year-over-year Risk Factor changes.
+	RecentDisclosureChanges(ctx context.Context, limit, offset int) ([]store.RiskRadarRow, int, error)
 	// NotableInsiderActivity backs the /insiders feed of recent cluster buys.
 	NotableInsiderActivity(ctx context.Context, windowDays int, minValue float64, limit int) ([]store.InsiderCluster, error)
 	// LiveEvents backs the /live tape: near-real-time material events sorted

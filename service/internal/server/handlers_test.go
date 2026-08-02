@@ -57,7 +57,6 @@ type fakeStore struct {
 	disclosureChangesErr error
 	radarRows            []store.RiskRadarRow
 	radarTotal           int
-	radarCounts          store.RiskRadarCounts
 	radarErr             error
 	pageViewStats        store.PageViewStats
 	pageViewErr          error
@@ -185,13 +184,9 @@ func (f *fakeStore) CompanyDisclosureChanges(
 }
 
 func (f *fakeStore) RecentDisclosureChanges(
-	_ context.Context, _ string, _, _ int,
+	_ context.Context, _, _ int,
 ) ([]store.RiskRadarRow, int, error) {
 	return f.radarRows, f.radarTotal, f.radarErr
-}
-
-func (f *fakeStore) RiskRadarIntensityCounts(_ context.Context) (store.RiskRadarCounts, error) {
-	return f.radarCounts, f.radarErr
 }
 
 func (f *fakeStore) LogPageView(_ context.Context, _, _, _, _, _ string) error {

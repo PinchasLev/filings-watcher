@@ -61,16 +61,6 @@
     </div>
     {{range .DisclosureChanges}}
       <div class="diff-group">
-        {{if .HasSynthesis}}
-          <div class="risk-headline">
-            {{if eq .HeadlineDirection "stable"}}
-              <span class="badge shift shift-none">Unchanged</span>
-            {{else}}
-              <span class="badge shift shift-{{.HeadlineIntensity}}">{{riskShiftLabel .HeadlineIntensity .HeadlineDirection}}</span>
-              <span class="risk-counts">{{.MaterialCount}} material &middot; {{.WorseCount}} worse / {{.EasedCount}} eased</span>
-            {{end}}
-          </div>
-        {{end}}
         <p class="diff-periods">
           {{if eq .HeadlineDirection "stable"}}
             Risk Factors materially unchanged in fiscal period ending <strong>{{.CurrentPeriod}}</strong>{{if .PriorPeriod}} versus <strong>{{.PriorPeriod}}</strong>{{end}}
@@ -79,32 +69,80 @@
           {{end}}
           &mdash; <a href="{{edgarURL .Accession}}" rel="noopener" target="_blank">view filing on EDGAR &rarr;</a>
         </p>
-        {{if .Thesis}}<p class="risk-thesis">{{.Thesis}}</p>{{end}}
-        {{if .TopEffects}}
-          {{if eq .HeadlineDirection "stable"}}<p class="top-effects-label">Principal standing risks</p>{{end}}
-          <ul class="top-effects">
-            {{range .TopEffects}}<li>{{.}}</li>{{end}}
-          </ul>
-        {{end}}
-        {{range .Themes}}
-          <details class="risk-theme">
-            <summary>{{categoryLabel .Category}} <span class="theme-count">{{len .Changes}}</span></summary>
-            {{range .Changes}}
+
+        {{if eq .HeadlineDirection "stable"}}
+          {{if .Thesis}}<p class="risk-thesis">{{.Thesis}}</p>{{end}}
+          {{if .TopEffects}}
+            <p class="top-effects-label">Principal standing risks</p>
+            <ul class="top-effects">{{range .TopEffects}}<li>{{.}}</li>{{end}}</ul>
+          {{end}}
+        {{else}}
+          {{if .Thesis}}<p class="risk-thesis">{{.Thesis}}</p>{{end}}
+
+          <p class="risk-glance">
+            {{len .SpecificChanges}} company-specific
+            {{if .EasedChanges}} &middot; {{len .EasedChanges}} eased/removed{{end}}
+            {{if .CommonModeChanges}} &middot; {{len .CommonModeChanges}} common-mode{{end}}
+          </p>
+
+          {{if .SpecificChanges}}
+            <h4 class="bucket-head">Company-specific changes</h4>
+            {{range .SpecificChanges}}
+              <article class="filing-card change-specific">
+                <div class="filing-meta">
+                  <span class="badge">{{changeLabel .ChangeType}}</span>
+                  {{if .NeedsReview}}<span class="badge review">needs review</span>{{end}}
+                </div>
+                {{if .Heading}}<h5>{{.Heading}}</h5>{{end}}
+                <p class="reasoning">{{.Explanation}}</p>
+              </article>
+            {{end}}
+          {{end}}
+
+          {{if .EasedChanges}}
+            <h4 class="bucket-head improved">Eased / removed</h4>
+            {{range .EasedChanges}}
+              <article class="filing-card change-eased">
+                <div class="filing-meta"><span class="badge">{{changeLabel .ChangeType}}</span></div>
+                {{if .Heading}}<h5>{{.Heading}}</h5>{{end}}
+                <p class="reasoning">{{.Explanation}}</p>
+              </article>
+            {{end}}
+          {{end}}
+
+          {{if .CommonModeChanges}}
+            <details class="common-mode">
+              <summary>Also disclosed &mdash; common-mode ({{range $i, $t := .CommonModeThemes}}{{if $i}}, {{end}}{{themeLabel $t.Theme}}{{if gt $t.Count 1}} &times;{{$t.Count}}{{end}}{{end}})</summary>
+              {{range .CommonModeChanges}}
+                <article class="filing-card change-common">
+                  <div class="filing-meta">
+                    {{if .MatchedTheme}}<span class="badge">{{themeLabel .MatchedTheme}}</span>{{end}}
+                    <span class="badge">{{changeLabel .ChangeType}}</span>
+                  </div>
+                  {{if .Heading}}<h5>{{.Heading}}</h5>{{end}}
+                  <p class="reasoning">{{.Explanation}}</p>
+                </article>
+              {{end}}
+            </details>
+          {{end}}
+
+          {{if .Unclassified}}
+            <h4 class="bucket-head">Changes</h4>
+            {{range .Unclassified}}
               <article class="filing-card">
                 <div class="filing-meta">
                   <span class="badge dir-{{.Direction}}">{{dirLabel .Direction}}</span>
                   <span class="badge">{{changeLabel .ChangeType}}</span>
-                  {{if .NeedsReview}}<span class="badge review">needs review</span>{{end}}
                 </div>
-                {{if .Heading}}<h4>{{.Heading}}</h4>{{end}}
+                {{if .Heading}}<h5>{{.Heading}}</h5>{{end}}
                 <p class="reasoning">{{.Explanation}}</p>
               </article>
             {{end}}
-          </details>
+          {{end}}
         {{end}}
       </div>
     {{end}}
-    <small>Material year-over-year changes to this company's Risk Factors (Item&nbsp;1A), found by comparing each annual report to the prior year and judged for materiality. The headline direction and intensity are an AI reading of the changes as a whole; the counts are exact. A filing marked <em>Unchanged</em> had no material change from the prior year; its summary describes the company's standing risks, which remain in force. Fiscal periods are the reporting period ends. Not investment advice.</small>
+    <small>Material year-over-year changes to this company's Risk Factors (Item&nbsp;1A), found by comparing each annual report to the prior year, judged for materiality, and classified as company-specific or common-mode against the cross-company catalog. Common-mode changes are the macro themes many companies disclose in common; they are collapsed above. A filing marked <em>unchanged</em> had no material change from the prior year; its summary describes the company's standing risks, which remain in force. Fiscal periods are the reporting period ends. Not investment advice.</small>
   </section>
 {{end}}
 

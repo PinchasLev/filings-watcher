@@ -2079,3 +2079,131 @@ def insert_change_synthesis(
                 "synthesized_at": synthesized_at,
             },
         )
+
+
+# --- Common-mode theme catalog (calibration; migration 023) ------------------------
+#
+# The catalog reduce reads a digest of every material change across the cohort and names
+# the common-mode themes; the cut is stored versioned so a downstream classifier keys to
+# the exact catalog it used (see change_detection/catalog.py).
+
+
+class DigestRow(NamedTuple):
+    """One material change flattened for the catalog reduce's digest:
+    company | theme (category) | one-line explanation."""
+
+    company: str
+    category: str
+    explanation: str
+
+
+class CatalogThemeRow(NamedTuple):
+    """One stored catalog theme, read back for the classifier and for verification."""
+
+    theme_slug: str
+    archetype: str
+    prevalence: int
+
+
+def load_material_change_digest(engine: Engine, *, judge_version: str) -> list[DigestRow]:
+    """Load every material change under `judge_version`, joined to its filing's company,
+    as the corpus digest the catalog reduce names common-mode themes from. Ordered by
+    company so the digest reads coherently and is stable across runs."""
+    sql = text(
+        """
+        SELECT COALESCE(pf.company_name, pf.cik) AS company, v.category, v.explanation
+          FROM block_change_verdicts v
+          JOIN periodic_filings pf ON pf.accession_number = v.accession_number
+         WHERE v.judge_version = :judge_version AND v.is_material = 1
+         ORDER BY company, v.category, v.change_seq
+        """
+    )
+    with engine.begin() as conn:
+        rows = conn.execute(sql, {"judge_version": judge_version}).fetchall()
+    return [DigestRow(str(r[0] or "UNKNOWN"), str(r[1] or "other"), str(r[2] or "")) for r in rows]
+
+
+def insert_disclosure_catalog(
+    engine: Engine,
+    *,
+    catalog_version: str,
+    model_id: str,
+    corpus_label: str,
+    content_hash: str,
+    themes: list[tuple[str, str, int]],
+    cut_at: str,
+) -> None:
+    """Write a catalog cut — the version anchor plus all theme rows — in one transaction.
+    Idempotent: a re-run producing the same content_hash yields the same catalog_version
+    and is a no-op (ON CONFLICT DO NOTHING); drifted output is a new version (a new cut)."""
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO disclosure_catalog_versions (
+                    catalog_version, model_id, corpus_label, content_hash, theme_count, cut_at
+                ) VALUES (
+                    :catalog_version, :model_id, :corpus_label, :content_hash, :theme_count, :cut_at
+                )
+                ON CONFLICT (catalog_version) DO NOTHING
+                """
+            ),
+            {
+                "catalog_version": catalog_version,
+                "model_id": model_id,
+                "corpus_label": corpus_label,
+                "content_hash": content_hash,
+                "theme_count": len(themes),
+                "cut_at": cut_at,
+            },
+        )
+        for slug, archetype, prevalence in themes:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO disclosure_catalog_themes (
+                        catalog_version, theme_slug, archetype, prevalence
+                    ) VALUES (
+                        :catalog_version, :theme_slug, :archetype, :prevalence
+                    )
+                    ON CONFLICT (catalog_version, theme_slug) DO NOTHING
+                    """
+                ),
+                {
+                    "catalog_version": catalog_version,
+                    "theme_slug": slug,
+                    "archetype": archetype,
+                    "prevalence": prevalence,
+                },
+            )
+
+
+def latest_catalog_version(engine: Engine) -> str | None:
+    """The most recently cut catalog_version (by cut_at), or None if none exists — the
+    catalog a downstream classifier resolves as current."""
+    sql = text(
+        """
+        SELECT catalog_version
+          FROM disclosure_catalog_versions
+         ORDER BY cut_at DESC, catalog_version DESC
+         LIMIT 1
+        """
+    )
+    with engine.begin() as conn:
+        row = conn.execute(sql).fetchone()
+    return None if row is None else str(row[0])
+
+
+def load_catalog_themes(engine: Engine, catalog_version: str) -> list[CatalogThemeRow]:
+    """Read back a catalog's themes (slug order), for the classifier and for verification."""
+    sql = text(
+        """
+        SELECT theme_slug, archetype, prevalence
+          FROM disclosure_catalog_themes
+         WHERE catalog_version = :catalog_version
+         ORDER BY theme_slug
+        """
+    )
+    with engine.begin() as conn:
+        rows = conn.execute(sql, {"catalog_version": catalog_version}).fetchall()
+    return [CatalogThemeRow(str(r[0]), str(r[1]), int(r[2])) for r in rows]

@@ -50,6 +50,7 @@ var templateFuncs = template.FuncMap{
 	"changeLabel":    disclosureChangeLabel,
 	"dirLabel":       disclosureDirectionLabel,
 	"categoryLabel":  disclosureCategoryLabel,
+	"themeLabel":     disclosureThemeLabel,
 	"riskShiftLabel": riskShiftLabel,
 	"firstSentence":  firstSentence,
 	"liveWindowURL":  liveWindowURL,

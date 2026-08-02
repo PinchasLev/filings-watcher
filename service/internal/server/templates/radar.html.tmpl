@@ -1,27 +1,12 @@
-{{- /* Risk Radar: cross-company feed of material year-over-year risk-factor shifts. */ -}}
-{{define "title"}}Risk Radar — recent material disclosure changes{{end}}
+{{- /* Risk Radar: cross-company feed of company-specific year-over-year risk-factor changes. */ -}}
+{{define "title"}}Risk Radar — recent company-specific disclosure changes{{end}}
 {{define "content"}}
 <section class="company-header">
   <h2>Risk Radar</h2>
   <p class="reasoning">
-    Where a company's <strong>10-K risk disclosures shifted materially</strong> year over year, newest first. Direction and intensity are an AI reading of the changes; the counts are exact. Open a company for the themed detail. Not investment advice.
+    Companies whose <strong>10-K Risk Factors surfaced company-specific changes</strong> year over year, newest first. The common-mode boilerplate that the whole market discloses is filtered out. Open a company for the full detail. Not investment advice.
   </p>
 </section>
-
-<nav class="filter-nav" aria-label="Filter by intensity">
-  <a href="/radar" {{if eq .ActiveIntensity ""}}class="active"{{end}}>
-    All <span class="count">{{.Counts.Total}}</span>
-  </a>
-  <a href="/radar?intensity=major" {{if eq .ActiveIntensity "major"}}class="active"{{end}}>
-    Major <span class="count">{{.Counts.Major}}</span>
-  </a>
-  <a href="/radar?intensity=moderate" {{if eq .ActiveIntensity "moderate"}}class="active"{{end}}>
-    Moderate <span class="count">{{.Counts.Moderate}}</span>
-  </a>
-  <a href="/radar?intensity=minor" {{if eq .ActiveIntensity "minor"}}class="active"{{end}}>
-    Minor <span class="count">{{.Counts.Minor}}</span>
-  </a>
-</nav>
 
 {{if .Rows}}
   <section>
@@ -31,13 +16,18 @@
           <a href="/companies/{{.CIK}}">{{if .Ticker}}{{.Ticker}} &mdash; {{end}}{{.CompanyName}}</a>
         </h3>
         <div class="filing-meta">
-          <span class="badge shift shift-{{.HeadlineIntensity}}">{{riskShiftLabel .HeadlineIntensity .HeadlineDirection}}</span>
-          <span>{{.MaterialCount}} material &middot; {{.WorseCount}} worse / {{.EasedCount}} eased</span>
+          {{if .SpecificCount}}<span>{{.SpecificCount}} company-specific change{{if ne .SpecificCount 1}}s{{end}}</span>{{end}}
           <span>fiscal period {{.CurrentPeriod}}</span>
           {{if .FiledAt}}<span>filed {{.FiledAt}}</span>{{end}}
         </div>
-        {{if .Thesis}}<p class="reasoning">{{firstSentence .Thesis}}</p>{{end}}
-        <small><a href="/companies/{{.CIK}}#risk-radar">See the themed changes &rarr;</a></small>
+        {{if .TopSpecific}}
+          <ul class="radar-specifics">
+            {{range .TopSpecific}}<li>{{.}}</li>{{end}}
+          </ul>
+        {{else if .Thesis}}
+          <p class="reasoning">{{firstSentence .Thesis}}</p>
+        {{end}}
+        <small><a href="/companies/{{.CIK}}#risk-radar">See the full detail &rarr;</a></small>
       </article>
     {{end}}
   </section>
@@ -58,6 +48,6 @@
     </nav>
   {{end}}
 {{else}}
-  <p>No disclosure changes on record{{if .ActiveIntensity}} at this intensity{{end}} yet.</p>
+  <p>No company-specific disclosure changes on record yet.</p>
 {{end}}
 {{end}}

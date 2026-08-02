@@ -12,21 +12,17 @@ import (
 
 func TestRadarPageRendersFeed(t *testing.T) {
 	fake := &fakeStore{
-		radarCounts: store.RiskRadarCounts{Total: 2, Major: 1, Minor: 1},
-		radarTotal:  1,
+		radarTotal: 1,
 		radarRows: []store.RiskRadarRow{{
-			CIK:               "0000000111",
-			CompanyName:       "Alpha Corporation",
-			Ticker:            "ALPH",
-			Accession:         "0000000111-26-000001",
-			CurrentPeriod:     "2025-12-31",
-			FiledAt:           "2026-03-01",
-			HeadlineDirection: "worsening",
-			HeadlineIntensity: "major",
-			MaterialCount:     44,
-			WorseCount:        35,
-			EasedCount:        9,
-			Thesis:            "Alpha faces major, broad-based deterioration this year. This second sentence carries detail that belongs on the company page, not the feed.",
+			CIK:           "0000000111",
+			CompanyName:   "Alpha Corporation",
+			Ticker:        "ALPH",
+			Accession:     "0000000111-26-000001",
+			CurrentPeriod: "2025-12-31",
+			FiledAt:       "2026-03-01",
+			SpecificCount: 2,
+			TopSpecific:   []string{"Lost its largest customer.", "Announced a merger."},
+			Thesis:        "Alpha faces broad-based change this year.",
 		}},
 	}
 
@@ -41,20 +37,19 @@ func TestRadarPageRendersFeed(t *testing.T) {
 	for _, want := range []string{
 		"Risk Radar",
 		"ALPH", "Alpha Corporation", // company identity
-		"/companies/0000000111#risk-radar",             // deep-link to the section
-		"Major worsening",                              // composed headline
-		"44 material",                                  // counts
-		"Alpha faces major, broad-based deterioration", // the lead sentence
-		`href="/radar?intensity=major"`,                // filter chip
-		"2025-12-31",                                   // fiscal period
+		"/companies/0000000111#risk-radar", // deep-link to the section
+		"2 company-specific changes",       // the specific count
+		"Lost its largest customer.",       // a top specific caption
+		"Announced a merger.",              // a top specific caption
+		"2025-12-31",                       // fiscal period
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected radar body to contain %q", want)
 		}
 	}
-	// The feed shows only the lead sentence; the rest stays on the company page.
-	if strings.Contains(body, "belongs on the company page") {
-		t.Errorf("feed should show only the first sentence, not the full thesis")
+	// The tone-based intensity filter chips are gone.
+	if strings.Contains(body, "intensity=") {
+		t.Errorf("radar should no longer carry intensity filter chips")
 	}
 }
 
@@ -74,17 +69,15 @@ func TestFirstSentence(t *testing.T) {
 	}
 }
 
-func TestRadarPageInvalidIntensityIsIgnored(t *testing.T) {
-	fake := &fakeStore{radarCounts: store.RiskRadarCounts{}, radarRows: nil}
+func TestRadarPageEmptyState(t *testing.T) {
+	fake := &fakeStore{radarRows: nil}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/radar?intensity=bogus", nil)
+	req := httptest.NewRequest(http.MethodGet, "/radar", nil)
 	server.New(fake).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	// The "All" chip is active (invalid intensity coerced to ""), and the empty
-	// state renders rather than an error.
-	if !strings.Contains(rec.Body.String(), "No disclosure changes on record") {
+	if !strings.Contains(rec.Body.String(), "No company-specific disclosure changes on record") {
 		t.Errorf("expected empty-state copy for a feed with no rows")
 	}
 }

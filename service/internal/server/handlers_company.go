@@ -184,6 +184,15 @@ func disclosureDirectionLabel(direction string) string {
 	}
 }
 
+// disclosureThemeLabel humanizes a common-mode catalog theme slug for display, e.g.
+// "tariffs_trade_policy" -> "Tariffs trade policy". Empty falls back to "Other".
+func disclosureThemeLabel(theme string) string {
+	if theme == "" {
+		return "Other"
+	}
+	return strings.ToUpper(theme[:1]) + strings.ReplaceAll(theme[1:], "_", " ")
+}
+
 // riskShiftLabel composes the filing-level headline from its two axes — e.g.
 // ("major", "worsening") -> "Major worsening". These are separate judgments
 // (which way vs. how much), so the label carries both (ADR 0043).

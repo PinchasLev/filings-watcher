@@ -6,80 +6,79 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // DisclosureChange is one material year-over-year change to a company's risk
 // factors, as judged by the LLM (ADR 0042). Heading is the risk factor's own
 // headline (from the current block, or the prior block for a removed one).
-// Direction is the per-change risk shift (worse | eased | neutral).
+// Direction is the per-change risk shift (worse | eased | neutral). IsSpecific is
+// the calibration classification (nil until classified): true = company-specific,
+// false = common-mode boilerplate; MatchedTheme names the catalog theme when
+// common-mode.
 type DisclosureChange struct {
-	Heading     string
-	ChangeType  string // "added" | "changed" | "dropped"
-	Direction   string // "worse" | "eased" | "neutral"
-	Category    string
-	Explanation string
-	Confidence  float64
-	NeedsReview bool
-	Similarity  *float64
+	Heading      string
+	ChangeType   string // "added" | "changed" | "dropped"
+	Direction    string // "worse" | "eased" | "neutral"
+	Category     string
+	Explanation  string
+	Confidence   float64
+	NeedsReview  bool
+	Similarity   *float64
+	IsSpecific   *bool
+	MatchedTheme string
 }
 
-// DisclosureTheme groups a filing's changes under one governed category, so the
-// drilldown reads by business theme (Liquidity, Restructuring, …) rather than as a
-// flat list. Changes within a theme are ordered most-confident first.
-type DisclosureTheme struct {
-	Category string
-	Changes  []DisclosureChange
+// ThemeCount summarizes how many of a filing's common-mode changes matched a given
+// catalog theme, for the collapsed "also disclosed" drill-down.
+type ThemeCount struct {
+	Theme string
+	Count int
 }
 
-// DisclosureChangeGroup is the read for one filing's material changes, diffed
-// against its prior comparable — an inverted pyramid (ADR 0043): a headline
-// (direction + intensity + counts), the synthesis thesis and top effects, and the
-// evidence grouped by theme. CurrentPeriod / PriorPeriod are the fiscal period ends
-// (period of report), so the years compared are unambiguous.
+// DisclosureChangeGroup is the read for one filing's material Risk Factor changes,
+// diffed against its prior comparable. The changes are bucketed by the calibration
+// classification so the page leads with what matters: SpecificChanges (company-specific,
+// highlighted), EasedChanges (eased or removed — the good news), and CommonModeChanges
+// (common-mode boilerplate, collapsed; CommonModeThemes is its per-theme tally).
+// Unclassified holds changes not yet scored (before the calibration pipeline has run),
+// rendered as a plain list so nothing is hidden.
 //
-// HasSynthesis is false when the reduce has not run for this filing yet; the page
-// then shows the themed evidence without the headline/thesis rather than nothing.
+// HeadlineDirection is retained only as the internal "stable" marker (a filing diffed
+// with zero material changes) — it is no longer a user-facing tone. HasSynthesis is false
+// when the reduce has not run; the page then shows the changes without the thesis.
+// CurrentPeriod / PriorPeriod are the fiscal period ends, so the years compared are clear.
 type DisclosureChangeGroup struct {
 	Accession     string
 	CurrentPeriod string
 	PriorPeriod   string
 
 	HasSynthesis      bool
-	HeadlineDirection string // "worsening" | "easing" | "mixed" | "stable" (no changes)
-	HeadlineIntensity string // "major" | "moderate" | "minor" | "none" (stable)
-	MaterialCount     int
-	WorseCount        int
-	EasedCount        int
+	HeadlineDirection string // internal marker only: "stable" = diffed, zero material changes
 	Thesis            string
 	TopEffects        []string
 
-	Themes []DisclosureTheme
+	SpecificChanges   []DisclosureChange
+	EasedChanges      []DisclosureChange
+	CommonModeChanges []DisclosureChange
+	CommonModeThemes  []ThemeCount
+	Unclassified      []DisclosureChange
 }
 
-// RiskRadarRow is one filing's headline verdict in the cross-company feed: a
-// scannable "what moved" line that links through to the per-company page for the
-// full evidence. Ticker is empty when the issuer is absent from SEC's ticker file.
+// RiskRadarRow is one filing's line in the cross-company feed: the company, how many
+// company-specific changes it made this year, and the top few captions so the feed reads
+// as "what specifically moved" rather than a list of names. Ticker is empty when the
+// issuer is absent from SEC's ticker file.
 type RiskRadarRow struct {
-	CIK               string
-	CompanyName       string
-	Ticker            string
-	Accession         string
-	CurrentPeriod     string
-	FiledAt           string
-	HeadlineDirection string
-	HeadlineIntensity string
-	MaterialCount     int
-	WorseCount        int
-	EasedCount        int
-	Thesis            string
-}
-
-// RiskRadarCounts is the per-intensity tally behind the feed's filter chips.
-type RiskRadarCounts struct {
-	Total    int
-	Major    int
-	Moderate int
-	Minor    int
+	CIK           string
+	CompanyName   string
+	Ticker        string
+	Accession     string
+	CurrentPeriod string
+	FiledAt       string
+	SpecificCount int
+	Thesis        string
+	TopSpecific   []string
 }
 
 // latestSynthesisPredicate keeps only the newest synthesis per (filing, section),
@@ -89,39 +88,62 @@ const latestSynthesisPredicate = `
 		SELECT MAX(s2.synthesized_at) FROM filing_change_synthesis s2
 		 WHERE s2.accession_number = s.accession_number AND s2.section = s.section)`
 
-// RecentDisclosureChanges returns the cross-company feed of filing-level headline
-// verdicts, newest filing first, optionally filtered to one intensity
-// ("major"|"moderate"|"minor"; "" for all). Returns the page and the filtered total.
+// A filing belongs in the feed when it has at least one company-specific change, OR no
+// specificity has been computed for it yet (a graceful fallback before the calibration
+// pipeline runs, so the feed is never empty on a fresh deploy). Common-mode-only filings
+// drop out once classified — they surfaced nothing company-specific.
+const feedPredicate = `
+	s.headline_direction <> 'stable'
+	AND (
+	  EXISTS (
+	    SELECT 1 FROM change_specificity cs
+	     WHERE cs.accession_number = s.accession_number AND cs.section = s.section
+	       AND cs.is_specific = 1
+	       AND cs.classified_at = (
+	             SELECT MAX(cs2.classified_at) FROM change_specificity cs2
+	              WHERE cs2.accession_number = cs.accession_number AND cs2.section = cs.section
+	                AND cs2.model_id = cs.model_id AND cs2.change_seq = cs.change_seq))
+	  OR NOT EXISTS (
+	    SELECT 1 FROM change_specificity cs
+	     WHERE cs.accession_number = s.accession_number AND cs.section = s.section)
+	)`
+
+// specificCountExpr counts a filing's latest-classified company-specific changes.
+const specificCountExpr = `
+	(SELECT COUNT(*) FROM change_specificity cs
+	  WHERE cs.accession_number = s.accession_number AND cs.section = s.section
+	    AND cs.is_specific = 1
+	    AND cs.classified_at = (
+	          SELECT MAX(cs2.classified_at) FROM change_specificity cs2
+	           WHERE cs2.accession_number = cs.accession_number AND cs2.section = cs.section
+	             AND cs2.model_id = cs.model_id AND cs2.change_seq = cs.change_seq))`
+
+// RecentDisclosureChanges returns the cross-company feed of filings whose Risk Factors
+// surfaced company-specific changes year over year, newest filing first. Returns the page
+// and the total.
 func (s *store) RecentDisclosureChanges(
-	ctx context.Context, intensity string, limit, offset int,
+	ctx context.Context, limit, offset int,
 ) ([]RiskRadarRow, int, error) {
 	var total int
-	countQ := `
-		SELECT COUNT(*)
-		  FROM filing_change_synthesis s
-		 WHERE ` + latestSynthesisPredicate + `
-		   AND s.headline_direction <> 'stable'
-		   AND (? = '' OR s.headline_intensity = ?)`
-	if err := s.db.QueryRowContext(ctx, countQ, intensity, intensity).Scan(&total); err != nil {
+	countQ := `SELECT COUNT(*) FROM filing_change_synthesis s
+		 WHERE ` + latestSynthesisPredicate + ` AND ` + feedPredicate
+	if err := s.db.QueryRowContext(ctx, countQ).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("risk radar count: %w", err)
 	}
 
-	const q = `
+	q := `
 		SELECT pf.cik,
 		       COALESCE(ct.company_name, pf.company_name),
 		       COALESCE(ct.ticker, ''),
 		       s.accession_number, pf.period_of_report, pf.filed_at,
-		       s.headline_direction, s.headline_intensity,
-		       s.material_count, s.worse_count, s.eased_count, s.thesis
+		       ` + specificCountExpr + `, s.thesis
 		  FROM filing_change_synthesis s
 		  JOIN periodic_filings pf ON pf.accession_number = s.accession_number
 		  LEFT JOIN cik_tickers ct ON ct.cik = pf.cik
-		 WHERE ` + latestSynthesisPredicate + `
-		   AND s.headline_direction <> 'stable'
-		   AND (? = '' OR s.headline_intensity = ?)
-		 ORDER BY pf.filed_at DESC, s.material_count DESC, s.accession_number
+		 WHERE ` + latestSynthesisPredicate + ` AND ` + feedPredicate + `
+		 ORDER BY pf.filed_at DESC, s.accession_number
 		 LIMIT ? OFFSET ?`
-	rows, err := s.db.QueryContext(ctx, q, intensity, intensity, limit, offset)
+	rows, err := s.db.QueryContext(ctx, q, limit, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("risk radar: %w", err)
 	}
@@ -132,59 +154,75 @@ func (s *store) RecentDisclosureChanges(
 		var r RiskRadarRow
 		if err := rows.Scan(
 			&r.CIK, &r.CompanyName, &r.Ticker, &r.Accession, &r.CurrentPeriod, &r.FiledAt,
-			&r.HeadlineDirection, &r.HeadlineIntensity, &r.MaterialCount, &r.WorseCount,
-			&r.EasedCount, &r.Thesis,
+			&r.SpecificCount, &r.Thesis,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan risk radar row: %w", err)
 		}
 		out = append(out, r)
 	}
-	return out, total, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	if err := s.attachTopSpecific(ctx, out); err != nil {
+		return nil, 0, err
+	}
+	return out, total, nil
 }
 
-// RiskRadarIntensityCounts returns the per-intensity tally over the latest
-// synthesis per filing, for the feed's filter chips.
-func (s *store) RiskRadarIntensityCounts(ctx context.Context) (RiskRadarCounts, error) {
-	const q = `
-		SELECT s.headline_intensity, COUNT(*)
-		  FROM filing_change_synthesis s
-		 WHERE ` + latestSynthesisPredicate + `
-		   AND s.headline_direction <> 'stable'
-		 GROUP BY s.headline_intensity`
-	rows, err := s.db.QueryContext(ctx, q)
+// attachTopSpecific fills each feed row with the captions of its top few company-specific
+// changes (highest-confidence first), so the feed reads as "what specifically moved".
+func (s *store) attachTopSpecific(ctx context.Context, rows []RiskRadarRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	const maxCaptions = 2
+	idx := make(map[string]*RiskRadarRow, len(rows))
+	args := make([]any, 0, len(rows))
+	ph := make([]string, 0, len(rows))
+	for i := range rows {
+		idx[rows[i].Accession] = &rows[i]
+		args = append(args, rows[i].Accession)
+		ph = append(ph, "?")
+	}
+	q := `
+		SELECT v.accession_number, v.explanation
+		  FROM block_change_verdicts v
+		  JOIN change_specificity cs
+		    ON cs.accession_number = v.accession_number AND cs.section = v.section
+		   AND cs.model_id = v.model_id AND cs.change_seq = v.change_seq
+		 WHERE v.is_material = 1 AND cs.is_specific = 1
+		   AND v.accession_number IN (` + strings.Join(ph, ",") + `)
+		   AND v.judged_at = (
+		         SELECT MAX(v2.judged_at) FROM block_change_verdicts v2
+		          WHERE v2.accession_number = v.accession_number AND v2.section = v.section
+		            AND v2.model_id = v.model_id AND v2.change_seq = v.change_seq)
+		   AND cs.classified_at = (
+		         SELECT MAX(cs2.classified_at) FROM change_specificity cs2
+		          WHERE cs2.accession_number = cs.accession_number AND cs2.section = cs.section
+		            AND cs2.model_id = cs.model_id AND cs2.change_seq = cs.change_seq)
+		 ORDER BY v.accession_number, v.confidence DESC, v.change_seq`
+	res, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
-		return RiskRadarCounts{}, fmt.Errorf("risk radar counts: %w", err)
+		return fmt.Errorf("risk radar top-specific: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-
-	var c RiskRadarCounts
-	for rows.Next() {
-		var intensity string
-		var n int
-		if err := rows.Scan(&intensity, &n); err != nil {
-			return RiskRadarCounts{}, fmt.Errorf("scan risk radar count: %w", err)
+	defer func() { _ = res.Close() }()
+	for res.Next() {
+		var acc, explanation string
+		if err := res.Scan(&acc, &explanation); err != nil {
+			return fmt.Errorf("scan top-specific: %w", err)
 		}
-		c.Total += n
-		switch intensity {
-		case "major":
-			c.Major = n
-		case "moderate":
-			c.Moderate = n
-		case "minor":
-			c.Minor = n
+		if r, ok := idx[acc]; ok && len(r.TopSpecific) < maxCaptions {
+			r.TopSpecific = append(r.TopSpecific, explanation)
 		}
 	}
-	return c, rows.Err()
+	return res.Err()
 }
 
-// CompanyDisclosureChanges returns a company's material risk-factor changes,
-// grouped by filing (newest fiscal period first), capped at `limit` changes, each
-// filing carrying its synthesis headline/thesis and its evidence grouped by theme.
-//
-// Only the most recent verdict per change is used, so a re-judge (a new prompt or
-// model, hence a new judge_version) supersedes rather than double-listing; likewise
-// the latest synthesis per filing wins. Supplementary to the company page: callers
-// may ignore its error and render the section's empty state.
+// CompanyDisclosureChanges returns a company's material Risk Factor changes, grouped by
+// filing (newest fiscal period first), each filing carrying its synthesis thesis and its
+// changes bucketed by specificity. Stable filings (diffed, zero material changes) are
+// appended as standing-risk groups. Supplementary to the company page: callers may ignore
+// its error and render the section's empty state.
 func (s *store) CompanyDisclosureChanges(
 	ctx context.Context, cik string, limit int,
 ) ([]DisclosureChangeGroup, error) {
@@ -195,10 +233,6 @@ func (s *store) CompanyDisclosureChanges(
 	if err := s.attachDisclosureSynthesis(ctx, cik, ptrs, byAccession); err != nil {
 		return nil, err
 	}
-	// A stable filing (diffed, zero material changes) has a synthesis but no evidence, so
-	// the evidence query above never surfaces it. Append those as themeless groups so a
-	// company whose risks held steady reads as "unchanged — here are the standing risks"
-	// rather than being absent (ADR 0043).
 	stable, err := s.companyStableSyntheses(ctx, cik, byAccession)
 	if err != nil {
 		return nil, err
@@ -216,10 +250,9 @@ func (s *store) CompanyDisclosureChanges(
 	return out, nil
 }
 
-// companyStableSyntheses loads a company's stable-filing standing-risk summaries
-// (headline_direction='stable') as themeless groups — one per filing that was diffed
-// against its prior year with zero material changes. Skips any accession already present
-// as an evidence group (a changed filing is never also stable, but the guard is cheap).
+// companyStableSyntheses loads a company's stable-filing standing-risk summaries as
+// themeless groups — one per filing diffed against its prior year with zero material
+// changes. Skips any accession already present as an evidence group.
 func (s *store) companyStableSyntheses(
 	ctx context.Context, cik string, byAccession map[string]*DisclosureChangeGroup,
 ) ([]*DisclosureChangeGroup, error) {
@@ -262,7 +295,6 @@ func (s *store) companyStableSyntheses(
 			PriorPeriod:       priorPeriod.String,
 			HasSynthesis:      true,
 			HeadlineDirection: "stable",
-			HeadlineIntensity: "none",
 			Thesis:            thesis,
 			TopEffects:        topEffects,
 		})
@@ -270,8 +302,10 @@ func (s *store) companyStableSyntheses(
 	return out, rows.Err()
 }
 
-// disclosureChangeEvidence loads the material changes, grouped by filing and then by
-// theme within each filing.
+// disclosureChangeEvidence loads the material changes, grouped by filing and bucketed by
+// specificity (company-specific / eased-or-removed / common-mode / unclassified). A change
+// is joined to its latest specificity classification; an unclassified change (nil) falls
+// into Unclassified so it still renders before the calibration pipeline has run.
 func (s *store) disclosureChangeEvidence(
 	ctx context.Context, cik string, limit int,
 ) ([]*DisclosureChangeGroup, map[string]*DisclosureChangeGroup, error) {
@@ -283,7 +317,8 @@ func (s *store) disclosureChangeEvidence(
 		       v.direction,
 		       bc.similarity,
 		       COALESCE(cur.heading, pri.heading),
-		       v.category, v.explanation, v.confidence, v.needs_review
+		       v.category, v.explanation, v.confidence, v.needs_review,
+		       cs.is_specific, cs.matched_theme
 		  FROM block_change_verdicts v
 		  JOIN filing_diffs d
 		    ON d.accession_number = v.accession_number AND d.section = v.section
@@ -299,6 +334,13 @@ func (s *store) disclosureChangeEvidence(
 		  LEFT JOIN filing_blocks pri
 		    ON pri.accession_number = d.prior_accession_number AND pri.section = v.section
 		   AND pri.block_index = bc.prior_block_index
+		  LEFT JOIN change_specificity cs
+		    ON cs.accession_number = v.accession_number AND cs.section = v.section
+		   AND cs.model_id = v.model_id AND cs.change_seq = v.change_seq
+		   AND cs.classified_at = (
+		         SELECT MAX(cs2.classified_at) FROM change_specificity cs2
+		          WHERE cs2.accession_number = cs.accession_number AND cs2.section = cs.section
+		            AND cs2.model_id = cs.model_id AND cs2.change_seq = cs.change_seq)
 		 WHERE pf.cik = ? AND v.is_material = 1
 		   AND v.judged_at = (
 		         SELECT MAX(v2.judged_at) FROM block_change_verdicts v2
@@ -315,33 +357,38 @@ func (s *store) disclosureChangeEvidence(
 
 	var groups []*DisclosureChangeGroup
 	byAccession := map[string]*DisclosureChangeGroup{}
-	// Per group, track theme index by category to preserve encounter order before sorting.
-	themeIndex := map[string]map[string]int{}
 	for rows.Next() {
 		var (
 			acc, changeType, direction, category, explanation string
-			curPeriod, priorPeriod, heading                   sql.NullString
+			curPeriod, priorPeriod, heading, matchedTheme     sql.NullString
 			similarity                                        sql.NullFloat64
 			confidence                                        float64
 			needsReview                                       int
+			isSpecific                                        sql.NullInt64
 		)
 		if err := rows.Scan(
 			&acc, &curPeriod, &priorPeriod, &changeType, &direction, &similarity,
 			&heading, &category, &explanation, &confidence, &needsReview,
+			&isSpecific, &matchedTheme,
 		); err != nil {
 			return nil, nil, fmt.Errorf("scan disclosure change: %w", err)
 		}
 		change := DisclosureChange{
-			Heading:     heading.String,
-			ChangeType:  changeType,
-			Direction:   direction,
-			Category:    category,
-			Explanation: explanation,
-			Confidence:  confidence,
-			NeedsReview: needsReview != 0,
+			Heading:      heading.String,
+			ChangeType:   changeType,
+			Direction:    direction,
+			Category:     category,
+			Explanation:  explanation,
+			Confidence:   confidence,
+			NeedsReview:  needsReview != 0,
+			MatchedTheme: matchedTheme.String,
 		}
 		if similarity.Valid {
 			change.Similarity = &similarity.Float64
+		}
+		if isSpecific.Valid {
+			b := isSpecific.Int64 != 0
+			change.IsSpecific = &b
 		}
 		group, ok := byAccession[acc]
 		if !ok {
@@ -352,30 +399,54 @@ func (s *store) disclosureChangeEvidence(
 			}
 			groups = append(groups, group)
 			byAccession[acc] = group
-			themeIndex[acc] = map[string]int{}
 		}
-		ti := themeIndex[acc]
-		idx, seen := ti[category]
-		if !seen {
-			group.Themes = append(group.Themes, DisclosureTheme{Category: category})
-			idx = len(group.Themes) - 1
-			ti[category] = idx
+		switch {
+		case change.IsSpecific == nil:
+			group.Unclassified = append(group.Unclassified, change)
+		case *change.IsSpecific && (change.Direction == "eased" || change.ChangeType == "dropped"):
+			group.EasedChanges = append(group.EasedChanges, change)
+		case *change.IsSpecific:
+			group.SpecificChanges = append(group.SpecificChanges, change)
+		default:
+			group.CommonModeChanges = append(group.CommonModeChanges, change)
 		}
-		group.Themes[idx].Changes = append(group.Themes[idx].Changes, change)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, nil, err
 	}
-	// Biggest themes first — a reader scans the dominant clusters before the tail.
 	for _, g := range groups {
-		sort.SliceStable(g.Themes, func(i, j int) bool {
-			return len(g.Themes[i].Changes) > len(g.Themes[j].Changes)
-		})
+		g.CommonModeThemes = summarizeThemes(g.CommonModeChanges)
 	}
 	return groups, byAccession, nil
 }
 
-// attachDisclosureSynthesis fills each group's headline/thesis from the latest
+// summarizeThemes tallies common-mode changes by matched catalog theme, most-common first,
+// for the collapsed "also disclosed" drill-down.
+func summarizeThemes(changes []DisclosureChange) []ThemeCount {
+	if len(changes) == 0 {
+		return nil
+	}
+	counts := map[string]int{}
+	order := []string{}
+	for _, c := range changes {
+		theme := c.MatchedTheme
+		if theme == "" {
+			theme = "other"
+		}
+		if _, seen := counts[theme]; !seen {
+			order = append(order, theme)
+		}
+		counts[theme]++
+	}
+	out := make([]ThemeCount, 0, len(order))
+	for _, theme := range order {
+		out = append(out, ThemeCount{Theme: theme, Count: counts[theme]})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Count > out[j].Count })
+	return out
+}
+
+// attachDisclosureSynthesis fills each group's thesis/standing-risk from the latest
 // synthesis for that filing. A missing synthesis leaves HasSynthesis false.
 func (s *store) attachDisclosureSynthesis(
 	ctx context.Context, cik string, groups []*DisclosureChangeGroup,
@@ -385,8 +456,7 @@ func (s *store) attachDisclosureSynthesis(
 		return nil
 	}
 	const q = `
-		SELECT s.accession_number, s.headline_direction, s.headline_intensity,
-		       s.material_count, s.worse_count, s.eased_count, s.thesis, s.top_effects
+		SELECT s.accession_number, s.headline_direction, s.thesis, s.top_effects
 		  FROM filing_change_synthesis s
 		  JOIN periodic_filings pf ON pf.accession_number = s.accession_number
 		 WHERE pf.cik = ?
@@ -401,14 +471,8 @@ func (s *store) attachDisclosureSynthesis(
 	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
-		var (
-			acc, direction, intensity, thesis string
-			material, worse, eased            int
-			topEffectsJSON                    string
-		)
-		if err := rows.Scan(
-			&acc, &direction, &intensity, &material, &worse, &eased, &thesis, &topEffectsJSON,
-		); err != nil {
+		var acc, direction, thesis, topEffectsJSON string
+		if err := rows.Scan(&acc, &direction, &thesis, &topEffectsJSON); err != nil {
 			return fmt.Errorf("scan disclosure synthesis: %w", err)
 		}
 		g, ok := byAccession[acc]
@@ -421,10 +485,6 @@ func (s *store) attachDisclosureSynthesis(
 		}
 		g.HasSynthesis = true
 		g.HeadlineDirection = direction
-		g.HeadlineIntensity = intensity
-		g.MaterialCount = material
-		g.WorseCount = worse
-		g.EasedCount = eased
 		g.Thesis = thesis
 		g.TopEffects = topEffects
 	}

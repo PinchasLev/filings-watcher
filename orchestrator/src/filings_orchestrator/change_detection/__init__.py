@@ -7,6 +7,17 @@ module is the deterministic section segmentation that turns a filing's Risk Fact
 into whole risk-factor blocks.
 """
 
+from filings_orchestrator.change_detection.catalog import (
+    DEFAULT_CATALOG_MODEL,
+    CatalogTheme,
+    DisclosureCatalog,
+    build_catalog_extractor,
+    canonical_themes,
+    catalog_content_hash,
+    catalog_extractor_version,
+    catalog_version,
+    extract_catalog,
+)
 from filings_orchestrator.change_detection.diffing import (
     BlockChange,
     DiffResult,
@@ -48,11 +59,14 @@ from filings_orchestrator.change_detection.taxonomy import (
 )
 
 __all__ = [
+    "DEFAULT_CATALOG_MODEL",
     "DEFAULT_JUDGE_MODEL",
     "DEFAULT_MODEL",
     "DEFAULT_SYNTHESIS_MODEL",
     "BlockChange",
+    "CatalogTheme",
     "DiffResult",
+    "DisclosureCatalog",
     "DisclosureSynthesis",
     "Embedder",
     "Finding",
@@ -64,10 +78,16 @@ __all__ = [
     "RiskFactorBlock",
     "StandingRiskSummary",
     "VoyageEmbedder",
+    "build_catalog_extractor",
     "build_judge",
     "build_standing_synthesizer",
     "build_synthesizer",
+    "canonical_themes",
+    "catalog_content_hash",
+    "catalog_extractor_version",
+    "catalog_version",
     "diff_blocks",
+    "extract_catalog",
     "judge_change",
     "judge_version",
     "segment_risk_factors",

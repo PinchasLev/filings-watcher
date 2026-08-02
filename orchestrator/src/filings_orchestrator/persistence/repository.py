@@ -2207,3 +2207,146 @@ def load_catalog_themes(engine: Engine, catalog_version: str) -> list[CatalogThe
     with engine.begin() as conn:
         rows = conn.execute(sql, {"catalog_version": catalog_version}).fetchall()
     return [CatalogThemeRow(str(r[0]), str(r[1]), int(r[2])) for r in rows]
+
+
+# --- Per-change specificity (calibration; migration 024) ---------------------------
+#
+# For each material change, whether it is a company-specific development or a common-mode
+# catalog theme. Keyed on judge_version (the material set), catalog_version (which catalog),
+# and specificity_version (model + prompt), so any of the three re-opens the work. See
+# change_detection/specificity.py.
+
+
+class MaterialChangeRow(NamedTuple):
+    """A material change loaded for specificity classification — its change_seq (identity),
+    theme, and the judge's one-line explanation."""
+
+    change_seq: int
+    category: str
+    explanation: str
+
+
+def select_filings_needing_specificity(
+    engine: Engine,
+    judge_version: str,
+    catalog_version: str,
+    specificity_version: str,
+    limit: int,
+) -> list[SynthesisTarget]:
+    """Return up to `limit` filings that have a material change (under `judge_version`) not
+    yet classified for (judge_version, catalog_version, specificity_version).
+
+    A left join against change_specificity for these versions finds the gap per change, so
+    the classifier is a resumable reconciler: a re-judge, a new catalog, or a prompt change
+    reopens the gap and re-derives. Returns the distinct filings; the pass classifies all of
+    a filing's material changes in one call."""
+    sql = text(
+        """
+        SELECT DISTINCT v.accession_number, v.section, v.model_id
+          FROM block_change_verdicts v
+          LEFT JOIN change_specificity cs
+                 ON cs.accession_number = v.accession_number AND cs.section = v.section
+                AND cs.model_id = v.model_id AND cs.change_seq = v.change_seq
+                AND cs.judge_version = :judge_version
+                AND cs.catalog_version = :catalog_version
+                AND cs.specificity_version = :specificity_version
+         WHERE v.judge_version = :judge_version
+           AND v.is_material = 1
+           AND cs.accession_number IS NULL
+         ORDER BY v.accession_number, v.section
+         LIMIT :limit
+        """
+    )
+    with engine.begin() as conn:
+        rows = conn.execute(
+            sql,
+            {
+                "judge_version": judge_version,
+                "catalog_version": catalog_version,
+                "specificity_version": specificity_version,
+                "limit": limit,
+            },
+        ).fetchall()
+    return [SynthesisTarget(str(r[0]), str(r[1]), str(r[2])) for r in rows]
+
+
+def load_material_changes_for_specificity(
+    engine: Engine, *, accession_number: str, section: str, model_id: str, judge_version: str
+) -> list[MaterialChangeRow]:
+    """Load a filing's material changes (change_seq order) for the specificity classifier —
+    the change_seq keys the verdict back, category and explanation are the classifier input."""
+    sql = text(
+        """
+        SELECT change_seq, category, explanation
+          FROM block_change_verdicts
+         WHERE accession_number = :accession_number AND section = :section
+           AND model_id = :model_id AND judge_version = :judge_version
+           AND is_material = 1
+         ORDER BY change_seq
+        """
+    )
+    with engine.begin() as conn:
+        rows = conn.execute(
+            sql,
+            {
+                "accession_number": accession_number,
+                "section": section,
+                "model_id": model_id,
+                "judge_version": judge_version,
+            },
+        ).fetchall()
+    return [MaterialChangeRow(int(r[0]), str(r[1] or "other"), str(r[2] or "")) for r in rows]
+
+
+def insert_change_specificity(
+    engine: Engine,
+    *,
+    target: SynthesisTarget,
+    judge_version: str,
+    catalog_version: str,
+    specificity_version: str,
+    verdicts: list[tuple[int, bool, str | None, float, str]],
+    classified_at: str,
+) -> None:
+    """Store a filing's per-change specificity verdicts in one transaction. Each verdict is
+    (change_seq, is_specific, matched_theme, confidence, explanation). Idempotent on the
+    change + versions key — a re-run under the same versions overwrites."""
+    with engine.begin() as conn:
+        for change_seq, is_specific, matched_theme, confidence, explanation in verdicts:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO change_specificity (
+                        accession_number, section, model_id, change_seq,
+                        judge_version, catalog_version, specificity_version,
+                        is_specific, matched_theme, confidence, explanation, classified_at
+                    ) VALUES (
+                        :accession_number, :section, :model_id, :change_seq,
+                        :judge_version, :catalog_version, :specificity_version,
+                        :is_specific, :matched_theme, :confidence, :explanation, :classified_at
+                    )
+                    ON CONFLICT (accession_number, section, model_id, change_seq,
+                                 judge_version, catalog_version, specificity_version)
+                    DO UPDATE SET
+                        is_specific   = excluded.is_specific,
+                        matched_theme = excluded.matched_theme,
+                        confidence    = excluded.confidence,
+                        explanation   = excluded.explanation,
+                        classified_at = excluded.classified_at
+                    """
+                ),
+                {
+                    "accession_number": target.accession_number,
+                    "section": target.section,
+                    "model_id": target.model_id,
+                    "change_seq": change_seq,
+                    "judge_version": judge_version,
+                    "catalog_version": catalog_version,
+                    "specificity_version": specificity_version,
+                    "is_specific": 1 if is_specific else 0,
+                    "matched_theme": matched_theme,
+                    "confidence": confidence,
+                    "explanation": explanation,
+                    "classified_at": classified_at,
+                },
+            )

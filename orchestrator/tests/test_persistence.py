@@ -168,6 +168,7 @@ def test_apply_migrations_creates_tables_and_records_version() -> None:
         "021_filing_change_synthesis_intensity",
         "022_page_views",
         "023_disclosure_catalog",
+        "024_change_specificity",
     ]
 
     with engine.begin() as conn:

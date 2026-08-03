@@ -2350,3 +2350,213 @@ def insert_change_specificity(
                     "classified_at": classified_at,
                 },
             )
+
+
+# --- Risk materialization tracking (Phase 2b; migration 025) ------------------------
+#
+# For each flagged SPECIFIC risk, whether a subsequent 8-K/6-K directly realizes it. The
+# flagged risk's change identity is the anchor; a "not realized yet" verdict re-opens when
+# the company files a newer 8-K than checked_through, so the risk keeps being tracked as
+# filings land (see change_detection/realization.py).
+
+
+class RiskToTrack(NamedTuple):
+    """A flagged specific risk needing a realization (re)check — its anchor identity plus
+    the company and the risk text the judge reads."""
+
+    accession_number: str
+    section: str
+    model_id: str
+    change_seq: int
+    cik: str
+    company: str
+    filed_at: str
+    explanation: str
+
+
+class SubsequentEvent(NamedTuple):
+    """A material 8-K/6-K event filed after the 10-K — a realization candidate. The
+    accession/event_type/item let the caller record which 8-K drew the line."""
+
+    accession_number: str
+    filing_date: str
+    event_type: str
+    item: str
+    summary: str
+
+
+# A subsequent material 8-K/6-K event exists for this risk's company after the given date
+# expression (pf.cik is correlated from the enclosing risk query).
+def _subsequent_event_after(date_expr: str) -> str:
+    return f"""
+        EXISTS (
+          SELECT 1 FROM events e JOIN filings f ON f.accession_number = e.accession_number
+           WHERE f.cik = pf.cik AND e.is_material = 1
+             AND (f.form LIKE '8-K%' OR f.form LIKE '6-K%')
+             AND substr(f.filing_date, 1, 10) > substr({date_expr}, 1, 10))"""
+
+
+def select_risks_needing_realization(
+    engine: Engine,
+    *,
+    judge_version: str,
+    realization_version: str,
+    limit: int,
+) -> list[RiskToTrack]:
+    """Return up to `limit` flagged specific risks that need a realization (re)check for
+    (judge_version, realization_version): a risk with no verdict yet, OR a not-realized
+    verdict whose company has filed a material 8-K since it was last checked. Only risks
+    whose company has at least one subsequent material 8-K are returned (others can never
+    realize). This makes the tracker continuous — a risk is re-judged as new filings land,
+    not judged once and frozen."""
+    latest_specificity = """
+        cs.classified_at = (SELECT MAX(c2.classified_at) FROM change_specificity c2
+              WHERE c2.accession_number=cs.accession_number AND c2.section=cs.section
+                AND c2.model_id=cs.model_id AND c2.change_seq=cs.change_seq)"""
+    latest_verdict = """
+        v.judged_at = (SELECT MAX(v2.judged_at) FROM block_change_verdicts v2
+              WHERE v2.accession_number=v.accession_number AND v2.section=v.section
+                AND v2.model_id=v.model_id AND v2.change_seq=v.change_seq)"""
+    rr_match = """
+        rr.accession_number=v.accession_number AND rr.section=v.section
+          AND rr.model_id=v.model_id AND rr.change_seq=v.change_seq
+          AND rr.judge_version=:judge_version AND rr.realization_version=:realization_version"""
+    recheck_after = "COALESCE(rr.checked_through, pf.filed_at)"
+    sql = text(
+        f"""
+        SELECT v.accession_number, v.section, v.model_id, v.change_seq,
+               pf.cik, COALESCE(pf.company_name, pf.cik), pf.filed_at, v.explanation
+          FROM change_specificity cs
+          JOIN block_change_verdicts v
+            ON v.accession_number=cs.accession_number AND v.section=cs.section
+           AND v.model_id=cs.model_id AND v.change_seq=cs.change_seq
+          JOIN periodic_filings pf ON pf.accession_number=v.accession_number
+         WHERE cs.is_specific=1 AND {latest_specificity}
+           AND v.is_material=1 AND v.judge_version=:judge_version AND {latest_verdict}
+           AND {_subsequent_event_after("pf.filed_at")}
+           AND (
+             NOT EXISTS (SELECT 1 FROM risk_realizations rr WHERE {rr_match})
+             OR EXISTS (SELECT 1 FROM risk_realizations rr
+                         WHERE {rr_match} AND rr.is_realized=0
+                           AND {_subsequent_event_after(recheck_after)})
+           )
+         ORDER BY v.accession_number, v.change_seq
+         LIMIT :limit
+        """
+    )
+    with engine.begin() as conn:
+        rows = conn.execute(
+            sql,
+            {
+                "judge_version": judge_version,
+                "realization_version": realization_version,
+                "limit": limit,
+            },
+        ).fetchall()
+    return [
+        RiskToTrack(
+            str(r[0]),
+            str(r[1]),
+            str(r[2]),
+            int(r[3]),
+            str(r[4]),
+            str(r[5]),
+            str(r[6]),
+            str(r[7] or ""),
+        )
+        for r in rows
+    ]
+
+
+def load_subsequent_material_events(
+    engine: Engine, *, cik: str, after: str, limit: int = 20
+) -> list[SubsequentEvent]:
+    """The company's material 8-K/6-K events filed after `after` (the 10-K date), latest
+    run per filing, oldest first — the realization candidates for the judge."""
+    sql = text(
+        """
+        WITH lr AS (
+            SELECT accession_number, MAX(run_id) AS rid FROM events GROUP BY accession_number
+        )
+        SELECT e.accession_number, f.filing_date, e.event_type,
+               COALESCE(e.anchor_item_number, ''), e.summary
+          FROM events e
+          JOIN lr ON lr.accession_number=e.accession_number AND lr.rid=e.run_id
+          JOIN filings f ON f.accession_number=e.accession_number
+         WHERE f.cik=:cik AND e.is_material=1
+           AND (f.form LIKE '8-K%' OR f.form LIKE '6-K%')
+           AND substr(f.filing_date, 1, 10) > substr(:after, 1, 10)
+         ORDER BY f.filing_date, e.accession_number
+         LIMIT :limit
+        """
+    )
+    with engine.begin() as conn:
+        rows = conn.execute(sql, {"cik": cik, "after": after, "limit": limit}).fetchall()
+    return [
+        SubsequentEvent(str(r[0]), str(r[1]), str(r[2]), str(r[3] or ""), str(r[4] or ""))
+        for r in rows
+    ]
+
+
+def insert_risk_realization(
+    engine: Engine,
+    *,
+    risk: RiskToTrack,
+    judge_version: str,
+    realization_version: str,
+    is_realized: bool,
+    realizing_accession: str | None,
+    realizing_event_type: str | None,
+    realizing_item: str | None,
+    evidence: str,
+    confidence: float,
+    checked_through: str,
+    judged_at: str,
+) -> None:
+    """Store a risk's realization verdict. Idempotent on the anchor + versions key — a
+    re-check under the same versions overwrites (advancing checked_through)."""
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO risk_realizations (
+                    accession_number, section, model_id, change_seq,
+                    judge_version, realization_version,
+                    is_realized, realizing_accession, realizing_event_type, realizing_item,
+                    evidence, confidence, checked_through, judged_at
+                ) VALUES (
+                    :accession_number, :section, :model_id, :change_seq,
+                    :judge_version, :realization_version,
+                    :is_realized, :realizing_accession, :realizing_event_type, :realizing_item,
+                    :evidence, :confidence, :checked_through, :judged_at
+                )
+                ON CONFLICT (accession_number, section, model_id, change_seq,
+                             judge_version, realization_version)
+                DO UPDATE SET
+                    is_realized          = excluded.is_realized,
+                    realizing_accession  = excluded.realizing_accession,
+                    realizing_event_type = excluded.realizing_event_type,
+                    realizing_item       = excluded.realizing_item,
+                    evidence             = excluded.evidence,
+                    confidence           = excluded.confidence,
+                    checked_through      = excluded.checked_through,
+                    judged_at            = excluded.judged_at
+                """
+            ),
+            {
+                "accession_number": risk.accession_number,
+                "section": risk.section,
+                "model_id": risk.model_id,
+                "change_seq": risk.change_seq,
+                "judge_version": judge_version,
+                "realization_version": realization_version,
+                "is_realized": 1 if is_realized else 0,
+                "realizing_accession": realizing_accession,
+                "realizing_event_type": realizing_event_type,
+                "realizing_item": realizing_item,
+                "evidence": evidence,
+                "confidence": confidence,
+                "checked_through": checked_through,
+                "judged_at": judged_at,
+            },
+        )

@@ -414,3 +414,103 @@ func TestStableSynthesisRendersOnCompanyPageAndExcludedFromFeed(t *testing.T) {
 		t.Errorf("feed total = %d / rows %d, want 0 (stable excluded)", total, len(rows))
 	}
 }
+
+func insFiling(t *testing.T, db *sql.DB, acc, cik, form, filingDate string) {
+	t.Helper()
+	_, err := db.Exec(
+		`INSERT INTO filings (accession_number,cik,ticker,company_name,form,filing_date,
+			primary_document,primary_document_url,items_json,fetched_at)
+		 VALUES (?,?,'ACME','ACME Corp',?,?,'d','u','[]','t')`,
+		acc, cik, form, filingDate,
+	)
+	if err != nil {
+		t.Fatalf("insert filing: %v", err)
+	}
+}
+
+func insRealization(
+	t *testing.T, db *sql.DB, acc string, seq int, rv string, realized bool,
+	realizingAcc, eventType, evidence, judgedAt string,
+) {
+	t.Helper()
+	r := 0
+	if realized {
+		r = 1
+	}
+	_, err := db.Exec(
+		`INSERT INTO risk_realizations (accession_number,section,model_id,change_seq,
+			judge_version,realization_version,is_realized,realizing_accession,realizing_event_type,
+			realizing_item,evidence,confidence,checked_through,judged_at)
+		 VALUES (?,?,?,?,'jv1',?,?,?,?,'1.01',?,0.9,'2026-07-01',?)`,
+		acc, _section, _model, seq, rv, r, realizingAcc, eventType, evidence, judgedAt,
+	)
+	if err != nil {
+		t.Fatalf("insert realization: %v", err)
+	}
+}
+
+func TestCompanyDisclosureChangesSurfacesMaterialization(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+	const cik = "0000000123"
+	insPeriodic(t, raw, "prior", cik, "2024-12-31")
+	insBlock(t, raw, "prior", 0, "A risk.")
+	insPeriodic(t, raw, "current", cik, "2025-12-31")
+	insBlock(t, raw, "current", 0, "Merger risk.")
+	insDiff(t, raw, "current", "prior")
+	insChange(t, raw, "current", 0, "changed", 0, 0, "prior", 0.9)
+	insVerdict(t, raw, "current", 0, "jv1", true, "ma_activity", "Norfolk Southern merger risk.", false, "t1")
+	insSpecificity(t, raw, "current", 0, true, "", "t2")
+	// the realizing 8-K + the realization verdict
+	insFiling(t, raw, "eightk", cik, "8-K", "2026-05-01")
+	insRealization(t, raw, "current", 0, "rv1", true, "eightk", "ma_activity", "The ICE merger agreement realizes it.", "t3")
+	_ = raw.Close()
+
+	s := openStore(t, dbPath)
+	groups, err := s.CompanyDisclosureChanges(context.Background(), cik, 40)
+	if err != nil {
+		t.Fatalf("CompanyDisclosureChanges: %v", err)
+	}
+	if len(groups) != 1 || len(groups[0].SpecificChanges) != 1 {
+		t.Fatalf("groups/specific = %+v", groups)
+	}
+	c := groups[0].SpecificChanges[0]
+	if !c.Realized {
+		t.Fatal("Realized = false, want true")
+	}
+	if c.RealizingAccession != "eightk" || c.RealizingEventType != "ma_activity" || c.RealizingDate != "2026-05-01" {
+		t.Errorf("realizing = %q %q %q", c.RealizingAccession, c.RealizingEventType, c.RealizingDate)
+	}
+	if c.RealizationEvidence != "The ICE merger agreement realizes it." {
+		t.Errorf("evidence = %q", c.RealizationEvidence)
+	}
+}
+
+func TestMaterializationUsesLatestVerdict(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+	const cik = "0000000123"
+	insPeriodic(t, raw, "prior", cik, "2024-12-31")
+	insBlock(t, raw, "prior", 0, "A risk.")
+	insPeriodic(t, raw, "current", cik, "2025-12-31")
+	insBlock(t, raw, "current", 0, "A risk.")
+	insDiff(t, raw, "current", "prior")
+	insChange(t, raw, "current", 0, "changed", 0, 0, "prior", 0.9)
+	insVerdict(t, raw, "current", 0, "jv1", true, "ma_activity", "A specific risk.", false, "t1")
+	insSpecificity(t, raw, "current", 0, true, "", "t2")
+	insFiling(t, raw, "eightk", cik, "8-K", "2026-05-01")
+	// an older realized verdict, then a newer re-check that says not realized — latest wins
+	insRealization(t, raw, "current", 0, "rv-old", true, "eightk", "ma_activity", "old", "2026-06-01T00:00:00Z")
+	insRealization(t, raw, "current", 0, "rv-new", false, "", "", "", "2026-07-15T00:00:00Z")
+	_ = raw.Close()
+
+	s := openStore(t, dbPath)
+	groups, err := s.CompanyDisclosureChanges(context.Background(), cik, 40)
+	if err != nil {
+		t.Fatalf("CompanyDisclosureChanges: %v", err)
+	}
+	if len(groups) != 1 || len(groups[0].SpecificChanges) != 1 {
+		t.Fatalf("groups/specific = %+v", groups)
+	}
+	if groups[0].SpecificChanges[0].Realized {
+		t.Error("Realized = true, want false (latest verdict is not-realized)")
+	}
+}

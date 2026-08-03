@@ -91,10 +91,12 @@
               <article class="filing-card change-specific">
                 <div class="filing-meta">
                   <span class="badge">{{changeLabel .ChangeType}}</span>
+                  {{if .Realized}}<span class="badge materialized">Materialized</span>{{end}}
                   {{if .NeedsReview}}<span class="badge review">needs review</span>{{end}}
                 </div>
                 {{if .Heading}}<h5>{{.Heading}}</h5>{{end}}
                 <p class="reasoning">{{.Explanation}}</p>
+                {{template "materialized" .}}
               </article>
             {{end}}
           {{end}}
@@ -103,9 +105,13 @@
             <h4 class="bucket-head improved">Eased / removed</h4>
             {{range .EasedChanges}}
               <article class="filing-card change-eased">
-                <div class="filing-meta"><span class="badge">{{changeLabel .ChangeType}}</span></div>
+                <div class="filing-meta">
+                  <span class="badge">{{changeLabel .ChangeType}}</span>
+                  {{if .Realized}}<span class="badge materialized">Materialized</span>{{end}}
+                </div>
                 {{if .Heading}}<h5>{{.Heading}}</h5>{{end}}
                 <p class="reasoning">{{.Explanation}}</p>
+                {{template "materialized" .}}
               </article>
             {{end}}
           {{end}}
@@ -181,4 +187,15 @@
 {{else}}
   <p>We track this company, but none of its filings have been classified as material yet. New filings land after EDGAR&rsquo;s nightly publish (~10 PM ET).</p>
 {{end}}
+{{end}}
+
+{{- /* The declared -> materialized track update on a change: the subsequent 8-K that realized it. */ -}}
+{{define "materialized"}}
+  {{if .Realized}}
+    <div class="materialized">
+      <span class="materialized-meta">Materialized{{if .RealizingDate}} {{.RealizingDate}}{{end}}{{if .RealizingEventType}} &middot; {{eventLabel .RealizingEventType}}{{end}}</span>
+      {{if .RealizingAccession}}<a href="/filings/{{.RealizingAccession}}">view 8-K &rarr;</a>{{end}}
+      {{if .RealizationEvidence}}<p class="materialized-evidence">{{.RealizationEvidence}}</p>{{end}}
+    </div>
+  {{end}}
 {{end}}

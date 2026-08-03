@@ -134,14 +134,19 @@ func TestCompanyPageRendersDisclosureChanges(t *testing.T) {
 			HasSynthesis:  true,
 			Thesis:        "Risk profile deteriorated with a new going-concern disclosure.",
 			SpecificChanges: []store.DisclosureChange{{
-				Heading:     "Going concern doubt.",
-				ChangeType:  "added",
-				Direction:   "worse",
-				Category:    "liquidity_going_concern",
-				Explanation: "New going-concern risk disclosed this year.",
-				Confidence:  0.95,
-				NeedsReview: true,
-				Similarity:  &sim,
+				Heading:             "Going concern doubt.",
+				ChangeType:          "added",
+				Direction:           "worse",
+				Category:            "liquidity_going_concern",
+				Explanation:         "New going-concern risk disclosed this year.",
+				Confidence:          0.95,
+				NeedsReview:         true,
+				Similarity:          &sim,
+				Realized:            true,
+				RealizingEventType:  "ma_activity",
+				RealizingDate:       "2026-05-01",
+				RealizingAccession:  "0009999999-26-000001",
+				RealizationEvidence: "The merger agreement realizes the flagged risk.",
 			}},
 			CommonModeChanges: []store.DisclosureChange{{
 				Heading:      "Tariff exposure.",
@@ -171,9 +176,12 @@ func TestCompanyPageRendersDisclosureChanges(t *testing.T) {
 		"Going concern doubt.",             // specific change heading
 		"New going-concern risk disclosed", // explanation
 		"needs review",                     // review flag
-		"Also disclosed",                   // collapsed common-mode summary
-		"Tariffs trade policy",             // themeLabel(tariffs_trade_policy)
-		"0001234567-26-000010-index.htm",   // EDGAR citation link
+		"Materialized",                     // the declared->materialized state
+		"The merger agreement realizes the flagged risk.", // realization evidence
+		"/filings/0009999999-26-000001",                   // link to the realizing 8-K
+		"Also disclosed",                                  // collapsed common-mode summary
+		"Tariffs trade policy",                            // themeLabel(tariffs_trade_policy)
+		"0001234567-26-000010-index.htm",                  // EDGAR citation link
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected disclosure-changes body to contain %q", want)

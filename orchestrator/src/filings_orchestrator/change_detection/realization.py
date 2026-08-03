@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from filings_orchestrator.cost import emit_llm_call
 
-DEFAULT_REALIZATION_MODEL = "claude-haiku-4-5-20251001"
+DEFAULT_REALIZATION_MODEL = "claude-sonnet-4-6"
 
 
 class RealizationEvent(NamedTuple):
@@ -96,17 +96,33 @@ class RealizationVerdict(BaseModel):
 
 
 _SYSTEM_PROMPT = (
-    "You are given ONE company-specific risk a company flagged in its 10-K, and the material "
-    "8-K events the same company filed AFTER that 10-K. Decide whether any of those 8-K events "
-    "DIRECTLY realizes THIS specific risk - i.e. the hypothetical risk has now materialized or is "
-    "concretely advancing, and a particular 8-K disclosure draws a direct line to it.\n\n"
-    "Be STRICT. Set is_realized=true ONLY when a specific 8-K discloses a concrete fact that "
-    "plainly realizes THIS risk, and name that event in event_index. Do NOT count: a merely "
-    "related topic, a generic quarterly earnings release, or speculation that results 'would' or "
-    "'could' reflect the risk. If nothing draws a direct line, set is_realized=false and "
-    "event_index=null.\n\n"
-    "In evidence, cite the specific 8-K disclosure and state in one sentence how it realizes THIS "
-    "risk. Submit your verdict with the tool, exactly once."
+    "You are given ONE company-specific risk from a company's 10-K — the RISK FACTOR text plus a "
+    "one-line note on this year's CHANGE — and the material 8-K/6-K events the same company filed "
+    "AFTER that 10-K. Decide whether any single event shows THIS risk MATERIALIZING.\n\n"
+    "A risk materializes when the ADVERSE CONSEQUENCE it warns about actually befalls the company "
+    "and a subsequent event discloses that consequence: a strike or shutdown for a labor risk; the "
+    "key person actually departing for a retention risk; a cyber breach for a security risk; a "
+    "downgrade, covenant breach, default, or forced asset sale for a debt risk; an announced "
+    "impairment charge; a lawsuit filed against the company; the loss of a major customer; a "
+    "regulator's enforcement action. The harm has LANDED, and the event says so. Set is_realized="
+    "true and name that one event.\n\n"
+    "Materialization is about CONSEQUENCES, not activity. Set is_realized=false when the company "
+    "merely does more of the risky thing or manages the exposure without harm having occurred: "
+    "taking on, issuing, or refinancing debt; amending a credit facility; a leadership transition "
+    "where the executive REMAINS with the company or on its board (moving from an executive to a "
+    "non-executive or chairman role is a role change, not a departure — only an actual exit, such "
+    "as resigning, being terminated, or leaving for a competitor, realizes a key-person or "
+    "retention risk); adjusting severance or retention terms; raising capital. These change the "
+    "exposure; they are NOT the consequence the risk warned about. Also reject: a merely related "
+    "topic; a peripheral facet the factor mentions in passing (a labor-costs risk is NOT realized "
+    "by a CEO appointment); a generic quarterly earnings release; a big salient event (a merger, a "
+    "large acquisition) matched to a loosely-related risk merely because it is important; "
+    "speculation that results 'would' or 'could' reflect the risk; and any link that requires "
+    "INFERENCE rather than being explicitly disclosed.\n\n"
+    "Anchor on the CORE subject of the RISK FACTOR. Point to the one event whose disclosure states "
+    "the consequence. When in doubt, choose false. In evidence, name the event and state in one "
+    "sentence what adverse consequence it discloses and how that realizes THIS risk. Submit your "
+    "verdict with the tool, exactly once."
 )
 
 
@@ -129,15 +145,16 @@ def build_realization_judge(model_name: str = DEFAULT_REALIZATION_MODEL) -> Any:
     return model.bind_tools([tool_spec], tool_choice={"type": "tool", "name": "submit_realization"})
 
 
-def _build_user_prompt(risk: str, events: Sequence[RealizationEvent]) -> str:
+def _build_user_prompt(risk_text: str, risk: str, events: Sequence[RealizationEvent]) -> str:
     lines = [
         f"{i}. [{e.filing_date}] {e.event_type}"
         f"{(' (item ' + e.item + ')') if e.item else ''}: {e.summary}"
         for i, e in enumerate(events, start=1)
     ]
+    factor = risk_text.strip() or "(text unavailable)"
     return (
         "FLAGGED RISK (declared in the 10-K):\n"
-        + risk
+        + f"Risk factor: {factor}\nWhat changed this year: {risk}"
         + "\n\nSUBSEQUENT 8-K EVENTS:\n"
         + "\n".join(lines)
     )
@@ -146,17 +163,19 @@ def _build_user_prompt(risk: str, events: Sequence[RealizationEvent]) -> str:
 def judge_realization(
     model: Any,
     *,
+    risk_text: str,
     risk: str,
     events: Sequence[RealizationEvent],
     model_name: str,
     accession_number: str | None = None,
 ) -> RealizationVerdict:
     """Judge whether any subsequent 8-K realizes the flagged risk via the bound `model`.
-    Records the call for cost accounting even if parsing fails."""
+    The risk factor's text anchors the judgment to the core risk (rather than a poorly-parsed
+    heading). Records the call for cost accounting even if parsing fails."""
     system_blocks: list[str | dict[Any, Any]] = [
         {"type": "text", "text": _SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
     ]
-    user = _build_user_prompt(risk, events)
+    user = _build_user_prompt(risk_text, risk, events)
     response = model.invoke([SystemMessage(content=system_blocks), HumanMessage(content=user)])
     emit_llm_call(
         model=model_name,

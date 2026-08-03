@@ -54,6 +54,7 @@ def _seed_risk(
     filed_at: str,
     seq: int = 0,
     explanation: str = "A specific risk.",
+    risk_text: str = "Deterioration of labor relations, availability or costs could harm us.",
 ) -> None:
     with engine.begin() as c:
         c.execute(
@@ -63,6 +64,21 @@ def _seed_risk(
                 "VALUES (:a,:k,'ACME','10-K',:f,'2025-12-31',2025,1,0,'t')"
             ),
             {"a": acc, "k": cik, "f": filed_at},
+        )
+        c.execute(
+            text(
+                "INSERT INTO filing_blocks (accession_number,section,block_index,heading,"
+                "block_text,block_hash) VALUES (:a,:s,:q,'Labor',:t,:hash)"
+            ),
+            {"a": acc, "s": _SEC, "q": seq, "t": risk_text, "hash": f"{acc}-{seq}"},
+        )
+        c.execute(
+            text(
+                "INSERT INTO block_changes (accession_number,section,model_id,change_seq,"
+                "change_type,current_block_index,prior_block_index,prior_accession_number,"
+                "similarity) VALUES (:a,:s,:m,:q,'changed',:q,NULL,'prior',0.8)"
+            ),
+            {"a": acc, "s": _SEC, "m": _MODEL, "q": seq},
         )
         c.execute(
             text(
@@ -162,16 +178,22 @@ def test_judge_sees_risk_and_numbered_events() -> None:
         RealizationEvent("2026-06-01", "earnings_release", "", "Q2 results."),
     ]
     judge_realization(
-        model, risk="Merger risk.", events=events, model_name="m", accession_number="a"
+        model,
+        risk_text="A merger or acquisition could disrupt operations.",
+        risk="Added merger language.",
+        events=events,
+        model_name="m",
+        accession_number="a",
     )
-    assert "Merger risk." in model.last_user
+    assert "Risk factor: A merger or acquisition could disrupt operations." in model.last_user
+    assert "What changed this year: Added merger language." in model.last_user
     assert "1. [2026-05-01] ma_activity (item 1.01): Merger agreement announced." in model.last_user
     assert "2. [2026-06-01] earnings_release: Q2 results." in model.last_user
 
 
 def test_judge_raises_without_tool_call() -> None:
     with pytest.raises(RuntimeError):
-        judge_realization(_NoToolModel(), risk="r", events=[], model_name="m")
+        judge_realization(_NoToolModel(), risk_text="t", risk="r", events=[], model_name="m")
 
 
 def test_verdict_coercions() -> None:
@@ -209,7 +231,9 @@ def test_gap_skips_risk_with_no_subsequent_8k(engine: Engine) -> None:
 def test_gap_reopens_not_realized_when_newer_8k_arrives(engine: Engine) -> None:
     _seed_risk(engine, acc="tenk", cik="C", filed_at="2026-02-01")
     _seed_8k(engine, acc="e1", cik="C", filing_date="2026-05-01")
-    risk = RiskToTrack("tenk", _SEC, _MODEL, 0, "C", "ACME", "2026-02-01", "A specific risk.")
+    risk = RiskToTrack(
+        "tenk", _SEC, _MODEL, 0, "C", "ACME", "2026-02-01", "A specific risk.", "Labor risk."
+    )
     # record a not-realized verdict checked through 2026-05-01
     insert_risk_realization(
         engine,
@@ -256,7 +280,9 @@ def test_load_subsequent_events_filters(engine: Engine) -> None:
 
 
 def test_insert_round_trip_and_idempotent(engine: Engine) -> None:
-    risk = RiskToTrack("tenk", _SEC, _MODEL, 0, "C", "ACME", "2026-02-01", "A specific risk.")
+    risk = RiskToTrack(
+        "tenk", _SEC, _MODEL, 0, "C", "ACME", "2026-02-01", "A specific risk.", "Labor risk."
+    )
     for realized in (False, True):
         insert_risk_realization(
             engine,

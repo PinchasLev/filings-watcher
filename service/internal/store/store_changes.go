@@ -27,6 +27,13 @@ type DisclosureChange struct {
 	Similarity   *float64
 	IsSpecific   *bool
 	MatchedTheme string
+	// Materialization (Phase 2b): the declared -> materialized track update, set when a
+	// subsequent 8-K/6-K directly realized this risk.
+	Realized            bool
+	RealizingEventType  string
+	RealizingDate       string
+	RealizingAccession  string
+	RealizationEvidence string
 }
 
 // ThemeCount summarizes how many of a filing's common-mode changes matched a given
@@ -318,7 +325,9 @@ func (s *store) disclosureChangeEvidence(
 		       bc.similarity,
 		       COALESCE(cur.heading, pri.heading),
 		       v.category, v.explanation, v.confidence, v.needs_review,
-		       cs.is_specific, cs.matched_theme
+		       cs.is_specific, cs.matched_theme,
+		       rr.is_realized, rr.realizing_accession, rr.realizing_event_type,
+		       rf.filing_date, rr.evidence
 		  FROM block_change_verdicts v
 		  JOIN filing_diffs d
 		    ON d.accession_number = v.accession_number AND d.section = v.section
@@ -341,6 +350,14 @@ func (s *store) disclosureChangeEvidence(
 		         SELECT MAX(cs2.classified_at) FROM change_specificity cs2
 		          WHERE cs2.accession_number = cs.accession_number AND cs2.section = cs.section
 		            AND cs2.model_id = cs.model_id AND cs2.change_seq = cs.change_seq)
+		  LEFT JOIN risk_realizations rr
+		    ON rr.accession_number = v.accession_number AND rr.section = v.section
+		   AND rr.model_id = v.model_id AND rr.change_seq = v.change_seq
+		   AND rr.judged_at = (
+		         SELECT MAX(rr2.judged_at) FROM risk_realizations rr2
+		          WHERE rr2.accession_number = rr.accession_number AND rr2.section = rr.section
+		            AND rr2.model_id = rr.model_id AND rr2.change_seq = rr.change_seq)
+		  LEFT JOIN filings rf ON rf.accession_number = rr.realizing_accession
 		 WHERE pf.cik = ? AND v.is_material = 1
 		   AND v.judged_at = (
 		         SELECT MAX(v2.judged_at) FROM block_change_verdicts v2
@@ -359,17 +376,19 @@ func (s *store) disclosureChangeEvidence(
 	byAccession := map[string]*DisclosureChangeGroup{}
 	for rows.Next() {
 		var (
-			acc, changeType, direction, category, explanation string
-			curPeriod, priorPeriod, heading, matchedTheme     sql.NullString
-			similarity                                        sql.NullFloat64
-			confidence                                        float64
-			needsReview                                       int
-			isSpecific                                        sql.NullInt64
+			acc, changeType, direction, category, explanation                string
+			curPeriod, priorPeriod, heading, matchedTheme                    sql.NullString
+			similarity                                                       sql.NullFloat64
+			confidence                                                       float64
+			needsReview                                                      int
+			isSpecific, isRealized                                           sql.NullInt64
+			realizingAcc, realizingEvent, realizingDate, realizationEvidence sql.NullString
 		)
 		if err := rows.Scan(
 			&acc, &curPeriod, &priorPeriod, &changeType, &direction, &similarity,
 			&heading, &category, &explanation, &confidence, &needsReview,
 			&isSpecific, &matchedTheme,
+			&isRealized, &realizingAcc, &realizingEvent, &realizingDate, &realizationEvidence,
 		); err != nil {
 			return nil, nil, fmt.Errorf("scan disclosure change: %w", err)
 		}
@@ -389,6 +408,13 @@ func (s *store) disclosureChangeEvidence(
 		if isSpecific.Valid {
 			b := isSpecific.Int64 != 0
 			change.IsSpecific = &b
+		}
+		if isRealized.Valid && isRealized.Int64 != 0 {
+			change.Realized = true
+			change.RealizingAccession = realizingAcc.String
+			change.RealizingEventType = realizingEvent.String
+			change.RealizingDate = realizingDate.String
+			change.RealizationEvidence = realizationEvidence.String
 		}
 		group, ok := byAccession[acc]
 		if !ok {

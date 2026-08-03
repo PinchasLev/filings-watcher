@@ -2362,7 +2362,8 @@ def insert_change_specificity(
 
 class RiskToTrack(NamedTuple):
     """A flagged specific risk needing a realization (re)check — its anchor identity plus
-    the company and the risk text the judge reads."""
+    the company, the risk factor's text (what the judge anchors on to know the core risk),
+    and the change explanation the judge reads."""
 
     accession_number: str
     section: str
@@ -2372,6 +2373,7 @@ class RiskToTrack(NamedTuple):
     company: str
     filed_at: str
     explanation: str
+    risk_text: str
 
 
 class SubsequentEvent(NamedTuple):
@@ -2425,12 +2427,25 @@ def select_risks_needing_realization(
     sql = text(
         f"""
         SELECT v.accession_number, v.section, v.model_id, v.change_seq,
-               pf.cik, COALESCE(pf.company_name, pf.cik), pf.filed_at, v.explanation
+               pf.cik, COALESCE(pf.company_name, pf.cik), pf.filed_at, v.explanation,
+               substr(COALESCE(cur.block_text, pri.block_text), 1, 900)
           FROM change_specificity cs
           JOIN block_change_verdicts v
             ON v.accession_number=cs.accession_number AND v.section=cs.section
            AND v.model_id=cs.model_id AND v.change_seq=cs.change_seq
           JOIN periodic_filings pf ON pf.accession_number=v.accession_number
+          JOIN block_changes bc
+            ON bc.accession_number=v.accession_number AND bc.section=v.section
+           AND bc.model_id=v.model_id AND bc.change_seq=v.change_seq
+          LEFT JOIN filing_diffs d
+            ON d.accession_number=v.accession_number AND d.section=v.section
+           AND d.model_id=v.model_id
+          LEFT JOIN filing_blocks cur
+            ON cur.accession_number=v.accession_number AND cur.section=v.section
+           AND cur.block_index=bc.current_block_index
+          LEFT JOIN filing_blocks pri
+            ON pri.accession_number=d.prior_accession_number AND pri.section=v.section
+           AND pri.block_index=bc.prior_block_index
          WHERE cs.is_specific=1 AND {latest_specificity}
            AND v.is_material=1 AND v.judge_version=:judge_version AND {latest_verdict}
            AND {_subsequent_event_after("pf.filed_at")}
@@ -2463,6 +2478,7 @@ def select_risks_needing_realization(
             str(r[5]),
             str(r[6]),
             str(r[7] or ""),
+            str(r[8] or ""),
         )
         for r in rows
     ]

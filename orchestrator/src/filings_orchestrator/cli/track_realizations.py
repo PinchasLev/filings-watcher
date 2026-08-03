@@ -81,6 +81,7 @@ def realization_pass(
                 partial(
                     judge_realization,
                     model,
+                    risk_text=risk.risk_text,
                     risk=risk.explanation,
                     events=candidates,
                     model_name=model_name,

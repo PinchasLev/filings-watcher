@@ -658,14 +658,29 @@ func (s *store) resolveCompanyIdentity(ctx context.Context, cik string) (*Compan
 	`
 	var ticker sql.NullString
 	err = s.db.QueryRowContext(ctx, fallbackQuery, cik).Scan(&c.CompanyName, &ticker)
+	if err == nil {
+		if ticker.Valid {
+			c.Ticker = ticker.String
+		}
+		return &c, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("query fallback identity: %w", err)
+	}
+
+	// No 8-K filing either. A company can reach the Risk Radar from its 10-K
+	// alone (periodic filings — e.g. a SPAC with no classified 8-Ks), so fall
+	// back to the most recent periodic filing's as-filed name before giving up.
+	const periodicQuery = `
+		SELECT company_name FROM periodic_filings
+		 WHERE cik = ? ORDER BY filed_at DESC LIMIT 1
+	`
+	err = s.db.QueryRowContext(ctx, periodicQuery, cik).Scan(&c.CompanyName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("query fallback identity: %w", err)
-	}
-	if ticker.Valid {
-		c.Ticker = ticker.String
+		return nil, fmt.Errorf("query periodic identity: %w", err)
 	}
 	return &c, nil
 }

@@ -98,6 +98,36 @@ func TestCompanyByCIK_FallsBackToAsFiledIdentity(t *testing.T) {
 	}
 }
 
+func TestCompanyByCIK_FallsBackToPeriodicIdentity(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+	// A periodic-only filer (e.g. a SPAC): on the Risk Radar from its 10-K, but
+	// absent from the ticker file and with no classified 8-K filings. Identity
+	// must still resolve from periodic_filings rather than 404.
+	_, err := raw.Exec(
+		`INSERT INTO periodic_filings
+			(accession_number, cik, company_name, form, filed_at, period_of_report,
+			 fiscal_year, parsed, block_count, ingested_at)
+		 VALUES ('0000000777-26-000001', '0000000777', 'Cactus Acquisition Corp. 1 Ltd',
+			 '10-K', '2026-07-29', '2025-12-31', 2025, 1, 0, 't')`,
+	)
+	if err != nil {
+		t.Fatalf("insert periodic_filing: %v", err)
+	}
+	_ = raw.Close()
+	s := openStore(t, dbPath)
+
+	company, filings, total, err := s.CompanyByCIK(context.Background(), "0000000777", 50, 0)
+	if err != nil {
+		t.Fatalf("CompanyByCIK: %v", err)
+	}
+	if company.CompanyName != "Cactus Acquisition Corp. 1 Ltd" {
+		t.Errorf("company name = %q, want the as-filed periodic name", company.CompanyName)
+	}
+	if total != 0 || len(filings) != 0 {
+		t.Errorf("total/filings = %d/%d, want 0/0 (no classified 8-K events)", total, len(filings))
+	}
+}
+
 func TestCompanyByCIK_UnknownCIKReturnsErrNotFound(t *testing.T) {
 	dbPath, raw := freshDBPath(t)
 	_ = raw.Close()

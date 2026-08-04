@@ -184,13 +184,31 @@ func disclosureDirectionLabel(direction string) string {
 	}
 }
 
+// labelAcronyms are slug words that must be upper-cased in display labels rather
+// than sentence-cased (e.g. "ai" -> "AI", not "Ai").
+var labelAcronyms = map[string]string{
+	"ai": "AI", "esg": "ESG", "ip": "IP", "it": "IT", "sec": "SEC",
+	"ghg": "GHG", "reit": "REIT", "us": "US", "eu": "EU", "uk": "UK",
+}
+
 // disclosureThemeLabel humanizes a common-mode catalog theme slug for display, e.g.
-// "tariffs_trade_policy" -> "Tariffs trade policy". Empty falls back to "Other".
+// "tariffs_trade_policy" -> "Tariffs trade policy", upper-casing known acronyms
+// wherever they appear ("ai_cybersecurity_escalation" -> "AI cybersecurity
+// escalation"). Empty falls back to "Other".
 func disclosureThemeLabel(theme string) string {
 	if theme == "" {
 		return "Other"
 	}
-	return strings.ToUpper(theme[:1]) + strings.ReplaceAll(theme[1:], "_", " ")
+	words := strings.Split(theme, "_")
+	for i, w := range words {
+		switch {
+		case labelAcronyms[w] != "":
+			words[i] = labelAcronyms[w]
+		case i == 0 && w != "":
+			words[i] = strings.ToUpper(w[:1]) + w[1:]
+		}
+	}
+	return strings.Join(words, " ")
 }
 
 // riskShiftLabel composes the filing-level headline from its two axes — e.g.

@@ -182,6 +182,7 @@ func TestCompanyPageRendersDisclosureChanges(t *testing.T) {
 		"/filings/0009999999-26-000001",                   // link to the realizing 8-K
 		"Also disclosed",                                  // collapsed common-mode summary
 		"Tariffs trade policy",                            // themeLabel(tariffs_trade_policy)
+		"Generic tariff exposure.",                        // common-mode card leads with the analysis too
 		"0001234567-26-000010-index.htm",                  // EDGAR citation link
 	} {
 		if !strings.Contains(body, want) {

@@ -102,6 +102,18 @@
     text-transform: none;
   }
   .reasoning { font-size: 0.95rem; line-height: 1.5; }
+  /* Risk Radar card: lead with the analysis, back it with a muted filing excerpt. */
+  .change-summary { font-size: 1.05rem; line-height: 1.55; margin-bottom: 0.4rem; }
+  .change-excerpt {
+    font-size: 0.85rem;
+    line-height: 1.5;
+    color: var(--pico-muted-color);
+    border-left: 2px solid var(--pico-muted-border-color);
+    padding-left: 0.75rem;
+    margin: 0.4rem 0 0;
+  }
+  .change-excerpt::before { content: "\201C"; }
+  .change-excerpt::after { content: "\201D"; }
   /* Section header with a back-link (e.g. the company page's Risk Radar section). */
   .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
   .section-head h3 { margin-bottom: 0.25rem; }

@@ -214,6 +214,9 @@ func TestCompanyDisclosureChangesBuckets(t *testing.T) {
 	if len(g.SpecificChanges) != 1 || g.SpecificChanges[0].Explanation != "Lost a top customer." {
 		t.Errorf("SpecificChanges = %+v", g.SpecificChanges)
 	}
+	if g.SpecificChanges[0].Excerpt != "body" {
+		t.Errorf("SpecificChanges[0].Excerpt = %q, want the block_text quote", g.SpecificChanges[0].Excerpt)
+	}
 	if len(g.EasedChanges) != 1 || g.EasedChanges[0].ChangeType != "dropped" {
 		t.Errorf("EasedChanges = %+v, want one dropped change", g.EasedChanges)
 	}

@@ -94,8 +94,8 @@
                   {{if .Realized}}<span class="badge materialized">Materialized</span>{{end}}
                   {{if .NeedsReview}}<span class="badge review">needs review</span>{{end}}
                 </div>
-                {{if .Heading}}<h5>{{.Heading}}</h5>{{end}}
-                <p class="reasoning">{{.Explanation}}</p>
+                <p class="change-summary">{{.Explanation}}</p>
+                {{if .Excerpt}}<p class="change-excerpt">{{.Excerpt}}</p>{{end}}
                 {{template "materialized" .}}
               </article>
             {{end}}
@@ -109,8 +109,8 @@
                   <span class="badge">{{changeLabel .ChangeType}}</span>
                   {{if .Realized}}<span class="badge materialized">Materialized</span>{{end}}
                 </div>
-                {{if .Heading}}<h5>{{.Heading}}</h5>{{end}}
-                <p class="reasoning">{{.Explanation}}</p>
+                <p class="change-summary">{{.Explanation}}</p>
+                {{if .Excerpt}}<p class="change-excerpt">{{.Excerpt}}</p>{{end}}
                 {{template "materialized" .}}
               </article>
             {{end}}

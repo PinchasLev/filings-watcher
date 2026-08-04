@@ -3,6 +3,7 @@
 {{define "content"}}
 <section class="company-header">
   <h2>Risk Radar</h2>
+  {{if .Tracked}}<p class="risk-counts">Tracking {{.Tracked}} compan{{if eq .Tracked 1}}y{{else}}ies{{end}} &middot; {{.WithSpecific}} with company-specific changes</p>{{end}}
   <p class="reasoning">
     Companies whose <strong>10-K Risk Factors surfaced company-specific changes</strong> year over year, newest first. The common-mode boilerplate that the whole market discloses is filtered out. Open a company for the full detail. Not investment advice.
   </p>

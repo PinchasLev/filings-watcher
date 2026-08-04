@@ -18,6 +18,7 @@ import (
 // common-mode.
 type DisclosureChange struct {
 	Heading      string
+	Excerpt      string // short, clean quote from the risk-factor block_text, shown under the analysis
 	ChangeType   string // "added" | "changed" | "dropped"
 	Direction    string // "worse" | "eased" | "neutral"
 	Category     string
@@ -34,6 +35,22 @@ type DisclosureChange struct {
 	RealizingDate       string
 	RealizingAccession  string
 	RealizationEvidence string
+}
+
+// excerptFromBlock renders a short, clean quote from a risk-factor block for display
+// beneath the analysis. It collapses runs of whitespace and trims to ~200 chars on a
+// word boundary, appending an ellipsis when truncated.
+func excerptFromBlock(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	const max = 200
+	if len(s) <= max {
+		return s
+	}
+	cut := s[:max]
+	if i := strings.LastIndex(cut, " "); i > 0 {
+		cut = cut[:i]
+	}
+	return strings.TrimRight(cut, " ,;:") + "…"
 }
 
 // ThemeCount summarizes how many of a filing's common-mode changes matched a given
@@ -327,7 +344,8 @@ func (s *store) disclosureChangeEvidence(
 		       v.category, v.explanation, v.confidence, v.needs_review,
 		       cs.is_specific, cs.matched_theme,
 		       rr.is_realized, rr.realizing_accession, rr.realizing_event_type,
-		       rf.filing_date, rr.evidence
+		       rf.filing_date, rr.evidence,
+		       COALESCE(cur.block_text, pri.block_text)
 		  FROM block_change_verdicts v
 		  JOIN filing_diffs d
 		    ON d.accession_number = v.accession_number AND d.section = v.section
@@ -383,17 +401,20 @@ func (s *store) disclosureChangeEvidence(
 			needsReview                                                      int
 			isSpecific, isRealized                                           sql.NullInt64
 			realizingAcc, realizingEvent, realizingDate, realizationEvidence sql.NullString
+			blockText                                                        sql.NullString
 		)
 		if err := rows.Scan(
 			&acc, &curPeriod, &priorPeriod, &changeType, &direction, &similarity,
 			&heading, &category, &explanation, &confidence, &needsReview,
 			&isSpecific, &matchedTheme,
 			&isRealized, &realizingAcc, &realizingEvent, &realizingDate, &realizationEvidence,
+			&blockText,
 		); err != nil {
 			return nil, nil, fmt.Errorf("scan disclosure change: %w", err)
 		}
 		change := DisclosureChange{
 			Heading:      heading.String,
+			Excerpt:      excerptFromBlock(blockText.String),
 			ChangeType:   changeType,
 			Direction:    direction,
 			Category:     category,

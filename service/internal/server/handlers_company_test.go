@@ -135,6 +135,7 @@ func TestCompanyPageRendersDisclosureChanges(t *testing.T) {
 			Thesis:        "Risk profile deteriorated with a new going-concern disclosure.",
 			SpecificChanges: []store.DisclosureChange{{
 				Heading:             "Going concern doubt.",
+				Excerpt:             "The Company has substantial doubt about its ability to continue as a going concern.",
 				ChangeType:          "added",
 				Direction:           "worse",
 				Category:            "liquidity_going_concern",
@@ -173,10 +174,10 @@ func TestCompanyPageRendersDisclosureChanges(t *testing.T) {
 		"Company-specific changes",         // the highlighted bucket head
 		"company-specific",                 // the at-a-glance line
 		"New",                              // changeLabel("added")
-		"Going concern doubt.",             // specific change heading
-		"New going-concern risk disclosed", // explanation
-		"needs review",                     // review flag
-		"Materialized",                     // the declared->materialized state
+		"New going-concern risk disclosed", // explanation (the lead-in analysis)
+		"substantial doubt about its ability to continue", // filing excerpt backing the analysis
+		"needs review", // review flag
+		"Materialized", // the declared->materialized state
 		"The merger agreement realizes the flagged risk.", // realization evidence
 		"/filings/0009999999-26-000001",                   // link to the realizing 8-K
 		"Also disclosed",                                  // collapsed common-mode summary

@@ -193,6 +193,25 @@ func (s *store) RecentDisclosureChanges(
 	return out, total, nil
 }
 
+// RiskRadarCoverage returns the Risk Radar's coverage counts: the number of distinct
+// companies whose 10-K Risk Factors we have analyzed for year-over-year change
+// (tracked), and how many of those surfaced at least one company-specific change
+// (withSpecific). Both count distinct companies, so a company with several analyzed
+// 10-Ks is counted once. It frames the feed honestly — how much of the market we cover.
+func (s *store) RiskRadarCoverage(ctx context.Context) (tracked, withSpecific int, err error) {
+	const q = `
+		SELECT
+			COUNT(DISTINCT pf.cik),
+			COUNT(DISTINCT CASE WHEN ` + feedPredicate + ` THEN pf.cik END)
+		  FROM filing_change_synthesis s
+		  JOIN periodic_filings pf ON pf.accession_number = s.accession_number
+		 WHERE ` + latestSynthesisPredicate
+	if err := s.db.QueryRowContext(ctx, q).Scan(&tracked, &withSpecific); err != nil {
+		return 0, 0, fmt.Errorf("risk radar coverage: %w", err)
+	}
+	return tracked, withSpecific, nil
+}
+
 // attachTopSpecific fills each feed row with the captions of its top few company-specific
 // changes (highest-confidence first), so the feed reads as "what specifically moved".
 func (s *store) attachTopSpecific(ctx context.Context, rows []RiskRadarRow) error {

@@ -58,6 +58,9 @@ type fakeStore struct {
 	radarRows            []store.RiskRadarRow
 	radarTotal           int
 	radarErr             error
+	radarTracked         int
+	radarWithSpecific    int
+	radarCoverageErr     error
 	pageViewStats        store.PageViewStats
 	pageViewErr          error
 	loggedViews          atomic.Int32
@@ -187,6 +190,10 @@ func (f *fakeStore) RecentDisclosureChanges(
 	_ context.Context, _, _ int,
 ) ([]store.RiskRadarRow, int, error) {
 	return f.radarRows, f.radarTotal, f.radarErr
+}
+
+func (f *fakeStore) RiskRadarCoverage(_ context.Context) (int, int, error) {
+	return f.radarTracked, f.radarWithSpecific, f.radarCoverageErr
 }
 
 func (f *fakeStore) LogPageView(_ context.Context, _, _, _, _, _ string) error {

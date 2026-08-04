@@ -12,7 +12,9 @@ import (
 
 func TestRadarPageRendersFeed(t *testing.T) {
 	fake := &fakeStore{
-		radarTotal: 1,
+		radarTotal:        1,
+		radarTracked:      392,
+		radarWithSpecific: 118,
 		radarRows: []store.RiskRadarRow{{
 			CIK:           "0000000111",
 			CompanyName:   "Alpha Corporation",
@@ -36,6 +38,7 @@ func TestRadarPageRendersFeed(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		"Risk Radar",
+		"Tracking 392 companies", "118 with company-specific changes", // coverage line
 		"ALPH", "Alpha Corporation", // company identity
 		"/companies/0000000111#risk-radar", // deep-link to the section
 		"2 company-specific changes",       // the specific count

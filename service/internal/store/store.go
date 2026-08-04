@@ -142,6 +142,8 @@ type Store interface {
 	CompanyDisclosureChanges(ctx context.Context, cik string, limit int) ([]DisclosureChangeGroup, error)
 	// Risk Radar (/radar): cross-company feed of filings with company-specific changes.
 	RecentDisclosureChanges(ctx context.Context, limit, offset int) ([]RiskRadarRow, int, error)
+	// RiskRadarCoverage: distinct companies tracked and how many surfaced specific changes.
+	RiskRadarCoverage(ctx context.Context) (tracked, withSpecific int, err error)
 	// NotableInsiderActivity backs the /insiders feed: recent cluster buys.
 	NotableInsiderActivity(ctx context.Context, windowDays int, minValue float64, limit int) ([]InsiderCluster, error)
 	// Events layer (ADR 0027/0028). Each filing's current view is the wholesale

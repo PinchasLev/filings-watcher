@@ -26,6 +26,8 @@ var radarTemplate = template.Must(template.New("layout.html.tmpl").Funcs(templat
 type radarPageData struct {
 	Nav           string
 	FilteredTotal int
+	Tracked       int
+	WithSpecific  int
 	Rows          []store.RiskRadarRow
 	RangeStart    int
 	RangeEnd      int
@@ -43,10 +45,19 @@ func handleRadar(s storer) http.HandlerFunc {
 			return
 		}
 
+		// Coverage is a header stat; a failure here shouldn't take down the feed, so
+		// degrade to hiding the line (Tracked == 0) rather than 500ing.
+		tracked, withSpecific, err := s.RiskRadarCoverage(r.Context())
+		if err != nil {
+			tracked, withSpecific = 0, 0
+		}
+
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := radarTemplate.ExecuteTemplate(w, "layout.html.tmpl", radarPageData{
 			Nav:           "radar",
 			FilteredTotal: total,
+			Tracked:       tracked,
+			WithSpecific:  withSpecific,
 			Rows:          rows,
 			RangeStart:    pageRangeStart(offset, len(rows)),
 			RangeEnd:      pageRangeEnd(offset, len(rows)),

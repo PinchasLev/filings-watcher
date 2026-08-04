@@ -517,3 +517,32 @@ func TestMaterializationUsesLatestVerdict(t *testing.T) {
 		t.Error("Realized = true, want false (latest verdict is not-realized)")
 	}
 }
+
+// RiskRadarCoverage counts distinct tracked companies and how many surfaced a
+// company-specific change — the honest denominator for the /radar coverage line.
+func TestRiskRadarCoverage(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+	// Three analyzed companies: A surfaced a specific change, B is stable, C is
+	// common-mode only. All three are "tracked"; only A counts as with-specific.
+	insPeriodic(t, raw, "accA", "0000000001", "2025-12-31")
+	insPeriodic(t, raw, "accB", "0000000002", "2025-12-31")
+	insPeriodic(t, raw, "accC", "0000000003", "2025-12-31")
+	insSynthesis(t, raw, "accA", "worse", "moderate", 1, 1, 0, "A worsened.", "[]", "t1")
+	insSynthesis(t, raw, "accB", "stable", "none", 0, 0, 0, "B stable.", "[]", "t1")
+	insSynthesis(t, raw, "accC", "worse", "minor", 1, 1, 0, "C worsened.", "[]", "t1")
+	insSpecificity(t, raw, "accA", 0, true, "", "t2")                      // company-specific
+	insSpecificity(t, raw, "accC", 0, false, "tariffs_trade_policy", "t2") // common-mode only
+	_ = raw.Close()
+
+	s := openStore(t, dbPath)
+	tracked, withSpecific, err := s.RiskRadarCoverage(context.Background())
+	if err != nil {
+		t.Fatalf("RiskRadarCoverage: %v", err)
+	}
+	if tracked != 3 {
+		t.Errorf("tracked = %d, want 3 (all analyzed companies)", tracked)
+	}
+	if withSpecific != 1 {
+		t.Errorf("withSpecific = %d, want 1 (only accA surfaced a company-specific change)", withSpecific)
+	}
+}

@@ -21,13 +21,16 @@ filingsradar.com {
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Permissions-Policy "geolocation=(), microphone=(), camera=()"
 		Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';"
-		# Disable browser caching for the apex. The product is read-mostly
-		# with sub-minute freshness (ADR 0029); without an explicit
-		# Cache-Control header, browsers apply heuristic caching and
-		# users see stale renders even after a manual refresh. `no-store`
-		# is simpler than ETag/Last-Modified revalidation for a site of
-		# this scale and traffic.
-		Cache-Control "no-store"
+		# Keep the apex fresh without breaking the back button. The product
+		# is read-mostly with sub-minute freshness (ADR 0029), so we must
+		# avoid heuristic caching that shows stale renders after a refresh.
+		# `no-cache` forces the browser to revalidate on every normal
+		# navigation and refresh (no validator here means a full refetch, so
+		# always fresh) while — unlike `no-store` — still permitting the
+		# back/forward cache. `no-store` disables bfcache, which made the
+		# back button re-render from the top and lose the user's scroll
+		# position; `no-cache` restores instant, position-preserving back.
+		Cache-Control "no-cache"
 	}
 	handle /ops/* {
 		respond "Not Found" 404

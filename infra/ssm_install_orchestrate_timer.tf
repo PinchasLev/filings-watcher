@@ -1,6 +1,6 @@
-# SSM document that installs the periodic ingest under systemd: twelve
-# wrapper scripts, twelve timer-driven oneshot service units (plus an OnFailure
-# OOM-notify handler), twelve timers, and a shared classifier resource slice
+# SSM document that installs the periodic ingest under systemd: fifteen
+# wrapper scripts, fifteen timer-driven oneshot service units (plus an OnFailure
+# OOM-notify handler), fifteen timers, and a shared classifier resource slice
 # (ADR 0035) — the Atom feed (ADR 0029, near-real-time), the daily-index
 # reconciliation backstop (ADR 0021, evening cluster per ADR 0029), the classify
 # reconciler that heals orphaned filings (ADR 0030), the alarm drainer
@@ -11,9 +11,12 @@
 # falls behind (ADR 0041, its own dead-man's-switch on the reconciler), and the
 # change-detection pipeline (ADR 0042) — scan-periodic (10-K ingest, evening
 # cluster) feeding the embed-blocks, diff-filings, judge-changes, and synthesize-changes
-# reconcilers (the last turns material verdicts into Risk Radar cards, ADR 0043).
-# The operator runs this once per host (e.g., after the first deploy on a new
-# instance).
+# reconcilers (the last turns material verdicts into Risk Radar cards, ADR 0043) —
+# and the calibration + tracking reconcilers (ADR 0032): build-catalog (the
+# common-mode theme catalog, 12h), classify-specificity (specific vs boilerplate
+# per change, 20m), and track-realizations (declared -> materialized via subsequent
+# 8-K/6-K, 30m). The operator runs this once per host (e.g., after the first deploy
+# on a new instance).
 #
 # Why an SSM document rather than user_data: both timers depend on the
 # orchestrator release tree being present on disk
@@ -81,7 +84,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
 
   content = jsonencode({
     schemaVersion = "2.2"
-    description   = "Install + enable the systemd timers for scan-atom-feed (30s), scan-daily-index (evening cluster), reclassify-orphans (20m reconciler), alarm-drain (2m alert delivery), host-heartbeat (5m dead-man's-switch), scan-form4 (evening insider ingest), check-ingest-freshness (1h cursor-staleness alarm), and the change-detection pipeline (scan-periodic evening + embed-blocks/diff-filings/judge-changes/synthesize-changes reconcilers, ADR 0042/0043)"
+    description   = "Install + enable the systemd timers for scan-atom-feed (30s), scan-daily-index (evening cluster), reclassify-orphans (20m reconciler), alarm-drain (2m alert delivery), host-heartbeat (5m dead-man's-switch), scan-form4 (evening insider ingest), check-ingest-freshness (1h cursor-staleness alarm), the change-detection pipeline (scan-periodic evening + embed-blocks/diff-filings/judge-changes/synthesize-changes reconcilers, ADR 0042/0043), and the calibration + tracking reconcilers (build-catalog 12h, classify-specificity 20m, track-realizations 30m, ADR 0032)"
     mainSteps = [{
       action = "aws:runShellScript"
       name   = "install"
@@ -419,6 +422,82 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "TICK_EOF",
           "chmod 0755 /usr/local/bin/filings-synthesize-changes-tick",
           "chown root:root /usr/local/bin/filings-synthesize-changes-tick",
+          # --- Calibration + tracking wrappers (ADR 0032, Phase 2b) ---
+          # build-catalog: the calibration corpus-reduce — one Sonnet call per run that
+          # names the common-mode boilerplate themes across the cohort and stores a
+          # content-addressed, versioned catalog. Idempotent (unchanged themes => same
+          # catalog_version, writes nothing). Same env shape as judge/synthesize —
+          # LLM-bearing + cost-capped, load_config requires Anthropic + LangSmith + EDGAR.
+          "cat > /usr/local/bin/filings-build-catalog-tick <<'TICK_EOF'",
+          "#!/bin/bash",
+          "set -euo pipefail",
+          "ANTHROPIC_API_KEY=$(aws ssm get-parameter --name /filings-watcher/anthropic-api-key --with-decryption --query Parameter.Value --output text --region ${var.aws_region})",
+          "LANGSMITH_API_KEY=$(aws ssm get-parameter --name /filings-watcher/langsmith-api-key --with-decryption --query Parameter.Value --output text --region ${var.aws_region})",
+          "EDGAR_USER_AGENT=$(aws ssm get-parameter --name /filings-watcher/edgar-user-agent --with-decryption --query Parameter.Value --output text --region ${var.aws_region})",
+          "export ANTHROPIC_API_KEY LANGSMITH_API_KEY EDGAR_USER_AGENT",
+          "export FILINGS_DB_PATH=/var/lib/filings-watcher/filings.db",
+          "export ANTHROPIC_DAILY_COST_CAP_USD=5.00",
+          "export ANTHROPIC_DAILY_COST_WARN_USD=4.00",
+          "RELEASE_SHA=$(basename $(readlink -f /opt/filings-watcher/current))",
+          "export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317",
+          "export OTEL_EXPORTER_OTLP_PROTOCOL=grpc",
+          "export OTEL_SERVICE_NAME=filings-orchestrator",
+          "export OTEL_RESOURCE_ATTRIBUTES=service.namespace=filings-watcher,service.version=$RELEASE_SHA",
+          "export OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental",
+          "export TRACELOOP_TRACE_CONTENT=false",
+          "cd /opt/filings-watcher/current/orchestrator",
+          "exec /home/filings/.local/bin/uv run --no-sync build-catalog",
+          "TICK_EOF",
+          "chmod 0755 /usr/local/bin/filings-build-catalog-tick",
+          "chown root:root /usr/local/bin/filings-build-catalog-tick",
+          # classify-specificity: per-change reconciler that classifies each material change
+          # specific-vs-common-mode against the current catalog. LLM-bearing + cost-capped.
+          "cat > /usr/local/bin/filings-classify-specificity-tick <<'TICK_EOF'",
+          "#!/bin/bash",
+          "set -euo pipefail",
+          "ANTHROPIC_API_KEY=$(aws ssm get-parameter --name /filings-watcher/anthropic-api-key --with-decryption --query Parameter.Value --output text --region ${var.aws_region})",
+          "LANGSMITH_API_KEY=$(aws ssm get-parameter --name /filings-watcher/langsmith-api-key --with-decryption --query Parameter.Value --output text --region ${var.aws_region})",
+          "EDGAR_USER_AGENT=$(aws ssm get-parameter --name /filings-watcher/edgar-user-agent --with-decryption --query Parameter.Value --output text --region ${var.aws_region})",
+          "export ANTHROPIC_API_KEY LANGSMITH_API_KEY EDGAR_USER_AGENT",
+          "export FILINGS_DB_PATH=/var/lib/filings-watcher/filings.db",
+          "export ANTHROPIC_DAILY_COST_CAP_USD=5.00",
+          "export ANTHROPIC_DAILY_COST_WARN_USD=4.00",
+          "RELEASE_SHA=$(basename $(readlink -f /opt/filings-watcher/current))",
+          "export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317",
+          "export OTEL_EXPORTER_OTLP_PROTOCOL=grpc",
+          "export OTEL_SERVICE_NAME=filings-orchestrator",
+          "export OTEL_RESOURCE_ATTRIBUTES=service.namespace=filings-watcher,service.version=$RELEASE_SHA",
+          "export OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental",
+          "export TRACELOOP_TRACE_CONTENT=false",
+          "cd /opt/filings-watcher/current/orchestrator",
+          "exec /home/filings/.local/bin/uv run --no-sync classify-specificity",
+          "TICK_EOF",
+          "chmod 0755 /usr/local/bin/filings-classify-specificity-tick",
+          "chown root:root /usr/local/bin/filings-classify-specificity-tick",
+          # track-realizations: per-specific-risk reconciler that checks whether a flagged
+          # risk materialized in a subsequent 8-K/6-K (Sonnet). LLM-bearing + cost-capped.
+          "cat > /usr/local/bin/filings-track-realizations-tick <<'TICK_EOF'",
+          "#!/bin/bash",
+          "set -euo pipefail",
+          "ANTHROPIC_API_KEY=$(aws ssm get-parameter --name /filings-watcher/anthropic-api-key --with-decryption --query Parameter.Value --output text --region ${var.aws_region})",
+          "LANGSMITH_API_KEY=$(aws ssm get-parameter --name /filings-watcher/langsmith-api-key --with-decryption --query Parameter.Value --output text --region ${var.aws_region})",
+          "EDGAR_USER_AGENT=$(aws ssm get-parameter --name /filings-watcher/edgar-user-agent --with-decryption --query Parameter.Value --output text --region ${var.aws_region})",
+          "export ANTHROPIC_API_KEY LANGSMITH_API_KEY EDGAR_USER_AGENT",
+          "export FILINGS_DB_PATH=/var/lib/filings-watcher/filings.db",
+          "export ANTHROPIC_DAILY_COST_CAP_USD=5.00",
+          "export ANTHROPIC_DAILY_COST_WARN_USD=4.00",
+          "RELEASE_SHA=$(basename $(readlink -f /opt/filings-watcher/current))",
+          "export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317",
+          "export OTEL_EXPORTER_OTLP_PROTOCOL=grpc",
+          "export OTEL_SERVICE_NAME=filings-orchestrator",
+          "export OTEL_RESOURCE_ATTRIBUTES=service.namespace=filings-watcher,service.version=$RELEASE_SHA",
+          "export OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental",
+          "export TRACELOOP_TRACE_CONTENT=false",
+          "cd /opt/filings-watcher/current/orchestrator",
+          "exec /home/filings/.local/bin/uv run --no-sync track-realizations",
+          "TICK_EOF",
+          "chmod 0755 /usr/local/bin/filings-track-realizations-tick",
+          "chown root:root /usr/local/bin/filings-track-realizations-tick",
           "install -d -o filings -g filings -m 0755 /var/lib/filings-watcher",
           # --- Classifier resource slice (memory isolation, ADR 0035) ---
           # All Anthropic-classifying ticks (daily-index, atom-feed, reclassify-
@@ -885,6 +964,118 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "[Install]",
           "WantedBy=timers.target",
           "TIMER_EOF",
+          # --- Calibration + tracking services + timers (ADR 0032, Phase 2b) ---
+          # build-catalog: whole-corpus reduce, one Sonnet call per run and idempotent, so
+          # a long 12h cadence keeps the catalog current without churning catalog_version
+          # (a new version forces a full re-classification wave). In the slice with the OOM
+          # handler. Boot arm +8min — after judge (+6) so the corpus reflects the day's changes.
+          "cat > /etc/systemd/system/filings-build-catalog.service <<'SERVICE_EOF'",
+          "[Unit]",
+          "Description=filings-watcher common-mode catalog build (calibration corpus reduce, ADR 0032)",
+          "Documentation=https://github.com/PinchasLev/filings-watcher",
+          "After=network-online.target",
+          "Wants=network-online.target",
+          "OnFailure=filings-oom-notify@%n.service",
+          "",
+          "[Service]",
+          "Type=oneshot",
+          "User=filings",
+          "Group=filings",
+          "TimeoutStartSec=12m",
+          "ExecStart=/usr/bin/flock -n --conflict-exit-code=0 /var/lib/filings-watcher/build-catalog.lock /usr/local/bin/filings-build-catalog-tick",
+          "StandardOutput=journal",
+          "StandardError=journal",
+          "SyslogIdentifier=filings-build-catalog",
+          "Slice=filings-classify.slice",
+          "NoNewPrivileges=true",
+          "PrivateTmp=true",
+          "SERVICE_EOF",
+          "cat > /etc/systemd/system/filings-build-catalog.timer <<'TIMER_EOF'",
+          "[Unit]",
+          "Description=Periodic common-mode catalog build (calibration, ADR 0032)",
+          "Documentation=https://github.com/PinchasLev/filings-watcher",
+          "",
+          "[Timer]",
+          "Unit=filings-build-catalog.service",
+          "OnUnitInactiveSec=12h",
+          "OnBootSec=8min",
+          "",
+          "[Install]",
+          "WantedBy=timers.target",
+          "TIMER_EOF",
+          # classify-specificity: per-change reconciler, LLM-bearing + cost-capped like judge;
+          # 20min cadence mirrors the judge it follows. In the slice with the OOM handler.
+          "cat > /etc/systemd/system/filings-classify-specificity.service <<'SERVICE_EOF'",
+          "[Unit]",
+          "Description=filings-watcher specificity classifier (specific vs common-mode, ADR 0032)",
+          "Documentation=https://github.com/PinchasLev/filings-watcher",
+          "After=network-online.target",
+          "Wants=network-online.target",
+          "OnFailure=filings-oom-notify@%n.service",
+          "",
+          "[Service]",
+          "Type=oneshot",
+          "User=filings",
+          "Group=filings",
+          "TimeoutStartSec=12m",
+          "ExecStart=/usr/bin/flock -n --conflict-exit-code=0 /var/lib/filings-watcher/classify-specificity.lock /usr/local/bin/filings-classify-specificity-tick",
+          "StandardOutput=journal",
+          "StandardError=journal",
+          "SyslogIdentifier=filings-classify-specificity",
+          "Slice=filings-classify.slice",
+          "NoNewPrivileges=true",
+          "PrivateTmp=true",
+          "SERVICE_EOF",
+          "cat > /etc/systemd/system/filings-classify-specificity.timer <<'TIMER_EOF'",
+          "[Unit]",
+          "Description=Periodic specificity-classification reconciler (calibration, ADR 0032)",
+          "Documentation=https://github.com/PinchasLev/filings-watcher",
+          "",
+          "[Timer]",
+          "Unit=filings-classify-specificity.service",
+          "OnUnitInactiveSec=20min",
+          "OnBootSec=9min",
+          "",
+          "[Install]",
+          "WantedBy=timers.target",
+          "TIMER_EOF",
+          # track-realizations: per-specific-risk reconciler, LLM-bearing (Sonnet) + cost-
+          # capped. 30min cadence — a risk re-check is less urgent than fresh classification.
+          # In the slice with the OOM handler.
+          "cat > /etc/systemd/system/filings-track-realizations.service <<'SERVICE_EOF'",
+          "[Unit]",
+          "Description=filings-watcher risk-materialization tracker (Phase 2b)",
+          "Documentation=https://github.com/PinchasLev/filings-watcher",
+          "After=network-online.target",
+          "Wants=network-online.target",
+          "OnFailure=filings-oom-notify@%n.service",
+          "",
+          "[Service]",
+          "Type=oneshot",
+          "User=filings",
+          "Group=filings",
+          "TimeoutStartSec=12m",
+          "ExecStart=/usr/bin/flock -n --conflict-exit-code=0 /var/lib/filings-watcher/track-realizations.lock /usr/local/bin/filings-track-realizations-tick",
+          "StandardOutput=journal",
+          "StandardError=journal",
+          "SyslogIdentifier=filings-track-realizations",
+          "Slice=filings-classify.slice",
+          "NoNewPrivileges=true",
+          "PrivateTmp=true",
+          "SERVICE_EOF",
+          "cat > /etc/systemd/system/filings-track-realizations.timer <<'TIMER_EOF'",
+          "[Unit]",
+          "Description=Periodic risk-materialization tracker (Phase 2b)",
+          "Documentation=https://github.com/PinchasLev/filings-watcher",
+          "",
+          "[Timer]",
+          "Unit=filings-track-realizations.service",
+          "OnUnitInactiveSec=30min",
+          "OnBootSec=10min",
+          "",
+          "[Install]",
+          "WantedBy=timers.target",
+          "TIMER_EOF",
           # --- Classifier OOM-kill notifier (OnFailure handler unit, ADR 0035) ---
           # Templated, started by OnFailure= on the three classifier services. NOT
           # enabled or timed — instantiated only when a classifier tick fails. %i is
@@ -918,6 +1109,9 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "systemctl enable filings-diff-filings.timer",
           "systemctl enable filings-judge-changes.timer",
           "systemctl enable filings-synthesize-changes.timer",
+          "systemctl enable filings-build-catalog.timer",
+          "systemctl enable filings-classify-specificity.timer",
+          "systemctl enable filings-track-realizations.timer",
           # Fire one Atom invocation now so OnUnitInactiveSec has a
           # reference timestamp; subsequent invocations are scheduled 30
           # seconds after each one exits. systemctl start --no-block
@@ -950,6 +1144,11 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "systemctl start --no-block filings-diff-filings.service",
           "systemctl start --no-block filings-judge-changes.service",
           "systemctl start --no-block filings-synthesize-changes.service",
+          # Prime the calibration + tracking reconcilers so OnUnitInactiveSec has a reference
+          # timestamp; on an up-to-date corpus they find no work and exit at once.
+          "systemctl start --no-block filings-build-catalog.service",
+          "systemctl start --no-block filings-classify-specificity.service",
+          "systemctl start --no-block filings-track-realizations.service",
           "systemctl start filings-daily-index.timer",
           "systemctl start filings-atom-feed.timer",
           "systemctl start filings-reclassify-orphans.timer",
@@ -963,6 +1162,9 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "systemctl start filings-diff-filings.timer",
           "systemctl start filings-judge-changes.timer",
           "systemctl start filings-synthesize-changes.timer",
+          "systemctl start filings-build-catalog.timer",
+          "systemctl start filings-classify-specificity.timer",
+          "systemctl start filings-track-realizations.timer",
           "systemctl status --no-pager filings-daily-index.timer || true",
           "systemctl status --no-pager filings-atom-feed.timer || true",
           "systemctl status --no-pager filings-reclassify-orphans.timer || true",
@@ -975,7 +1177,10 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "systemctl status --no-pager filings-diff-filings.timer || true",
           "systemctl status --no-pager filings-judge-changes.timer || true",
           "systemctl status --no-pager filings-synthesize-changes.timer || true",
-          "echo \"install + enable complete: daily-index, atom-feed, reclassify-orphans, alarm-drain, host-heartbeat, scan-form4, check-ingest-freshness, and the change-detection pipeline (scan-periodic, embed-blocks, diff-filings, judge-changes, synthesize-changes)\"",
+          "systemctl status --no-pager filings-build-catalog.timer || true",
+          "systemctl status --no-pager filings-classify-specificity.timer || true",
+          "systemctl status --no-pager filings-track-realizations.timer || true",
+          "echo \"install + enable complete: daily-index, atom-feed, reclassify-orphans, alarm-drain, host-heartbeat, scan-form4, check-ingest-freshness, the change-detection pipeline (scan-periodic, embed-blocks, diff-filings, judge-changes, synthesize-changes), and the calibration + tracking reconcilers (build-catalog, classify-specificity, track-realizations)\"",
         ]
       }
     }]

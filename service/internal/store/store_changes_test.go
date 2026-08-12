@@ -460,7 +460,7 @@ func TestCompanyDisclosureChangesSurfacesMaterialization(t *testing.T) {
 	insPeriodic(t, raw, "current", cik, "2025-12-31")
 	insBlock(t, raw, "current", 0, "Merger risk.")
 	insDiff(t, raw, "current", "prior")
-	insChange(t, raw, "current", 0, "changed", 0, 0, "prior", 0.9)
+	insChange(t, raw, "current", 0, "added", 0, nil, "prior", 0.9)
 	insVerdict(t, raw, "current", 0, "jv1", true, "ma_activity", "Norfolk Southern merger risk.", false, "t1")
 	insSpecificity(t, raw, "current", 0, true, "", "t2")
 	// the realizing 8-K + the realization verdict
@@ -496,7 +496,7 @@ func TestMaterializationUsesLatestVerdict(t *testing.T) {
 	insPeriodic(t, raw, "current", cik, "2025-12-31")
 	insBlock(t, raw, "current", 0, "A risk.")
 	insDiff(t, raw, "current", "prior")
-	insChange(t, raw, "current", 0, "changed", 0, 0, "prior", 0.9)
+	insChange(t, raw, "current", 0, "added", 0, nil, "prior", 0.9)
 	insVerdict(t, raw, "current", 0, "jv1", true, "ma_activity", "A specific risk.", false, "t1")
 	insSpecificity(t, raw, "current", 0, true, "", "t2")
 	insFiling(t, raw, "eightk", cik, "8-K", "2026-05-01")
@@ -515,6 +515,37 @@ func TestMaterializationUsesLatestVerdict(t *testing.T) {
 	}
 	if groups[0].SpecificChanges[0].Realized {
 		t.Error("Realized = true, want false (latest verdict is not-realized)")
+	}
+}
+
+// A realized verdict on a "changed" (edited standing) factor is intentionally NOT surfaced
+// as materialized — only brand-new "added" factors are trusted until the realization judge
+// anchors on the change rather than the standing text. The change still renders as declared.
+func TestMaterializationSuppressedForChangedFactor(t *testing.T) {
+	dbPath, raw := freshDBPath(t)
+	const cik = "0000000123"
+	insPeriodic(t, raw, "prior", cik, "2024-12-31")
+	insBlock(t, raw, "prior", 0, "A standing risk.")
+	insPeriodic(t, raw, "current", cik, "2025-12-31")
+	insBlock(t, raw, "current", 0, "A standing risk, lightly edited.")
+	insDiff(t, raw, "current", "prior")
+	insChange(t, raw, "current", 0, "changed", 0, 0, "prior", 0.9)
+	insVerdict(t, raw, "current", 0, "jv1", true, "ma_activity", "A specific risk.", false, "t1")
+	insSpecificity(t, raw, "current", 0, true, "", "t2")
+	insFiling(t, raw, "eightk", cik, "8-K", "2026-05-01")
+	insRealization(t, raw, "current", 0, "rv1", true, "eightk", "ma_activity", "realizes it", "t3")
+	_ = raw.Close()
+
+	s := openStore(t, dbPath)
+	groups, err := s.CompanyDisclosureChanges(context.Background(), cik, 40)
+	if err != nil {
+		t.Fatalf("CompanyDisclosureChanges: %v", err)
+	}
+	if len(groups) != 1 || len(groups[0].SpecificChanges) != 1 {
+		t.Fatalf("groups/specific = %+v", groups)
+	}
+	if groups[0].SpecificChanges[0].Realized {
+		t.Error("Realized = true, want false (materialization suppressed for a changed factor)")
 	}
 }
 

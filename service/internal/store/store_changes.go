@@ -449,7 +449,14 @@ func (s *store) disclosureChangeEvidence(
 			b := isSpecific.Int64 != 0
 			change.IsSpecific = &b
 		}
-		if isRealized.Valid && isRealized.Int64 != 0 {
+		// Surface the declared -> materialized state only for changes that ADDED a
+		// brand-new risk factor this year. Materializations tied to a "changed" (edited
+		// standing) factor are suppressed for now: the realization judge can match a
+		// salient 8-K to a factor's standing language while the year-over-year change is
+		// trivial, overstating the newness (see ADR 0032 follow-up). Showing only the
+		// genuinely-new tier keeps the surfaced claims trustworthy until the judge is
+		// refined to anchor on the change itself. The change still renders as declared.
+		if isRealized.Valid && isRealized.Int64 != 0 && changeType == "added" {
 			change.Realized = true
 			change.RealizingAccession = realizingAcc.String
 			change.RealizingEventType = realizingEvent.String

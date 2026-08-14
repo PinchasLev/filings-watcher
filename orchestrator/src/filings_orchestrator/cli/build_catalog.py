@@ -8,9 +8,12 @@ this catalog so a company's idiosyncratic changes surface (the common-mode noise
 discounted).
 
 Unlike the per-filing reconcilers (judge, synthesize), this is a whole-corpus reduce run
-on a cadence, not per-filing: one Sonnet call per invocation. It is idempotent — a re-run
-whose extracted themes are unchanged produces the same catalog_version and writes nothing
-new; drifted output is a new cut, leaving prior cuts intact.
+on a cadence, not per-filing: one Sonnet call per invocation. Each run is SEEDED with the
+current catalog and asked to evolve it — keep still-relevant themes verbatim, add only
+genuinely-new themes, drop obsolete ones — so it is idempotent: an unchanged catalog comes
+back with the same slugs/archetypes and thus the same content-addressed catalog_version and
+writes nothing new (no downstream re-classification). A real drift is a new cut, leaving
+prior cuts intact.
 
 LLM-bearing, so it is cost-capped like the judge (ADR 0029): the tick refuses new work once
 the daily Anthropic spend reaches the cap. Output is JSON-line events to stdout.
@@ -49,6 +52,8 @@ from filings_orchestrator.persistence import open_engine
 from filings_orchestrator.persistence.repository import (
     daily_cost_usd,
     insert_disclosure_catalog,
+    latest_catalog_version,
+    load_catalog_themes,
     load_material_change_digest,
 )
 
@@ -88,8 +93,22 @@ def build_catalog_pass(
             budget_chars=_MAX_DIGEST_CHARS,
         )
 
+    # Seed the reduce with the current catalog so unchanged themes carry forward verbatim
+    # (stable catalog_version, no downstream re-classification churn). Empty on first build.
+    current_ver = latest_catalog_version(engine)
+    current_themes = (
+        [(t.theme_slug, t.archetype) for t in load_catalog_themes(engine, current_ver)]
+        if current_ver
+        else []
+    )
     catalog = with_retries(
-        partial(extract_catalog, model, digest=digest, model_name=model_name),
+        partial(
+            extract_catalog,
+            model,
+            digest=digest,
+            model_name=model_name,
+            current_themes=current_themes,
+        ),
         log_context={"stage": "catalog", "corpus_label": corpus_label},
     )
     themes = canonical_themes(catalog.themes)

@@ -130,15 +130,34 @@ def test_extractor_version_stable_and_names_model() -> None:
     assert v.startswith("claude-x+catalog-")
 
 
-def test_catalog_version_changes_with_content_only() -> None:
+def test_catalog_version_tracks_themes_not_prevalence() -> None:
+    # A real content change (archetype) yields a new version.
     a = _catalog(("tariffs", "a", 1)).themes
-    b = _catalog(("tariffs", "a", 2)).themes  # different prevalence -> different content
+    b = _catalog(("tariffs", "b", 1)).themes
     assert catalog_version(a, "m") != catalog_version(b, "m")
+    # Prevalence is soft metadata, NOT identity: same slug+archetype, different count -> SAME
+    # version (so a cosmetic count wobble does not churn the catalog / re-classify downstream).
+    p1 = _catalog(("tariffs", "a", 1)).themes
+    p2 = _catalog(("tariffs", "a", 99)).themes
+    assert catalog_version(p1, "m") == catalog_version(p2, "m")
     # order-independent: same content in a different order is the SAME version
     reordered = _catalog(("rates", "r", 1), ("tariffs", "t", 1)).themes
     forward = _catalog(("tariffs", "t", 1), ("rates", "r", 1)).themes
     assert catalog_version(reordered, "m") == catalog_version(forward, "m")
     assert catalog_content_hash(reordered) == catalog_content_hash(forward)
+
+
+def test_extract_seeds_current_catalog_for_verbatim_carry_forward() -> None:
+    model = _FakeCatalogModel(_catalog(("tariffs_trade_policy", "Tariffs raise costs.", 40)))
+    extract_catalog(
+        model,
+        digest="ACME | tariffs | x",
+        model_name="m",
+        current_themes=[("debt_leverage_refinancing", "Higher rates raise refinancing risk.")],
+    )
+    assert model.last_user is not None
+    assert "EXISTING CATALOG" in model.last_user
+    assert "debt_leverage_refinancing" in model.last_user
 
 
 # --- persistence: digest, cut, idempotency, latest ---

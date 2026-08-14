@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Sequence
 from typing import Any
 
 from langchain_anthropic import ChatAnthropic
@@ -123,8 +124,14 @@ _SYSTEM_PROMPT = (
     "For each common-mode theme provide: a short snake_case slug; one archetype sentence "
     "stating the generic, boilerplate form of the theme as companies typically express it "
     "(naming no company); and an estimate of how many companies in the digest flag it. Prefer "
-    "a dozen or two well-separated themes over a long, redundant list. Submit the catalog with "
-    "the tool, exactly once."
+    "a dozen or two well-separated themes over a long, redundant list.\n\n"
+    "You may be shown the EXISTING catalog from the prior run. Treat it as the stable baseline: "
+    "reuse every still-relevant theme EXACTLY — its existing slug and archetype VERBATIM, without "
+    "re-wording, re-slugging, or reordering. ADD a theme only when the digest shows a genuinely "
+    "new common-mode theme not already covered by an existing one; DROP a theme only when the "
+    "digest no longer supports it. When the underlying themes have not changed, the catalog must "
+    "come back identical — cosmetically rewording an unchanged theme is exactly what to avoid.\n\n"
+    "Submit the catalog with the tool, exactly once."
 )
 
 
@@ -148,11 +155,14 @@ def canonical_themes(themes: list[CatalogTheme]) -> list[CatalogTheme]:
 
 
 def catalog_content_hash(themes: list[CatalogTheme]) -> str:
-    """sha256 over the canonical (slug, archetype, prevalence) tuples — the catalog's
-    content fingerprint, order-independent via canonical_themes."""
+    """sha256 over the canonical (slug, archetype) pairs — the catalog's content fingerprint,
+    order-independent via canonical_themes. Prevalence is deliberately EXCLUDED: it is a soft
+    per-run model estimate that wobbles between runs, so folding it into the identity would
+    mint a new catalog_version (and force a full re-classification wave downstream) on a purely
+    cosmetic count change. A catalog's identity is its theme SET and each theme's meaning."""
     canon = canonical_themes(themes)
     payload = json.dumps(
-        [[t.theme_slug, t.archetype, t.prevalence] for t in canon],
+        [[t.theme_slug, t.archetype] for t in canon],
         ensure_ascii=False,
         separators=(",", ":"),
     )
@@ -176,22 +186,39 @@ def build_catalog_extractor(model_name: str = DEFAULT_CATALOG_MODEL) -> Any:
     return model.bind_tools([tool_spec], tool_choice={"type": "tool", "name": "submit_catalog"})
 
 
-def _build_user_prompt(digest: str) -> str:
+def _build_user_prompt(digest: str, current_themes: Sequence[tuple[str, str]] = ()) -> str:
+    existing = ""
+    if current_themes:
+        listing = "\n".join(f"- {slug}: {archetype}" for slug, archetype in current_themes)
+        existing = (
+            "EXISTING CATALOG (from the prior run — preserve each still-relevant theme "
+            "VERBATIM, same slug and archetype):\n"
+            f"{listing}\n\n"
+        )
     return (
-        "Below is a digest of this filing season's MATERIAL year-over-year risk-factor "
+        existing + "Below is a digest of this filing season's MATERIAL year-over-year risk-factor "
         "changes across many companies, one per line as `COMPANY | theme | explanation`.\n\n"
         f"{digest}\n\n"
-        "Name the recurring COMMON-MODE themes as instructed and submit the catalog."
+        "Update the catalog per the instructions — keep unchanged themes verbatim, add only "
+        "genuinely-new common-mode themes, drop only obsolete ones — and submit it."
     )
 
 
-def extract_catalog(model: Any, *, digest: str, model_name: str) -> DisclosureCatalog:
-    """Reduce the corpus digest into the common-mode theme catalog via the bound `model`.
-    Records the call for cost accounting even if parsing fails (it still cost tokens)."""
+def extract_catalog(
+    model: Any,
+    *,
+    digest: str,
+    model_name: str,
+    current_themes: Sequence[tuple[str, str]] = (),
+) -> DisclosureCatalog:
+    """Reduce the corpus digest into the common-mode theme catalog via the bound `model`,
+    seeding it with the current catalog so unchanged themes are carried forward verbatim
+    (stable identity, no downstream churn). Records the call for cost accounting even if
+    parsing fails (it still cost tokens)."""
     system_blocks: list[str | dict[Any, Any]] = [
         {"type": "text", "text": _SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
     ]
-    user = _build_user_prompt(digest)
+    user = _build_user_prompt(digest, current_themes)
     response = model.invoke([SystemMessage(content=system_blocks), HumanMessage(content=user)])
     emit_llm_call(model=model_name, stage="catalog", response=response)
     tool_calls = getattr(response, "tool_calls", None) or []

@@ -13,7 +13,7 @@
 # cluster) feeding the embed-blocks, diff-filings, judge-changes, and synthesize-changes
 # reconcilers (the last turns material verdicts into Risk Radar cards, ADR 0043) —
 # and the calibration + tracking reconcilers (ADR 0032): build-catalog (the
-# common-mode theme catalog, 12h), classify-specificity (specific vs boilerplate
+# common-mode theme catalog, 1w), classify-specificity (specific vs boilerplate
 # per change, 20m), and track-realizations (declared -> materialized via subsequent
 # 8-K/6-K, 30m). The operator runs this once per host (e.g., after the first deploy
 # on a new instance).
@@ -84,7 +84,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
 
   content = jsonencode({
     schemaVersion = "2.2"
-    description   = "Install + enable the systemd timers for scan-atom-feed (30s), scan-daily-index (evening cluster), reclassify-orphans (20m reconciler), alarm-drain (2m alert delivery), host-heartbeat (5m dead-man's-switch), scan-form4 (evening insider ingest), check-ingest-freshness (1h cursor-staleness alarm), the change-detection pipeline (scan-periodic evening + embed-blocks/diff-filings/judge-changes/synthesize-changes reconcilers, ADR 0042/0043), and the calibration + tracking reconcilers (build-catalog 12h, classify-specificity 20m, track-realizations 30m, ADR 0032)"
+    description   = "Install + enable the systemd timers for scan-atom-feed (30s), scan-daily-index (evening cluster), reclassify-orphans (20m reconciler), alarm-drain (2m alert delivery), host-heartbeat (5m dead-man's-switch), scan-form4 (evening insider ingest), check-ingest-freshness (1h cursor-staleness alarm), the change-detection pipeline (scan-periodic evening + embed-blocks/diff-filings/judge-changes/synthesize-changes reconcilers, ADR 0042/0043), and the calibration + tracking reconcilers (build-catalog 1w, classify-specificity 20m, track-realizations 30m, ADR 0032)"
     mainSteps = [{
       action = "aws:runShellScript"
       name   = "install"
@@ -965,10 +965,12 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "WantedBy=timers.target",
           "TIMER_EOF",
           # --- Calibration + tracking services + timers (ADR 0032, Phase 2b) ---
-          # build-catalog: whole-corpus reduce, one Sonnet call per run and idempotent, so
-          # a long 12h cadence keeps the catalog current without churning catalog_version
-          # (a new version forces a full re-classification wave). In the slice with the OOM
-          # handler. Boot arm +8min — after judge (+6) so the corpus reflects the day's changes.
+          # build-catalog: whole-corpus reduce, one Sonnet call per run. It was meant to be
+          # idempotent (unchanged themes => same catalog_version), but the reduce output varies
+          # run-to-run so the content hash changes every build, minting a new catalog_version
+          # that invalidates all specificity classifications and forces a re-classification wave.
+          # Until the versioning is made stable against cosmetic variance, run it WEEKLY rather
+          # than 12h to cut that churn ~14x. In the slice with the OOM handler; boot arm +8min.
           "cat > /etc/systemd/system/filings-build-catalog.service <<'SERVICE_EOF'",
           "[Unit]",
           "Description=filings-watcher common-mode catalog build (calibration corpus reduce, ADR 0032)",
@@ -997,7 +999,7 @@ resource "aws_ssm_document" "install_orchestrate_timer" {
           "",
           "[Timer]",
           "Unit=filings-build-catalog.service",
-          "OnUnitInactiveSec=12h",
+          "OnUnitInactiveSec=1w",
           "OnBootSec=8min",
           "",
           "[Install]",

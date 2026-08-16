@@ -41,6 +41,8 @@ from filings_orchestrator.change_detection.realization import (
     RealizationVerdict,
     build_realization_judge,
     judge_realization,
+    quote_is_grounded,
+    realization_is_grounded,
     realization_version,
 )
 from filings_orchestrator.change_detection.sectioning import (
@@ -120,6 +122,8 @@ __all__ = [
     "judge_change",
     "judge_realization",
     "judge_version",
+    "quote_is_grounded",
+    "realization_is_grounded",
     "realization_version",
     "render_specificity_system_prompt",
     "sanitize_batch",

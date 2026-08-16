@@ -18,6 +18,7 @@ cached system prompt).
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Sequence
 from typing import Any, NamedTuple
 
@@ -32,12 +33,18 @@ DEFAULT_REALIZATION_MODEL = "claude-sonnet-4-6"
 
 class RealizationEvent(NamedTuple):
     """One subsequent 8-K/6-K material event offered to the realization judge as a
-    candidate for realizing the flagged risk."""
+    candidate for realizing the flagged risk.
+
+    `source_text` is the event's actual disclosure text (the anchored 8-K Item body /
+    exhibit excerpt) the judge must quote from to ground its verdict; it defaults empty
+    for callers (unit tests) that only have the one-line `summary`, in which case the
+    summary is the only material the judge sees and quotes."""
 
     filing_date: str
     event_type: str
     item: str
     summary: str
+    source_text: str = ""
 
 
 class RealizationVerdict(BaseModel):
@@ -56,10 +63,21 @@ class RealizationVerdict(BaseModel):
             "The 1-based index of the 8-K event that realizes the risk; null when not realized."
         ),
     )
+    quote: str = Field(
+        default="",
+        description=(
+            "When is_realized is true: a SHORT span (one sentence or clause) copied VERBATIM, "
+            "character-for-character, from the realizing event's DISCLOSURE TEXT — the exact "
+            "words that state the adverse consequence. Do not paraphrase, summarize, or combine "
+            "spans. Empty when not realized."
+        ),
+    )
     evidence: str = Field(
         default="",
         description=(
-            "One sentence citing the specific 8-K disclosure and how it realizes THIS risk."
+            "One sentence stating how the quoted disclosure realizes THIS risk. Assert ONLY what "
+            "the quote and the risk factor already say — introduce no name, title, role, number, "
+            "or fact that is not present verbatim in the quote or the risk-factor text."
         ),
     )
     confidence: float = Field(
@@ -120,9 +138,17 @@ _SYSTEM_PROMPT = (
     "speculation that results 'would' or 'could' reflect the risk; and any link that requires "
     "INFERENCE rather than being explicitly disclosed.\n\n"
     "Anchor on the CORE subject of the RISK FACTOR. Point to the one event whose disclosure states "
-    "the consequence. When in doubt, choose false. In evidence, name the event and state in one "
-    "sentence what adverse consequence it discloses and how that realizes THIS risk. Submit your "
-    "verdict with the tool, exactly once."
+    "the consequence. When in doubt, choose false.\n\n"
+    "GROUND YOUR VERDICT IN THE SOURCE. Each event is given with its actual DISCLOSURE TEXT. When "
+    "you set is_realized=true you MUST copy into `quote` a short span, VERBATIM and "
+    "character-for-character, from THAT event's disclosure text — the exact words stating the "
+    "adverse consequence. If no span of the disclosure text states the consequence plainly, the "
+    "risk is not realized: choose false. Never quote from the risk factor, from another event, or "
+    "from your own words. Then in `evidence` state in one sentence how that quoted disclosure "
+    "realizes THIS risk — asserting ONLY what the quote and the risk factor already say. Do NOT "
+    "add any name, title, role, number, or fact not written verbatim in the quote or the risk "
+    "factor; inventing an unstated detail (for example a job title the filing does not give) is a "
+    "serious error even if it seems plausible. Submit your verdict with the tool, exactly once."
 )
 
 
@@ -146,18 +172,60 @@ def build_realization_judge(model_name: str = DEFAULT_REALIZATION_MODEL) -> Any:
 
 
 def _build_user_prompt(risk_text: str, risk: str, events: Sequence[RealizationEvent]) -> str:
-    lines = [
-        f"{i}. [{e.filing_date}] {e.event_type}"
-        f"{(' (item ' + e.item + ')') if e.item else ''}: {e.summary}"
-        for i, e in enumerate(events, start=1)
-    ]
+    blocks: list[str] = []
+    for i, e in enumerate(events, start=1):
+        head = (
+            f"{i}. [{e.filing_date}] {e.event_type}"
+            f"{(' (item ' + e.item + ')') if e.item else ''}: {e.summary}"
+        )
+        # The disclosure text is the ONLY material `quote` may be copied from. Present it
+        # only when supplied (unit callers pass just the summary, which stands as the source).
+        if e.source_text.strip():
+            head += f"\n   DISCLOSURE TEXT (quote only from here):\n   {e.source_text.strip()}"
+        blocks.append(head)
     factor = risk_text.strip() or "(text unavailable)"
     return (
         "FLAGGED RISK (declared in the 10-K):\n"
         + f"Risk factor: {factor}\nWhat changed this year: {risk}"
         + "\n\nSUBSEQUENT 8-K EVENTS:\n"
-        + "\n".join(lines)
+        + "\n".join(blocks)
     )
+
+
+_TOC_NOISE = re.compile(r"\d+\s*table of contents", re.IGNORECASE)
+
+
+def _normalize_for_quote(value: str) -> str:
+    """Fold text for verbatim-quote checking: strip interspersed 'N Table of Contents' page-break
+    artifacts (EDGAR injects these mid-sentence), then collapse all whitespace to single spaces and
+    lowercase — so a genuine quote is not rejected over cosmetic source noise."""
+    return " ".join(_TOC_NOISE.sub(" ", value).split()).lower()
+
+
+def quote_is_grounded(quote: str, source_text: str, *, min_chars: int = 12) -> bool:
+    """True when `quote` is a verbatim span of `source_text` (normalized). A too-short or empty
+    quote is not grounding — the judge must cite a real, substantive span of the disclosure."""
+    q = _normalize_for_quote(quote)
+    if len(q) < min_chars:
+        return False
+    return q in _normalize_for_quote(source_text)
+
+
+def realization_is_grounded(
+    verdict: RealizationVerdict, events: Sequence[RealizationEvent]
+) -> bool:
+    """Code check on a REALIZED verdict (the bounded-operator gate): the cited event must exist
+    and the verdict's quote must be a verbatim span of THAT event's disclosure text (falling back
+    to its summary when no separate source text was supplied). Not-realized verdicts pass through
+    (nothing to ground). A realized verdict that fails this is ungrounded and is not surfaced."""
+    if not verdict.is_realized:
+        return True
+    idx = verdict.event_index
+    if idx is None or not (1 <= idx <= len(events)):
+        return False
+    event = events[idx - 1]
+    source = event.source_text.strip() or event.summary
+    return quote_is_grounded(verdict.quote, source)
 
 
 def judge_realization(

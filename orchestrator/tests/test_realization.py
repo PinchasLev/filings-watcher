@@ -18,6 +18,8 @@ from filings_orchestrator.change_detection import (
     RealizationEvent,
     RealizationVerdict,
     judge_realization,
+    quote_is_grounded,
+    realization_is_grounded,
     realization_version,
 )
 from filings_orchestrator.cli.track_realizations import realization_pass
@@ -196,6 +198,77 @@ def test_judge_raises_without_tool_call() -> None:
         judge_realization(_NoToolModel(), risk_text="t", risk="r", events=[], model_name="m")
 
 
+def test_prompt_shows_disclosure_text_only_when_supplied() -> None:
+    model = _FakeRealModel(RealizationVerdict(is_realized=False, event_index=None, confidence=0.1))
+    events = [
+        RealizationEvent(
+            "2026-05-01",
+            "exec_departure",
+            "5.02",
+            "CEO left.",
+            "Jane Doe resigned as CEO effective today.",
+        ),
+        RealizationEvent("2026-06-01", "earnings_release", "", "Q2 results."),
+    ]
+    judge_realization(
+        model, risk_text="Key-person risk.", risk="Added.", events=events, model_name="m"
+    )
+    # Event 1 carries source text -> its disclosure block is shown to quote from; event 2 does not.
+    assert "DISCLOSURE TEXT (quote only from here):" in model.last_user
+    assert "Jane Doe resigned as CEO effective today." in model.last_user
+    assert "2. [2026-06-01] earnings_release: Q2 results." in model.last_user
+
+
+def test_quote_is_grounded_normalizes_and_rejects_absent() -> None:
+    source = (
+        "Rafa Oliveira, head of KDP's Coffee Operating Unit, has announced\n"
+        "13 Table of Contents\nhis intention to depart."
+    )
+    # Verbatim span survives whitespace + injected page-break normalization + case.
+    assert quote_is_grounded(
+        "head of KDP's Coffee Operating Unit, has announced his intention to depart", source
+    )
+    # A fabricated qualifier not in the source is rejected — the "designated future CEO" class.
+    assert not quote_is_grounded("designated future CEO of Global Coffee Co.", source)
+    # A too-short span is not grounding.
+    assert not quote_is_grounded("depart", source)
+    assert not quote_is_grounded("", source)
+
+
+def test_realization_is_grounded_gate() -> None:
+    events = [
+        RealizationEvent(
+            "2026-06-23",
+            "exec_departure",
+            "8.01",
+            "Oliveira departs.",
+            "Rafa Oliveira has announced his intention to depart at the end of July 2026.",
+        )
+    ]
+    grounded = RealizationVerdict(
+        is_realized=True,
+        event_index=1,
+        quote="announced his intention to depart at the end of July 2026",
+        confidence=0.9,
+    )
+    fabricated = RealizationVerdict(
+        is_realized=True,
+        event_index=1,
+        quote="the designated future CEO of Global Coffee Co.",
+        confidence=0.9,
+    )
+    assert realization_is_grounded(grounded, events)
+    assert not realization_is_grounded(fabricated, events)
+    # A not-realized verdict has nothing to ground; it passes through.
+    assert realization_is_grounded(
+        RealizationVerdict(is_realized=False, event_index=None, confidence=0.1), events
+    )
+    # A realized verdict pointing past the candidate list is not grounded.
+    assert not realization_is_grounded(
+        RealizationVerdict(is_realized=True, event_index=9, quote="x" * 20, confidence=0.9), events
+    )
+
+
 def test_verdict_coercions() -> None:
     v = RealizationVerdict(is_realized=True, event_index="2", evidence="e", confidence="1.5")  # type: ignore[arg-type]
     assert v.event_index == 2 and v.confidence == 1.0
@@ -315,7 +388,11 @@ def test_pass_realizes_a_seeded_risk(engine: Engine) -> None:
     _seed_8k(engine, acc="e1", cik="C", filing_date="2026-05-01", summary="ICE merger agreement.")
     model = _FakeRealModel(
         RealizationVerdict(
-            is_realized=True, event_index=1, evidence="ICE merger realizes it.", confidence=0.9
+            is_realized=True,
+            event_index=1,
+            quote="ICE merger agreement",
+            evidence="ICE merger realizes it.",
+            confidence=0.9,
         )
     )
     counts = realization_pass(
@@ -341,6 +418,31 @@ def test_pass_realizes_a_seeded_risk(engine: Engine) -> None:
         limit=10,
     )
     assert again["candidates"] == 0
+
+
+def test_pass_downgrades_ungrounded_realization(engine: Engine) -> None:
+    # A "realized" verdict whose quote is fabricated (not in the event's summary/source) must be
+    # downgraded to not-realized with no link stored — the gate against embellishment.
+    _seed_risk(engine, acc="tenk", cik="C", filed_at="2026-02-01", explanation="Retention risk.")
+    _seed_8k(engine, acc="e1", cik="C", filing_date="2026-05-01", summary="An executive departed.")
+    model = _FakeRealModel(
+        RealizationVerdict(
+            is_realized=True,
+            event_index=1,
+            quote="the designated future CEO of a newly spun-off company",
+            evidence="Fabricated detail not in the source.",
+            confidence=0.9,
+        )
+    )
+    counts = realization_pass(
+        engine, model, model_name="m", judge_ver=_JV, realization_ver=_RV, limit=10
+    )
+    assert counts == {"realized": 0, "not_realized": 1, "failed": 0, "candidates": 1}
+    with engine.begin() as c:
+        row = c.execute(
+            text("SELECT is_realized, realizing_accession FROM risk_realizations")
+        ).one()
+    assert row == (0, None)
 
 
 def test_pass_not_realized_stores_no_link(engine: Engine) -> None:

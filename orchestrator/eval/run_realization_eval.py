@@ -23,6 +23,7 @@ from filings_orchestrator.change_detection.realization import (
     DEFAULT_REALIZATION_MODEL,
     RealizationEvent,
     _build_user_prompt,
+    quote_is_grounded,
 )
 
 TOOL = {
@@ -33,19 +34,26 @@ TOOL = {
         "properties": {
             "is_realized": {"type": "boolean"},
             "event_index": {"type": ["integer", "null"]},
+            "quote": {"type": "string"},
             "evidence": {"type": "string"},
             "confidence": {"type": "number"},
         },
-        "required": ["is_realized", "event_index", "evidence", "confidence"],
+        "required": ["is_realized", "event_index", "quote", "evidence", "confidence"],
     },
 }
 
 
-def user_prompt(rec):
-    events = [
-        RealizationEvent(e["date"], e["type"], e["item"], e["summary"]) for e in rec["events"]
+def _events(rec):
+    # The gold set carries only the one-line summary, so it stands as the disclosure text the
+    # judge quotes from — the same grounding mechanism the production path applies to 8-K bodies.
+    return [
+        RealizationEvent(e["date"], e["type"], e["item"], e["summary"], e["summary"])
+        for e in rec["events"]
     ]
-    return _build_user_prompt(rec["risk_text"] or "", rec["chg"], events)
+
+
+def user_prompt(rec):
+    return _build_user_prompt(rec["risk_text"] or "", rec["chg"], _events(rec))
 
 
 def judge(client, model, rec):
@@ -61,7 +69,13 @@ def judge(client, model, rec):
     for block in msg.content:
         if getattr(block, "type", None) == "tool_use":
             return block.input
-    return {"is_realized": False, "event_index": None, "evidence": "", "confidence": 0.0}
+    return {
+        "is_realized": False,
+        "event_index": None,
+        "quote": "",
+        "evidence": "",
+        "confidence": 0.0,
+    }
 
 
 def main():
@@ -76,12 +90,28 @@ def main():
     client = Anthropic()
 
     tp = fp = fn = tn = 0
-    verdicts, disagreements = [], []
+    ungrounded = 0
+    verdicts, disagreements, fabrications = [], [], []
     for rec in gold:
         v = judge(client, args.model, rec)
         n = len(rec["events"])
         idx = v.get("event_index")
         pred_realized = bool(v.get("is_realized")) and isinstance(idx, int) and 1 <= idx <= n
+        # Fabrication check: a realized verdict's quote must be verbatim in the cited event's
+        # disclosure. An ungrounded quote is exactly the "designated future CEO" failure class.
+        if pred_realized and not quote_is_grounded(
+            v.get("quote", ""), rec["events"][idx - 1]["summary"]
+        ):
+            ungrounded += 1
+            fabrications.append(
+                {
+                    "id": rec["id"],
+                    "company": rec["company"],
+                    "pred_event": idx,
+                    "quote": (v.get("quote") or "")[:200],
+                    "summary": rec["events"][idx - 1]["summary"][:200],
+                }
+            )
         correct_pos = rec["gold_realized"] and pred_realized and idx in rec["gold_events"]
         if correct_pos:
             tp += 1
@@ -96,6 +126,7 @@ def main():
                 "id": rec["id"],
                 "is_realized": v.get("is_realized"),
                 "event_index": idx,
+                "quote": v.get("quote", ""),
                 "evidence": v.get("evidence", ""),
             }
         )
@@ -128,6 +159,8 @@ def main():
                 "precision": round(prec, 3),
                 "recall": round(rec_, 3),
                 "f1": round(f1, 3),
+                "ungrounded_realized": ungrounded,
+                "fabrications": fabrications,
                 "disagreements": disagreements,
             },
             indent=2,

@@ -30,6 +30,7 @@ from filings_orchestrator.change_detection import (
     build_realization_judge,
     judge_realization,
     judge_version,
+    realization_is_grounded,
     realization_version,
 )
 from filings_orchestrator.classify.retry import with_retries
@@ -41,6 +42,7 @@ from filings_orchestrator.persistence import open_engine
 from filings_orchestrator.persistence.repository import (
     daily_cost_usd,
     insert_risk_realization,
+    load_filing_document,
     load_subsequent_material_events,
     select_risks_needing_realization,
 )
@@ -49,6 +51,22 @@ from filings_orchestrator.persistence.repository import (
 _DEFAULT_MAX_PER_RUN = 100
 # Subsequent 8-K events offered to the judge per risk (newest realizations still fit).
 _MAX_EVENTS = 20
+# Per-event disclosure text fed to the judge to quote from. The material 8-K disclosure sits
+# in the anchored Item body; this bounds one event's contribution so a firehose of candidates
+# cannot blow the context (the judge only needs the sentence stating the consequence).
+_MAX_EVENT_SOURCE_CHARS = 4000
+
+
+def _event_source_text(engine: Engine, accession_number: str, item: str) -> str:
+    """The disclosure text the judge quotes from for one candidate 8-K: the anchored Item body
+    (bounded), falling back to all Item bodies then the document text when the anchor is absent.
+    Empty when the body was not stored, in which case the judge falls back to the summary."""
+    doc = load_filing_document(engine, accession_number)
+    if doc is None:
+        return ""
+    anchored = [s.text for s in doc.items if item and s.number == item and s.text.strip()]
+    parts = anchored or [s.text for s in doc.items if s.text.strip()] or [doc.text]
+    return "\n\n".join(p.strip() for p in parts if p.strip())[:_MAX_EVENT_SOURCE_CHARS]
 
 
 def realization_pass(
@@ -74,7 +92,14 @@ def realization_pass(
             continue  # raced away — the gap required subsequent events
 
         candidates = [
-            RealizationEvent(e.filing_date, e.event_type, e.item, e.summary) for e in events
+            RealizationEvent(
+                e.filing_date,
+                e.event_type,
+                e.item,
+                e.summary,
+                _event_source_text(engine, e.accession_number, e.item),
+            )
+            for e in events
         ]
         try:
             verdict = with_retries(
@@ -105,6 +130,17 @@ def realization_pass(
         realizing = (
             events[idx - 1] if (verdict.is_realized and idx and 1 <= idx <= len(events)) else None
         )
+        # Bounded-operator gate: a realized verdict must cite a quote that appears verbatim in the
+        # realizing 8-K's disclosure. An ungrounded "quote" (fabricated or paraphrased) is
+        # downgraded to not-realized, so an unverifiable materialization is never surfaced.
+        if realizing is not None and not realization_is_grounded(verdict, candidates):
+            emit(
+                "realization_quote_ungrounded",
+                accession_number=risk.accession_number,
+                change_seq=risk.change_seq,
+                realizing_accession=realizing.accession_number,
+            )
+            realizing = None
         is_realized = realizing is not None
         insert_risk_realization(
             engine,

@@ -222,17 +222,26 @@ def _build_user_prompt(risk_text: str, risk: str, events: Sequence[RealizationEv
 
 
 def build_user_content(
-    risk_text: str, risk: str, events: Sequence[RealizationEvent]
+    risk_text: str,
+    risk: str,
+    events: Sequence[RealizationEvent],
+    *,
+    cache_shared_prefix: bool = True,
 ) -> list[str | dict[Any, Any]]:
     """The same turn split into two content blocks with a cache breakpoint after the shared
-    events block. Text is identical to `_build_user_prompt`; only the block boundary differs."""
+    events block. Text is identical to `_build_user_prompt`; only the block boundary differs.
+
+    `cache_shared_prefix=False` sends the turn as one unbroken block. A breakpoint pays a 1.25x
+    write premium on the events block to make it reusable, which is a loss when this 10-K
+    contributes only one risk to the run and nothing will ever read the entry — and two thirds
+    of the 10-Ks in a run contribute exactly one."""
+    events_block = _build_events_block(events)
+    risk_block = _build_risk_block(risk_text, risk)
+    if not cache_shared_prefix:
+        return [{"type": "text", "text": events_block + "\n\n" + risk_block}]
     return [
-        {
-            "type": "text",
-            "text": _build_events_block(events),
-            "cache_control": {"type": "ephemeral"},
-        },
-        {"type": "text", "text": _build_risk_block(risk_text, risk)},
+        {"type": "text", "text": events_block, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": risk_block},
     ]
 
 
@@ -523,16 +532,24 @@ def judge_realization(
     events: Sequence[RealizationEvent],
     model_name: str,
     accession_number: str | None = None,
+    cache_shared_prefix: bool = True,
 ) -> RealizationVerdict:
     """Judge whether any subsequent 8-K realizes the flagged risk via the bound `model`.
     The risk factor's text anchors the judgment to the core risk (rather than a poorly-parsed
-    heading). Records the call for cost accounting even if parsing fails."""
+    heading). Records the call for cost accounting even if parsing fails.
+
+    `cache_shared_prefix` is False when this 10-K contributes a single risk to the run, so the
+    events block is sent without a breakpoint nothing would read."""
     system_blocks: list[str | dict[Any, Any]] = [
         {"type": "text", "text": _SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
     ]
-    # Two breakpoints: the system prompt, then the events block shared by every risk on this
-    # 10-K. The trailing risk block is the only part re-sent at full price per call.
-    user_content = build_user_content(risk_text, risk, events)
+    # Two breakpoints: the system prompt — shared by every call the pipeline makes, so always
+    # worth caching — then the events block shared by every risk on this 10-K, which is only
+    # worth caching when more than one risk will read it. The trailing risk block is the only
+    # part re-sent at full price per call.
+    user_content = build_user_content(
+        risk_text, risk, events, cache_shared_prefix=cache_shared_prefix
+    )
     response = model.invoke(
         [SystemMessage(content=system_blocks), HumanMessage(content=user_content)]
     )

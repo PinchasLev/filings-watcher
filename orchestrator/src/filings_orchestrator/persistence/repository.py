@@ -2548,9 +2548,17 @@ def insert_risk_realization(
     confidence: float,
     checked_through: str,
     judged_at: str,
+    rejected_by: str | None = None,
+    rejected_detail: str = "",
 ) -> None:
     """Store a risk's realization verdict. Idempotent on the anchor + versions key — a
-    re-check under the same versions overwrites (advancing checked_through)."""
+    re-check under the same versions overwrites (advancing checked_through).
+
+    `rejected_by` names the gate that downgraded a realized verdict ("quote" or "evidence") and
+    `rejected_detail` carries what it objected to. On a rejection the judge's own `quote` and
+    `evidence` are stored alongside them, so the refused claim can be read back and the gate
+    judged on its work. Nothing rejected reaches the site — the service surfaces a
+    materialization only where is_realized is set."""
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -2559,12 +2567,14 @@ def insert_risk_realization(
                     accession_number, section, model_id, change_seq,
                     judge_version, realization_version,
                     is_realized, realizing_accession, realizing_event_type, realizing_item,
-                    evidence, quote, confidence, checked_through, judged_at
+                    evidence, quote, confidence, checked_through, judged_at,
+                    rejected_by, rejected_detail
                 ) VALUES (
                     :accession_number, :section, :model_id, :change_seq,
                     :judge_version, :realization_version,
                     :is_realized, :realizing_accession, :realizing_event_type, :realizing_item,
-                    :evidence, :quote, :confidence, :checked_through, :judged_at
+                    :evidence, :quote, :confidence, :checked_through, :judged_at,
+                    :rejected_by, :rejected_detail
                 )
                 ON CONFLICT (accession_number, section, model_id, change_seq,
                              judge_version, realization_version)
@@ -2577,7 +2587,9 @@ def insert_risk_realization(
                     quote                = excluded.quote,
                     confidence           = excluded.confidence,
                     checked_through      = excluded.checked_through,
-                    judged_at            = excluded.judged_at
+                    judged_at            = excluded.judged_at,
+                    rejected_by          = excluded.rejected_by,
+                    rejected_detail      = excluded.rejected_detail
                 """
             ),
             {
@@ -2592,6 +2604,8 @@ def insert_risk_realization(
                 "realizing_event_type": realizing_event_type,
                 "realizing_item": realizing_item,
                 "evidence": evidence,
+                "rejected_by": rejected_by,
+                "rejected_detail": rejected_detail,
                 "quote": quote,
                 "confidence": confidence,
                 "checked_through": checked_through,

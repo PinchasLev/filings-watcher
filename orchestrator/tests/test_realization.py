@@ -17,13 +17,16 @@ from sqlalchemy import Engine, text
 from filings_orchestrator.change_detection import (
     RealizationEvent,
     RealizationVerdict,
+    build_user_content,
     evidence_is_grounded,
     judge_realization,
+    prompt_fingerprint,
     quote_is_grounded,
     realization_evidence_is_grounded,
     realization_is_grounded,
     realization_version,
 )
+from filings_orchestrator.change_detection.realization import _build_user_prompt
 from filings_orchestrator.cli.track_realizations import realization_pass
 from filings_orchestrator.persistence import apply_migrations, open_engine
 from filings_orchestrator.persistence.repository import (
@@ -59,6 +62,7 @@ def _seed_risk(
     seq: int = 0,
     explanation: str = "A specific risk.",
     risk_text: str = "Deterioration of labor relations, availability or costs could harm us.",
+    change_type: str = "added",
 ) -> None:
     with engine.begin() as c:
         c.execute(
@@ -80,9 +84,9 @@ def _seed_risk(
             text(
                 "INSERT INTO block_changes (accession_number,section,model_id,change_seq,"
                 "change_type,current_block_index,prior_block_index,prior_accession_number,"
-                "similarity) VALUES (:a,:s,:m,:q,'changed',:q,NULL,'prior',0.8)"
+                "similarity) VALUES (:a,:s,:m,:q,:ct,:q,NULL,'prior',0.8)"
             ),
-            {"a": acc, "s": _SEC, "m": _MODEL, "q": seq},
+            {"a": acc, "s": _SEC, "m": _MODEL, "q": seq, "ct": change_type},
         )
         c.execute(
             text(
@@ -102,6 +106,13 @@ def _seed_risk(
             ),
             {"a": acc, "s": _SEC, "m": _MODEL, "q": seq, "jv": _JV},
         )
+
+
+def _user_text(content: Any) -> str:
+    """The user turn's text, whether sent as one string or as cache-broken content blocks."""
+    if isinstance(content, str):
+        return content
+    return "\n\n".join(b["text"] for b in content)
 
 
 def _seed_8k(
@@ -189,10 +200,14 @@ def test_judge_sees_risk_and_numbered_events() -> None:
         model_name="m",
         accession_number="a",
     )
-    assert "Risk factor: A merger or acquisition could disrupt operations." in model.last_user
-    assert "What changed this year: Added merger language." in model.last_user
-    assert "1. [2026-05-01] ma_activity (item 1.01): Merger agreement announced." in model.last_user
-    assert "2. [2026-06-01] earnings_release: Q2 results." in model.last_user
+    assert "Risk factor: A merger or acquisition could disrupt operations." in _user_text(
+        model.last_user
+    )
+    assert "What changed this year: Added merger language." in _user_text(model.last_user)
+    assert "1. [2026-05-01] ma_activity (item 1.01): Merger agreement announced." in _user_text(
+        model.last_user
+    )
+    assert "2. [2026-06-01] earnings_release: Q2 results." in _user_text(model.last_user)
 
 
 def test_judge_raises_without_tool_call() -> None:
@@ -216,9 +231,9 @@ def test_prompt_shows_disclosure_text_only_when_supplied() -> None:
         model, risk_text="Key-person risk.", risk="Added.", events=events, model_name="m"
     )
     # Event 1 carries source text -> its disclosure block is shown to quote from; event 2 does not.
-    assert "DISCLOSURE TEXT (quote only from here):" in model.last_user
-    assert "Jane Doe resigned as CEO effective today." in model.last_user
-    assert "2. [2026-06-01] earnings_release: Q2 results." in model.last_user
+    assert "DISCLOSURE TEXT (quote only from here):" in _user_text(model.last_user)
+    assert "Jane Doe resigned as CEO effective today." in _user_text(model.last_user)
+    assert "2. [2026-06-01] earnings_release: Q2 results." in _user_text(model.last_user)
 
 
 def test_quote_is_grounded_normalizes_and_rejects_absent() -> None:
@@ -625,3 +640,81 @@ def test_pass_stores_the_verified_quote(engine: Engine) -> None:
     with engine.begin() as c:
         quote = c.execute(text("SELECT quote FROM risk_realizations")).scalar_one()
     assert quote == "has informed the Company of his intention to depart"
+
+
+# --- prompt layout + caching ---
+
+
+def test_events_lead_the_turn_so_the_shared_half_can_cache() -> None:
+    # Caching is a prefix match. The events block is identical for every risk flagged on one
+    # 10-K, so it must come FIRST; the per-risk text must trail it. If this inverts, the
+    # volatile half becomes the prefix and nothing after it is reusable.
+    events = [
+        RealizationEvent(
+            "2026-06-23", "exec_departure", "8.01", "Oliveira departs.", _KDP_DISCLOSURE
+        )
+    ]
+    prompt = _build_user_prompt(_KDP_RISK, "Separation risk added.", events)
+    assert prompt.index("SUBSEQUENT 8-K EVENTS:") < prompt.index("FLAGGED RISK")
+
+
+def test_user_content_breaks_cache_after_the_shared_block() -> None:
+    events = [
+        RealizationEvent(
+            "2026-06-23", "exec_departure", "8.01", "Oliveira departs.", _KDP_DISCLOSURE
+        )
+    ]
+    blocks = build_user_content(_KDP_RISK, "Separation risk added.", events)
+    assert len(blocks) == 2
+    shared, volatile = blocks
+    assert isinstance(shared, dict) and isinstance(volatile, dict)
+    assert shared["text"].startswith("SUBSEQUENT 8-K EVENTS:")
+    assert shared["cache_control"] == {"type": "ephemeral"}
+    assert volatile["text"].startswith("FLAGGED RISK")
+    assert "cache_control" not in volatile
+    # The split must not change what the model reads — same bytes, one boundary.
+    assert shared["text"] + "\n\n" + volatile["text"] == _build_user_prompt(
+        _KDP_RISK, "Separation risk added.", events
+    )
+
+
+def test_shared_block_is_identical_across_risks_on_one_tenk() -> None:
+    # The cache only pays off if this holds byte-for-byte; events are loaded by cik + the
+    # 10-K's filing date, so they do not vary per risk.
+    events = [
+        RealizationEvent(
+            "2026-06-23", "exec_departure", "8.01", "Oliveira departs.", _KDP_DISCLOSURE
+        )
+    ]
+    first = build_user_content("Risk one text.", "Change one.", events)[0]
+    second = build_user_content("Risk two text.", "Change two.", events)[0]
+    assert isinstance(first, dict) and isinstance(second, dict)
+    assert first["text"] == second["text"]
+
+
+def test_version_tracks_the_layout_not_just_the_prompt() -> None:
+    # A reordered turn changes the judgment as surely as a reworded prompt; both must version.
+    import filings_orchestrator.change_detection.realization as r
+
+    before = prompt_fingerprint()
+    original = r._EVENTS_HEADER
+    try:
+        r._EVENTS_HEADER = "EVENTS:\n"
+        assert prompt_fingerprint() != before
+    finally:
+        r._EVENTS_HEADER = original
+    assert prompt_fingerprint() == before
+
+
+def test_gap_skips_an_edited_standing_factor(engine: Engine) -> None:
+    # Only genuinely-new risk factors are tracked. An edited standing factor can be matched to a
+    # salient 8-K on language that was already on the books, so the service does not surface it
+    # and the tracker does not pay to judge it.
+    _seed_risk(engine, acc="tenk", cik="C", filed_at="2026-02-01", change_type="changed")
+    _seed_8k(engine, acc="e1", cik="C", filing_date="2026-05-01", summary="An executive departed.")
+    assert (
+        select_risks_needing_realization(
+            engine, judge_version=_JV, realization_version=_RV, limit=10
+        )
+        == []
+    )

@@ -196,6 +196,7 @@
       <span class="materialized-meta">Materialized{{if .RealizingDate}} {{.RealizingDate}}{{end}}{{if .RealizingEventType}} &middot; {{eventLabel .RealizingEventType}}{{end}}</span>
       {{if .RealizingAccession}}<a href="/filings/{{.RealizingAccession}}">view 8-K &rarr;</a>{{end}}
       {{if .RealizationEvidence}}<p class="materialized-evidence">{{.RealizationEvidence}}</p>{{end}}
+      {{if .RealizationQuote}}<p class="materialized-quote">{{.RealizationQuote}}</p>{{end}}
     </div>
   {{end}}
 {{end}}

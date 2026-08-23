@@ -23,6 +23,7 @@ from filings_orchestrator.change_detection.realization import (
     DEFAULT_REALIZATION_MODEL,
     RealizationEvent,
     _build_user_prompt,
+    evidence_is_grounded,
     quote_is_grounded,
 )
 
@@ -91,7 +92,8 @@ def main():
 
     tp = fp = fn = tn = 0
     ungrounded = 0
-    verdicts, disagreements, fabrications = [], [], []
+    ungrounded_evidence = 0
+    verdicts, disagreements, fabrications, embellishments = [], [], [], []
     for rec in gold:
         v = judge(client, args.model, rec)
         n = len(rec["events"])
@@ -112,6 +114,29 @@ def main():
                     "summary": rec["events"][idx - 1]["summary"][:200],
                 }
             )
+        # Embellishment check: the sentence the page renders must assert only what the quote,
+        # the risk factor, or the disclosure already say. This is the gate that catches an
+        # invented title riding along on a correctly-verified quote.
+        if pred_realized:
+            ok, unsupported = evidence_is_grounded(
+                v.get("evidence", ""),
+                sources=[
+                    v.get("quote", ""),
+                    rec["risk_text"] or "",
+                    rec["events"][idx - 1]["summary"],
+                ],
+            )
+            if not ok:
+                ungrounded_evidence += 1
+                embellishments.append(
+                    {
+                        "id": rec["id"],
+                        "company": rec["company"],
+                        "gold": rec["gold_realized"],
+                        "unsupported": unsupported,
+                        "evidence": (v.get("evidence") or "")[:250],
+                    }
+                )
         correct_pos = rec["gold_realized"] and pred_realized and idx in rec["gold_events"]
         if correct_pos:
             tp += 1
@@ -160,7 +185,9 @@ def main():
                 "recall": round(rec_, 3),
                 "f1": round(f1, 3),
                 "ungrounded_realized": ungrounded,
+                "ungrounded_evidence": ungrounded_evidence,
                 "fabrications": fabrications,
+                "embellishments": embellishments,
                 "disagreements": disagreements,
             },
             indent=2,

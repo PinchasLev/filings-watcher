@@ -443,8 +443,8 @@ func insRealization(
 	_, err := db.Exec(
 		`INSERT INTO risk_realizations (accession_number,section,model_id,change_seq,
 			judge_version,realization_version,is_realized,realizing_accession,realizing_event_type,
-			realizing_item,evidence,confidence,checked_through,judged_at)
-		 VALUES (?,?,?,?,'jv1',?,?,?,?,'1.01',?,0.9,'2026-07-01',?)`,
+			realizing_item,evidence,quote,confidence,checked_through,judged_at)
+		 VALUES (?,?,?,?,'jv1',?,?,?,?,'1.01',?,'the merger agreement was executed',0.9,'2026-07-01',?)`,
 		acc, _section, _model, seq, rv, r, realizingAcc, eventType, evidence, judgedAt,
 	)
 	if err != nil {
@@ -485,6 +485,10 @@ func TestCompanyDisclosureChangesSurfacesMaterialization(t *testing.T) {
 	}
 	if c.RealizationEvidence != "The ICE merger agreement realizes it." {
 		t.Errorf("evidence = %q", c.RealizationEvidence)
+	}
+	// The verified citation travels with the claim, so the page can show what it rests on.
+	if c.RealizationQuote != "the merger agreement was executed" {
+		t.Errorf("quote = %q", c.RealizationQuote)
 	}
 }
 

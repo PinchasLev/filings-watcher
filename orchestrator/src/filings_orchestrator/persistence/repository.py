@@ -2525,6 +2525,7 @@ def insert_risk_realization(
     realizing_event_type: str | None,
     realizing_item: str | None,
     evidence: str,
+    quote: str,
     confidence: float,
     checked_through: str,
     judged_at: str,
@@ -2539,12 +2540,12 @@ def insert_risk_realization(
                     accession_number, section, model_id, change_seq,
                     judge_version, realization_version,
                     is_realized, realizing_accession, realizing_event_type, realizing_item,
-                    evidence, confidence, checked_through, judged_at
+                    evidence, quote, confidence, checked_through, judged_at
                 ) VALUES (
                     :accession_number, :section, :model_id, :change_seq,
                     :judge_version, :realization_version,
                     :is_realized, :realizing_accession, :realizing_event_type, :realizing_item,
-                    :evidence, :confidence, :checked_through, :judged_at
+                    :evidence, :quote, :confidence, :checked_through, :judged_at
                 )
                 ON CONFLICT (accession_number, section, model_id, change_seq,
                              judge_version, realization_version)
@@ -2554,6 +2555,7 @@ def insert_risk_realization(
                     realizing_event_type = excluded.realizing_event_type,
                     realizing_item       = excluded.realizing_item,
                     evidence             = excluded.evidence,
+                    quote                = excluded.quote,
                     confidence           = excluded.confidence,
                     checked_through      = excluded.checked_through,
                     judged_at            = excluded.judged_at
@@ -2571,6 +2573,7 @@ def insert_risk_realization(
                 "realizing_event_type": realizing_event_type,
                 "realizing_item": realizing_item,
                 "evidence": evidence,
+                "quote": quote,
                 "confidence": confidence,
                 "checked_through": checked_through,
                 "judged_at": judged_at,

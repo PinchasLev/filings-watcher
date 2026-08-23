@@ -170,6 +170,7 @@ def test_apply_migrations_creates_tables_and_records_version() -> None:
         "023_disclosure_catalog",
         "024_change_specificity",
         "025_risk_realizations",
+        "026_risk_realization_quote",
     ]
 
     with engine.begin() as conn:

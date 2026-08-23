@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import Engine, text
@@ -67,8 +68,9 @@ def _seed_risk(
     with engine.begin() as c:
         c.execute(
             text(
-                "INSERT INTO periodic_filings (accession_number,cik,company_name,form,filed_at,"
-                "period_of_report,fiscal_year,parsed,block_count,ingested_at) "
+                # OR IGNORE so one 10-K can carry several risks, as a real one does.
+                "INSERT OR IGNORE INTO periodic_filings (accession_number,cik,company_name,"
+                "form,filed_at,period_of_report,fiscal_year,parsed,block_count,ingested_at) "
                 "VALUES (:a,:k,'ACME','10-K',:f,'2025-12-31',2025,1,0,'t')"
             ),
             {"a": acc, "k": cik, "f": filed_at},
@@ -772,6 +774,51 @@ def test_user_content_breaks_cache_after_the_shared_block() -> None:
     assert shared["text"] + "\n\n" + volatile["text"] == _build_user_prompt(
         _KDP_RISK, "Separation risk added.", events
     )
+
+
+def test_solo_risk_sends_no_breakpoint_to_pay_for() -> None:
+    # A breakpoint costs a 1.25x write premium on the events block. When this 10-K contributes
+    # one risk to the run there is no second call to read the entry, so the turn goes as one
+    # block — same bytes, no premium.
+    events = [
+        RealizationEvent(
+            "2026-06-23", "exec_departure", "8.01", "Oliveira departs.", _KDP_DISCLOSURE
+        )
+    ]
+    blocks = build_user_content(
+        _KDP_RISK, "Separation risk added.", events, cache_shared_prefix=False
+    )
+    assert len(blocks) == 1
+    only = blocks[0]
+    assert isinstance(only, dict) and "cache_control" not in only
+    assert only["text"] == _build_user_prompt(_KDP_RISK, "Separation risk added.", events)
+
+
+def test_pass_breaks_cache_only_for_a_tenk_with_more_than_one_risk(engine: Engine) -> None:
+    # Two risks on one 10-K, one on another. The pair is worth a breakpoint; the loner is not.
+    _seed_risk(engine, acc="pair", cik="C", filed_at="2026-02-01", seq=0)
+    _seed_risk(engine, acc="pair", cik="C", filed_at="2026-02-01", seq=1)
+    _seed_risk(engine, acc="solo", cik="D", filed_at="2026-02-01", seq=0)
+    _seed_8k(engine, acc="e1", cik="C", filing_date="2026-05-01")
+    _seed_8k(engine, acc="e2", cik="D", filing_date="2026-05-01")
+
+    seen: dict[str, list[bool]] = {}
+
+    def _capture(**kwargs: object) -> RealizationVerdict:
+        acc = str(kwargs["accession_number"])
+        seen.setdefault(acc, []).append(bool(kwargs["cache_shared_prefix"]))
+        return RealizationVerdict(is_realized=False, event_index=None, confidence=0.1)
+
+    with patch(
+        "filings_orchestrator.cli.track_realizations.judge_realization",
+        side_effect=lambda _model, **kw: _capture(**kw),
+    ):
+        realization_pass(
+            engine, object(), model_name="m", judge_ver=_JV, realization_ver=_RV, limit=10
+        )
+
+    assert seen["pair"] == [True, True]
+    assert seen["solo"] == [False]
 
 
 def test_shared_block_is_identical_across_risks_on_one_tenk() -> None:

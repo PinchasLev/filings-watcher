@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections import Counter
 from datetime import UTC, datetime
 from functools import partial
 
@@ -91,6 +92,11 @@ def realization_pass(
         limit=limit,
         recheck_not_realized=recheck_not_realized,
     )
+    # Selection orders by accession, so a 10-K's risks are judged back-to-back and the events
+    # block one of them writes to the cache is the block the next one reads. A 10-K that
+    # contributes a single risk has no second reader, and paying the write premium for an entry
+    # nothing reads costs more than sending the block plainly.
+    risks_per_filing = Counter(r.accession_number for r in risks)
     for risk in risks:
         events = load_subsequent_material_events(
             engine, cik=risk.cik, after=risk.filed_at, limit=_MAX_EVENTS
@@ -118,6 +124,7 @@ def realization_pass(
                     events=candidates,
                     model_name=model_name,
                     accession_number=risk.accession_number,
+                    cache_shared_prefix=risks_per_filing[risk.accession_number] > 1,
                 ),
                 log_context={"accession": risk.accession_number, "change_seq": risk.change_seq},
             )

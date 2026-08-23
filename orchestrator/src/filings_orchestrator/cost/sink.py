@@ -27,7 +27,7 @@ detail-in-logs or a separate telemetry store. See the migration comment in
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -78,6 +78,23 @@ def clear_cost_sink() -> None:
     set_cost_sink(None)
 
 
+# Where LangChain reports cache writes. It fills `cache_creation` only while Anthropic returns
+# a single figure; once the response carries the per-TTL breakdown — which it does today — that
+# key is zeroed and the counts move to these. Reading `cache_creation` alone therefore recorded
+# every write as zero and priced it as ordinary input, understating the 1.25x write premium.
+_CACHE_CREATION_TTL_KEYS = ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
+
+
+def _cache_creation_tokens(token_details: Mapping[str, Any]) -> int:
+    """Tokens written to the cache on this call, from whichever shape the response carries.
+
+    Both TTLs are summed and priced at the 5-minute write rate, the only TTL this pipeline
+    asks for; a 1-hour entry costs 2x rather than 1.25x and would be under-priced here.
+    """
+    by_ttl = sum(int(token_details.get(key) or 0) for key in _CACHE_CREATION_TTL_KEYS)
+    return by_ttl or int(token_details.get("cache_creation") or 0)
+
+
 def emit_llm_call(
     *,
     model: str,
@@ -99,7 +116,7 @@ def emit_llm_call(
     output_tokens = int(usage.get("output_tokens") or 0)
     token_details = usage.get("input_token_details") or {}
     cache_read = int(token_details.get("cache_read") or 0)
-    cache_creation = int(token_details.get("cache_creation") or 0)
+    cache_creation = _cache_creation_tokens(token_details)
 
     cost, known = estimate_cost_usd(
         model=model,

@@ -136,6 +136,44 @@ def test_emit_llm_call_routes_through_installed_sink() -> None:
     assert obs.estimated_cost_usd > 0
 
 
+def test_emit_llm_call_reads_cache_writes_from_the_per_ttl_breakdown() -> None:
+    # What the API actually returns: LangChain zeroes the generic `cache_creation` key once the
+    # response carries the per-TTL breakdown, and puts the count under the TTL key. Reading only
+    # the generic key recorded every cache write as zero and priced it as ordinary input.
+    observations: list[LLMCallObservation] = []
+    set_cost_sink(observations.append)
+    response = SimpleNamespace(
+        usage_metadata={
+            "input_tokens": 5000,
+            "output_tokens": 100,
+            "input_token_details": {
+                "cache_read": 0,
+                "cache_creation": 0,
+                "ephemeral_5m_input_tokens": 4200,
+                "ephemeral_1h_input_tokens": 0,
+            },
+        }
+    )
+    emit_llm_call(model="claude-sonnet-4-6", stage="realization", response=response)
+    obs = observations[0]
+    assert obs.cache_creation_tokens == 4200
+    # And the write is priced at the premium rather than as plain input.
+    plain, _ = estimate_cost_usd(model="claude-sonnet-4-6", input_tokens=5000, output_tokens=100)
+    assert obs.estimated_cost_usd > plain
+
+
+def test_emit_llm_call_still_reads_the_single_figure_shape() -> None:
+    # The older shape, still what a response without the breakdown carries.
+    observations: list[LLMCallObservation] = []
+    set_cost_sink(observations.append)
+    emit_llm_call(
+        model="claude-sonnet-4-6",
+        stage="realization",
+        response=_fake_response(5000, 100, cache_creation=4200),
+    )
+    assert observations[0].cache_creation_tokens == 4200
+
+
 def test_emit_llm_call_handles_missing_usage_metadata() -> None:
     observations: list[LLMCallObservation] = []
     set_cost_sink(observations.append)

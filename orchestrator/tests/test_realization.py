@@ -354,6 +354,44 @@ def test_gap_reopens_not_realized_when_newer_8k_arrives(engine: Engine) -> None:
     assert len(reopened) == 1 and reopened[0].accession_number == "tenk"
 
 
+def test_recheck_not_realized_reopens_without_a_newer_filing(engine: Engine) -> None:
+    # The escape hatch for a gate change: the events have not moved, but the code that vets the
+    # judge's answer has, so the stored not-realized verdict has to be re-derived anyway.
+    _seed_risk(engine, acc="tenk", cik="C", filed_at="2026-02-01")
+    _seed_8k(engine, acc="e1", cik="C", filing_date="2026-05-01")
+    insert_risk_realization(
+        engine,
+        risk=RiskToTrack(
+            "tenk", _SEC, _MODEL, 0, "C", "ACME", "2026-02-01", "A specific risk.", "Labor risk."
+        ),
+        judge_version=_JV,
+        realization_version=_RV,
+        is_realized=False,
+        realizing_accession=None,
+        realizing_event_type=None,
+        realizing_item=None,
+        evidence="",
+        quote="",
+        confidence=0.7,
+        checked_through="2026-05-01",
+        judged_at="t",
+    )
+    assert (
+        select_risks_needing_realization(
+            engine, judge_version=_JV, realization_version=_RV, limit=10
+        )
+        == []
+    )
+    reopened = select_risks_needing_realization(
+        engine,
+        judge_version=_JV,
+        realization_version=_RV,
+        limit=10,
+        recheck_not_realized=True,
+    )
+    assert len(reopened) == 1 and reopened[0].accession_number == "tenk"
+
+
 def test_load_subsequent_events_filters(engine: Engine) -> None:
     _seed_8k(engine, acc="after", cik="C", filing_date="2026-05-01", summary="After.")
     _seed_8k(engine, acc="before", cik="C", filing_date="2026-01-01", summary="Before.")
@@ -417,7 +455,14 @@ def test_pass_realizes_a_seeded_risk(engine: Engine) -> None:
     counts = realization_pass(
         engine, model, model_name="m", judge_ver=_JV, realization_ver=_RV, limit=10
     )
-    assert counts == {"realized": 1, "not_realized": 0, "failed": 0, "candidates": 1}
+    assert counts == {
+        "realized": 1,
+        "not_realized": 0,
+        "failed": 0,
+        "candidates": 1,
+        "quote_rejected": 0,
+        "evidence_rejected": 0,
+    }
     with engine.begin() as c:
         row = c.execute(
             text(
@@ -456,7 +501,16 @@ def test_pass_downgrades_ungrounded_realization(engine: Engine) -> None:
     counts = realization_pass(
         engine, model, model_name="m", judge_ver=_JV, realization_ver=_RV, limit=10
     )
-    assert counts == {"realized": 0, "not_realized": 1, "failed": 0, "candidates": 1}
+    # The downgrade is counted, not just folded into not_realized — a gate that starts
+    # rejecting true positives has to be visible in the run summary.
+    assert counts == {
+        "realized": 0,
+        "not_realized": 1,
+        "failed": 0,
+        "candidates": 1,
+        "quote_rejected": 1,
+        "evidence_rejected": 0,
+    }
     with engine.begin() as c:
         row = c.execute(
             text("SELECT is_realized, realizing_accession FROM risk_realizations")
@@ -532,6 +586,41 @@ def test_evidence_accepts_a_faithful_paraphrase() -> None:
         evidence, sources=[_KDP_QUOTE, _KDP_RISK, _KDP_DISCLOSURE]
     )
     assert grounded, unsupported
+
+
+def test_evidence_accepts_a_category_reference_to_the_risks_subject() -> None:
+    # From the gold set (Align). The filing says "key personnel, particularly executive
+    # management"; the sentence says "a key executive". Every word is faithful, but the phrase
+    # is nowhere contiguous, and the gate used to throw the whole materialization away for it.
+    # "a key executive" names the KIND of person the risk is about, not an office, so there is
+    # no title for the filing to corroborate.
+    risk = (
+        "The loss of the services and knowledge of any key personnel, particularly executive "
+        "management, research and development, or sales personnel, could harm our business."
+    )
+    quote = (
+        "Julie Coletti, Executive Vice President and Chief Legal and Regulatory Officer, "
+        "resigned effective August 1, 2026, to join Illumina as Chief Legal Officer."
+    )
+    evidence = (
+        "The risk factor warns that the loss of key executive personnel could harm the "
+        "company's business and prospects; this event discloses that Julie Coletti, Executive "
+        "Vice President and Chief Legal and Regulatory Officer, resigned to join a competitor, "
+        "which is precisely the adverse consequence of losing a key executive that the risk "
+        "factor warns about."
+    )
+    grounded, unsupported = evidence_is_grounded(evidence, sources=[quote, risk, quote])
+    assert grounded, unsupported
+
+
+def test_evidence_still_rejects_an_inflated_title() -> None:
+    # The exemption is only for a significance adjective on a BARE role word. A composite title
+    # is still checked in full, so promoting a Vice President to Senior Vice President fails.
+    quote = "Dana Reed, Vice President of Logistics, resigned effective June 1, 2026."
+    evidence = "Dana Reed, the Senior Vice President of Logistics, departed, realizing the risk."
+    grounded, unsupported = evidence_is_grounded(evidence, sources=[quote, "", quote])
+    assert not grounded
+    assert "senior vice president logistics" in unsupported
 
 
 def test_evidence_rejects_invented_figures_and_quoted_spans() -> None:
@@ -612,7 +701,14 @@ def test_pass_downgrades_ungrounded_evidence(engine: Engine) -> None:
     counts = realization_pass(
         engine, model, model_name="m", judge_ver=_JV, realization_ver=_RV, limit=10
     )
-    assert counts == {"realized": 0, "not_realized": 1, "failed": 0, "candidates": 1}
+    assert counts == {
+        "realized": 0,
+        "not_realized": 1,
+        "failed": 0,
+        "candidates": 1,
+        "quote_rejected": 0,
+        "evidence_rejected": 1,
+    }
     with engine.begin() as c:
         row = c.execute(
             text("SELECT is_realized, realizing_accession, evidence, quote FROM risk_realizations")

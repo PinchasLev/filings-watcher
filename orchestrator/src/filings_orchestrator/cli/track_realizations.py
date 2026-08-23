@@ -78,12 +78,18 @@ def realization_pass(
     judge_ver: str,
     realization_ver: str,
     limit: int,
+    recheck_not_realized: bool = False,
 ) -> dict[str, int]:
     """Judge up to `limit` risks needing a realization (re)check. A risk whose call keeps
     failing is left for the next run (no row stored)."""
     realized = not_realized = failed = 0
+    quote_rejected = evidence_rejected = 0
     risks = select_risks_needing_realization(
-        engine, judge_version=judge_ver, realization_version=realization_ver, limit=limit
+        engine,
+        judge_version=judge_ver,
+        realization_version=realization_ver,
+        limit=limit,
+        recheck_not_realized=recheck_not_realized,
     )
     for risk in risks:
         events = load_subsequent_material_events(
@@ -141,6 +147,7 @@ def realization_pass(
                 change_seq=risk.change_seq,
                 realizing_accession=realizing.accession_number,
             )
+            quote_rejected += 1
             realizing = None
         # Second gate, on the sentence the page actually renders. A verified quote proves the
         # citation is real; it does not stop the surrounding sentence from asserting a title,
@@ -158,6 +165,7 @@ def realization_pass(
                     realizing_accession=realizing.accession_number,
                     unsupported=", ".join(unsupported),
                 )
+                evidence_rejected += 1
                 realizing = None
         is_realized = realizing is not None
         insert_risk_realization(
@@ -184,6 +192,12 @@ def realization_pass(
         "not_realized": not_realized,
         "failed": failed,
         "candidates": len(risks),
+        # Verdicts the model returned as realized and a gate downgraded. Folded into
+        # not_realized they are indistinguishable from a genuine miss, which is how an
+        # over-strict gate stayed hidden; counted here, a gate that starts eating true
+        # positives shows up in the run summary.
+        "quote_rejected": quote_rejected,
+        "evidence_rejected": evidence_rejected,
     }
 
 
@@ -202,6 +216,15 @@ def main() -> None:
     )
     parser.add_argument(
         "--limit", type=int, help=f"Max risks to check (default {_DEFAULT_MAX_PER_RUN})."
+    )
+    parser.add_argument(
+        "--recheck-not-realized",
+        action="store_true",
+        help=(
+            "Re-judge every not-realized verdict against the events it has already seen, "
+            "instead of only those whose company has filed since. Run once by hand after a "
+            "change to the grounding gates; not for the timer."
+        ),
     )
     args = parser.parse_args()
 
@@ -263,6 +286,7 @@ def main() -> None:
             judge_ver=judge_version(judge_model),
             realization_ver=realization_version(model_name),
             limit=limit,
+            recheck_not_realized=args.recheck_not_realized,
         )
 
         duration_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)

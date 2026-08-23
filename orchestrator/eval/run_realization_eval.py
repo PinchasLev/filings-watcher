@@ -11,7 +11,6 @@ Run under the orchestrator venv (so `filings_orchestrator` imports) with ANTHROP
 """
 
 import argparse
-import hashlib
 import json
 import os
 import sys
@@ -24,6 +23,7 @@ from filings_orchestrator.change_detection.realization import (
     RealizationEvent,
     _build_user_prompt,
     evidence_is_grounded,
+    prompt_fingerprint,
     quote_is_grounded,
 )
 
@@ -175,7 +175,7 @@ def main():
         json.dumps(
             {
                 "model": args.model,
-                "prompt_sha": hashlib.sha256(_SYSTEM_PROMPT.encode()).hexdigest()[:8],
+                "prompt_sha": prompt_fingerprint(),
                 "n": len(gold),
                 "TP": tp,
                 "FP": fp,

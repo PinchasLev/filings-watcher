@@ -2410,7 +2410,14 @@ def select_risks_needing_realization(
     verdict whose company has filed a material 8-K since it was last checked. Only risks
     whose company has at least one subsequent material 8-K are returned (others can never
     realize). This makes the tracker continuous — a risk is re-judged as new filings land,
-    not judged once and frozen."""
+    not judged once and frozen.
+
+    Scoped to change_type='added' — risk factors genuinely new this year. This mirrors the
+    service, which surfaces a materialization only for an added factor (a materialization
+    matched to an edited standing factor can realize language that was already on the books,
+    overstating how new it is). Judging the other tiers bought verdicts nothing rendered, at
+    roughly six times the cost. If the service ever surfaces them, widen this in step and
+    re-derive."""
     latest_specificity = """
         cs.classified_at = (SELECT MAX(c2.classified_at) FROM change_specificity c2
               WHERE c2.accession_number=cs.accession_number AND c2.section=cs.section
@@ -2448,6 +2455,7 @@ def select_risks_needing_realization(
            AND pri.block_index=bc.prior_block_index
          WHERE cs.is_specific=1 AND {latest_specificity}
            AND v.is_material=1 AND v.judge_version=:judge_version AND {latest_verdict}
+           AND bc.change_type='added'
            AND {_subsequent_event_after("pf.filed_at")}
            AND (
              NOT EXISTS (SELECT 1 FROM risk_realizations rr WHERE {rr_match})

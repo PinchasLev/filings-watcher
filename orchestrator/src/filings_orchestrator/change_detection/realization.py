@@ -114,9 +114,9 @@ class RealizationVerdict(BaseModel):
 
 
 _SYSTEM_PROMPT = (
-    "You are given ONE company-specific risk from a company's 10-K — the RISK FACTOR text plus a "
-    "one-line note on this year's CHANGE — and the material 8-K/6-K events the same company filed "
-    "AFTER that 10-K. Decide whether any single event shows THIS risk MATERIALIZING.\n\n"
+    "You are given the material 8-K/6-K events a company filed AFTER its 10-K, and then ONE "
+    "company-specific risk from that 10-K — the RISK FACTOR text plus a one-line note on this "
+    "year's CHANGE. Decide whether any single event shows THIS risk MATERIALIZING.\n\n"
     "A risk materializes when the ADVERSE CONSEQUENCE it warns about actually befalls the company "
     "and a subsequent event discloses that consequence: a strike or shutdown for a labor risk; the "
     "key person actually departing for a retention risk; a cyber breach for a security risk; a "
@@ -155,12 +155,20 @@ _SYSTEM_PROMPT = (
 )
 
 
+def prompt_fingerprint() -> str:
+    """Hash of everything that determines what the judge reads: the system prompt and the user
+    turn's layout. Reordering the turn changes the judgment as surely as rewording the prompt,
+    so both feed the version — otherwise a layout change would be silently reinterpreted under
+    the old tag."""
+    material = "\x00".join((_SYSTEM_PROMPT, _EVENTS_HEADER, _RISK_HEADER))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:8]
+
+
 def realization_version(model_name: str = DEFAULT_REALIZATION_MODEL) -> str:
-    """A reproducibility tag = model + a hash of the system prompt (mirrors judge_version).
-    Changing the model or prompt yields a new version, so verdicts re-derive rather than
-    being silently reinterpreted."""
-    prompt_sha = hashlib.sha256(_SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:8]
-    return f"{model_name}+realization-{prompt_sha}"
+    """A reproducibility tag = model + a hash of the prompt and its layout (mirrors
+    judge_version). Changing the model, the prompt, or the turn order yields a new version, so
+    verdicts re-derive rather than being silently reinterpreted."""
+    return f"{model_name}+realization-{prompt_fingerprint()}"
 
 
 def build_realization_judge(model_name: str = DEFAULT_REALIZATION_MODEL) -> Any:
@@ -174,7 +182,19 @@ def build_realization_judge(model_name: str = DEFAULT_REALIZATION_MODEL) -> Any:
     return model.bind_tools([tool_spec], tool_choice={"type": "tool", "name": "submit_realization"})
 
 
-def _build_user_prompt(risk_text: str, risk: str, events: Sequence[RealizationEvent]) -> str:
+# Prompt layout. The events block leads and the risk trails, because caching is a PREFIX match:
+# every risk flagged on one 10-K is judged against the same events (they are loaded by cik +
+# the 10-K's filing date, not per risk), and those risks are processed back-to-back by the
+# selection's ORDER BY. Leading with the shared block lets each subsequent call read it from
+# cache instead of re-sending it. Putting the per-risk text first — the original layout — made
+# the volatile part the prefix, so nothing after it could ever be reused.
+_EVENTS_HEADER = "SUBSEQUENT 8-K EVENTS:\n"
+_RISK_HEADER = "FLAGGED RISK (declared in the 10-K):\n"
+
+
+def _build_events_block(events: Sequence[RealizationEvent]) -> str:
+    """The shared, cacheable half: every candidate event with its disclosure text. Identical
+    for all risks flagged on one 10-K."""
     blocks: list[str] = []
     for i, e in enumerate(events, start=1):
         head = (
@@ -186,13 +206,34 @@ def _build_user_prompt(risk_text: str, risk: str, events: Sequence[RealizationEv
         if e.source_text.strip():
             head += f"\n   DISCLOSURE TEXT (quote only from here):\n   {e.source_text.strip()}"
         blocks.append(head)
+    return _EVENTS_HEADER + "\n".join(blocks)
+
+
+def _build_risk_block(risk_text: str, risk: str) -> str:
+    """The volatile half: the one risk under judgment. Must trail the events block."""
     factor = risk_text.strip() or "(text unavailable)"
-    return (
-        "FLAGGED RISK (declared in the 10-K):\n"
-        + f"Risk factor: {factor}\nWhat changed this year: {risk}"
-        + "\n\nSUBSEQUENT 8-K EVENTS:\n"
-        + "\n".join(blocks)
-    )
+    return _RISK_HEADER + f"Risk factor: {factor}\nWhat changed this year: {risk}"
+
+
+def _build_user_prompt(risk_text: str, risk: str, events: Sequence[RealizationEvent]) -> str:
+    """The user turn as one string — what the model reads, in order. The offline eval uses this
+    so its prompt can never drift from production's."""
+    return _build_events_block(events) + "\n\n" + _build_risk_block(risk_text, risk)
+
+
+def build_user_content(
+    risk_text: str, risk: str, events: Sequence[RealizationEvent]
+) -> list[str | dict[Any, Any]]:
+    """The same turn split into two content blocks with a cache breakpoint after the shared
+    events block. Text is identical to `_build_user_prompt`; only the block boundary differs."""
+    return [
+        {
+            "type": "text",
+            "text": _build_events_block(events),
+            "cache_control": {"type": "ephemeral"},
+        },
+        {"type": "text", "text": _build_risk_block(risk_text, risk)},
+    ]
 
 
 _TOC_NOISE = re.compile(r"\d+\s*table of contents", re.IGNORECASE)
@@ -460,8 +501,12 @@ def judge_realization(
     system_blocks: list[str | dict[Any, Any]] = [
         {"type": "text", "text": _SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
     ]
-    user = _build_user_prompt(risk_text, risk, events)
-    response = model.invoke([SystemMessage(content=system_blocks), HumanMessage(content=user)])
+    # Two breakpoints: the system prompt, then the events block shared by every risk on this
+    # 10-K. The trailing risk block is the only part re-sent at full price per call.
+    user_content = build_user_content(risk_text, risk, events)
+    response = model.invoke(
+        [SystemMessage(content=system_blocks), HumanMessage(content=user_content)]
+    )
     emit_llm_call(
         model=model_name,
         stage="realization",

@@ -35,6 +35,9 @@ type DisclosureChange struct {
 	RealizingDate       string
 	RealizingAccession  string
 	RealizationEvidence string
+	// RealizationQuote is the span copied verbatim from the realizing filing and verified
+	// in code before the materialization was surfaced — the receipt behind the evidence.
+	RealizationQuote string
 }
 
 // excerptFromBlock renders a short, clean quote from a risk-factor block for display
@@ -363,7 +366,7 @@ func (s *store) disclosureChangeEvidence(
 		       v.category, v.explanation, v.confidence, v.needs_review,
 		       cs.is_specific, cs.matched_theme,
 		       rr.is_realized, rr.realizing_accession, rr.realizing_event_type,
-		       rf.filing_date, rr.evidence,
+		       rf.filing_date, rr.evidence, rr.quote,
 		       COALESCE(cur.block_text, pri.block_text)
 		  FROM block_change_verdicts v
 		  JOIN filing_diffs d
@@ -420,6 +423,7 @@ func (s *store) disclosureChangeEvidence(
 			needsReview                                                      int
 			isSpecific, isRealized                                           sql.NullInt64
 			realizingAcc, realizingEvent, realizingDate, realizationEvidence sql.NullString
+			realizationQuote                                                 sql.NullString
 			blockText                                                        sql.NullString
 		)
 		if err := rows.Scan(
@@ -427,6 +431,7 @@ func (s *store) disclosureChangeEvidence(
 			&heading, &category, &explanation, &confidence, &needsReview,
 			&isSpecific, &matchedTheme,
 			&isRealized, &realizingAcc, &realizingEvent, &realizingDate, &realizationEvidence,
+			&realizationQuote,
 			&blockText,
 		); err != nil {
 			return nil, nil, fmt.Errorf("scan disclosure change: %w", err)
@@ -462,6 +467,7 @@ func (s *store) disclosureChangeEvidence(
 			change.RealizingEventType = realizingEvent.String
 			change.RealizingDate = realizingDate.String
 			change.RealizationEvidence = realizationEvidence.String
+			change.RealizationQuote = realizationQuote.String
 		}
 		group, ok := byAccession[acc]
 		if !ok {

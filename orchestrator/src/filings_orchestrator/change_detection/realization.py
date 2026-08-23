@@ -148,7 +148,10 @@ _SYSTEM_PROMPT = (
     "realizes THIS risk — asserting ONLY what the quote and the risk factor already say. Do NOT "
     "add any name, title, role, number, or fact not written verbatim in the quote or the risk "
     "factor; inventing an unstated detail (for example a job title the filing does not give) is a "
-    "serious error even if it seems plausible. Submit your verdict with the tool, exactly once."
+    "serious error even if it seems plausible. This is checked in code: every role or title "
+    "phrase, every figure, and every span you put in quotation marks must appear in the filing "
+    "text, and a verdict whose sentence fails that check is discarded entirely. Describe a "
+    "person only as the filing describes them. Submit your verdict with the tool, exactly once."
 )
 
 
@@ -226,6 +229,220 @@ def realization_is_grounded(
     event = events[idx - 1]
     source = event.source_text.strip() or event.summary
     return quote_is_grounded(verdict.quote, source)
+
+
+# --- Evidence grounding -------------------------------------------------------------------
+#
+# The quote gate above proves the CITATION is real. It says nothing about the sentence the
+# page actually renders: `evidence`. That field is free text, and a model asked to explain a
+# connection will fuse accurate fragments into an attribution the filing never makes — the
+# original bug pinned "designated future CEO of Global Coffee Co." on an executive the 8-K
+# described only as the head of the Coffee Operating Unit. Prompt wording alone did not hold
+# it, so the claim-bearing parts of the sentence are checked here in code, against the filing
+# text the sentence is allowed to draw on.
+
+# Dropped before comparing, so a paraphrase that only swaps articles or possessives still
+# matches its source ("head of THE Coffee Operating Unit" vs "head of ITS Coffee Operating
+# Unit"). Everything else is treated as a content claim.
+_EVIDENCE_FUNCTION_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "s",
+        "this",
+        "that",
+        "these",
+        "those",
+        "its",
+        "it",
+        "his",
+        "her",
+        "their",
+        "our",
+        "your",
+        "of",
+        "for",
+        "to",
+        "in",
+        "on",
+        "at",
+        "by",
+        "with",
+        "as",
+        "from",
+        "into",
+        "and",
+        "or",
+        "but",
+        "which",
+        "who",
+        "whose",
+        "whom",
+        "is",
+        "was",
+        "are",
+        "were",
+        "be",
+        "been",
+        "being",
+        "has",
+        "have",
+        "had",
+        "will",
+        "would",
+        "may",
+        "might",
+        "can",
+        "could",
+        "shall",
+    }
+)
+
+# A role word anchors a person-attribution — precisely the class of claim the judge invented.
+_ROLE_KEYWORDS = frozenset(
+    {
+        "ceo",
+        "cfo",
+        "coo",
+        "cto",
+        "cio",
+        "chair",
+        "chairman",
+        "chairwoman",
+        "president",
+        "officer",
+        "officers",
+        "director",
+        "directors",
+        "head",
+        "chief",
+        "evp",
+        "svp",
+        "vp",
+        "controller",
+        "founder",
+        "treasurer",
+        "secretary",
+        "principal",
+        "executive",
+        "executives",
+    }
+)
+
+_TOKEN_RE = re.compile(r"[A-Za-z]+|\d+(?:[.,]\d+)*")
+_QUOTED_RE = re.compile(r"[\"\u201c]([^\"\u201d]{6,})[\"\u201d]")
+
+
+def _raw_tokens(text: str) -> list[str]:
+    """Word and number tokens with their original case, which `_role_phrases` needs to tell a
+    proper-noun complement ("head of the Coffee Operating Unit") from the verb that follows it."""
+    return [t.replace(",", "") for t in _TOKEN_RE.findall(text)]
+
+
+def _tokens(text: str) -> list[str]:
+    """Lowercased word and number tokens. Possessives split to a bare `s` and hyphenated
+    compounds split to their parts, both of which fold away as function words or match
+    part-wise."""
+    return [t.lower() for t in _raw_tokens(text)]
+
+
+def _content(tokens: Sequence[str]) -> list[str]:
+    return [t for t in tokens if t not in _EVIDENCE_FUNCTION_WORDS]
+
+
+def _contains_run(haystack: Sequence[str], needle: Sequence[str]) -> bool:
+    """True when `needle` appears as a CONTIGUOUS run in `haystack`. Contiguity is the whole
+    point: the invented title reused only words the filing does contain, just never adjacent."""
+    n = len(needle)
+    if n == 0:
+        return True
+    return any(list(haystack[i : i + n]) == list(needle) for i in range(len(haystack) - n + 1))
+
+
+def _role_phrases(evidence: str) -> list[list[str]]:
+    """The role-anchored noun phrases asserted by `evidence`: each role word, the modifiers
+    immediately before it, and any `of ...` complement after it."""
+    raw = _raw_tokens(evidence)
+    toks = [t.lower() for t in raw]
+    phrases: list[list[str]] = []
+    for i, tok in enumerate(toks):
+        if tok not in _ROLE_KEYWORDS:
+            continue
+        # Modifiers immediately before the role word. This is where an invented title lives:
+        # "prospective CEO", "designated future CEO".
+        start = i
+        while start > 0 and toks[start - 1] not in _EVIDENCE_FUNCTION_WORDS:
+            start -= 1
+        end = i + 1
+        # An "of ..." complement extends the phrase, but only over a proper-noun run, so the
+        # phrase ends at the unit named rather than running on into the sentence's verb.
+        if end < len(toks) and toks[end] == "of":
+            cursor = end + 1
+            while cursor < len(toks) and toks[cursor] in _EVIDENCE_FUNCTION_WORDS:
+                cursor += 1
+            complement = cursor
+            while complement < len(raw) and raw[complement][:1].isupper():
+                complement += 1
+            if complement > cursor:
+                end = complement
+        phrase = _content(toks[start:end])
+        if len(phrase) >= 2:
+            phrases.append(phrase)
+    return phrases
+
+
+def evidence_is_grounded(evidence: str, *, sources: Sequence[str]) -> tuple[bool, list[str]]:
+    """Code check on the rendered evidence sentence. Returns (grounded, unsupported claims).
+
+    Three classes of claim must trace to one of the `sources` (the cited quote, the risk-factor
+    text, and the realizing disclosure) — each checked against a single source, so a claim
+    stitched together from two of them does not pass:
+
+      * role-anchored noun phrases (an invented title or attribution),
+      * numbers (an invented figure),
+      * spans the sentence itself puts in quotation marks.
+
+    An empty sentence or an absent source is vacuously grounded; there is nothing to check."""
+    if not evidence.strip():
+        return True, []
+    live = [s for s in sources if s and s.strip()]
+    if not live:
+        return True, []
+
+    src_tokens = [_tokens(s) for s in live]
+    src_content = [_content(t) for t in src_tokens]
+    src_normalized = [_normalize_for_quote(s) for s in live]
+    unsupported: list[str] = []
+
+    for phrase in _role_phrases(evidence):
+        if not any(_contains_run(sc, phrase) for sc in src_content):
+            unsupported.append(" ".join(phrase))
+
+    for token in _tokens(evidence):
+        if any(c.isdigit() for c in token) and not any(token in t for t in src_tokens):
+            unsupported.append(token)
+
+    for span in _QUOTED_RE.findall(evidence):
+        folded = _normalize_for_quote(span)
+        if not any(folded in s for s in src_normalized):
+            unsupported.append(span.strip())
+
+    # Preserve order, drop repeats.
+    return (not unsupported), list(dict.fromkeys(unsupported))
+
+
+def realization_evidence_is_grounded(
+    verdict: RealizationVerdict, events: Sequence[RealizationEvent], *, risk_text: str
+) -> tuple[bool, list[str]]:
+    """Evidence gate for a REALIZED verdict, mirroring `realization_is_grounded`. Not-realized
+    verdicts carry no rendered sentence and pass through."""
+    if not verdict.is_realized:
+        return True, []
+    idx = verdict.event_index
+    event = events[idx - 1] if idx is not None and 1 <= idx <= len(events) else None
+    disclosure = (event.source_text.strip() or event.summary) if event else ""
+    return evidence_is_grounded(verdict.evidence, sources=[verdict.quote, risk_text, disclosure])
 
 
 def judge_realization(

@@ -17,8 +17,10 @@ from sqlalchemy import Engine, text
 from filings_orchestrator.change_detection import (
     RealizationEvent,
     RealizationVerdict,
+    evidence_is_grounded,
     judge_realization,
     quote_is_grounded,
+    realization_evidence_is_grounded,
     realization_is_grounded,
     realization_version,
 )
@@ -318,6 +320,7 @@ def test_gap_reopens_not_realized_when_newer_8k_arrives(engine: Engine) -> None:
         realizing_event_type=None,
         realizing_item=None,
         evidence="",
+        quote="",
         confidence=0.7,
         checked_through="2026-05-01",
         judged_at="t",
@@ -367,6 +370,7 @@ def test_insert_round_trip_and_idempotent(engine: Engine) -> None:
             realizing_event_type="ma_activity" if realized else None,
             realizing_item="1.01" if realized else None,
             evidence="merger" if realized else "",
+            quote="a merger agreement was signed" if realized else "",
             confidence=0.9,
             checked_through="2026-07-01",
             judged_at="t",
@@ -461,3 +465,163 @@ def test_pass_not_realized_stores_no_link(engine: Engine) -> None:
             text("SELECT is_realized, realizing_accession FROM risk_realizations")
         ).one()
     assert row == (0, None)
+
+
+# --- evidence grounding ---
+
+# The 8-K text behind the KDP materialization that exposed this gap. It names the role the
+# executive actually held and, separately, the role the Board was still searching to fill.
+_KDP_DISCLOSURE = (
+    "Also on June 23, 2026, the Company announced that Rafa Oliveira, the head of its Coffee "
+    "Operating Unit, has informed the Company of his intention to depart at the end of July 2026 "
+    "for an external Chief Executive Officer opportunity. Tim Cofer, the Chief Executive Officer "
+    "of KDP, will continue to oversee the coffee business, while the Company's Board of Directors "
+    "conducts a search for the future CEO of Global Coffee Co., the standalone entity expected to "
+    "result from the previously-announced separation of the Company's coffee and beverage "
+    "businesses."
+)
+_KDP_RISK = (
+    "RISKS RELATED TO THE SEPARATION. The Separation may not be completed on the terms or "
+    "timeline currently contemplated, and may cause disruptions with employees."
+)
+_KDP_QUOTE = (
+    "Rafa Oliveira, the head of its Coffee Operating Unit, has informed the Company of his "
+    "intention to depart at the end of July 2026"
+)
+
+
+def test_evidence_rejects_a_title_the_filing_never_gives() -> None:
+    # The regression case. Every word of the invented title appears somewhere in the 8-K —
+    # "future", "standalone", "coffee", "CEO" — but never as this phrase describing this person.
+    # Contiguity is what separates a faithful description from a fabricated composite.
+    evidence = (
+        "The risk factor warns that the Separation may cause disruptions with employees; the "
+        "departure of the head of the Coffee Operating Unit — the future standalone coffee "
+        "company's prospective CEO — directly realizes that risk."
+    )
+    grounded, unsupported = evidence_is_grounded(
+        evidence, sources=[_KDP_QUOTE, _KDP_RISK, _KDP_DISCLOSURE]
+    )
+    assert not grounded
+    assert "prospective ceo" in unsupported
+
+
+def test_evidence_accepts_a_faithful_paraphrase() -> None:
+    # The sentence says "head of THE Coffee Operating Unit"; the filing says "head of ITS Coffee
+    # Operating Unit". Articles and possessives are not claims, so this must not be rejected.
+    evidence = (
+        "The risk factor warns that integration could result in losses of personnel; the "
+        "departure of the head of the Coffee Operating Unit directly realizes the personnel risk."
+    )
+    grounded, unsupported = evidence_is_grounded(
+        evidence, sources=[_KDP_QUOTE, _KDP_RISK, _KDP_DISCLOSURE]
+    )
+    assert grounded, unsupported
+
+
+def test_evidence_rejects_invented_figures_and_quoted_spans() -> None:
+    with_figure = (
+        "The departure of the head of the Coffee Operating Unit, costing $450 million, realizes "
+        "the retention risk."
+    )
+    grounded, unsupported = evidence_is_grounded(
+        with_figure, sources=[_KDP_QUOTE, _KDP_RISK, _KDP_DISCLOSURE]
+    )
+    assert not grounded and "450" in unsupported
+
+    with_quote = (
+        'The filing discloses "the wholesale collapse of the coffee unit", realizing the risk.'
+    )
+    grounded, unsupported = evidence_is_grounded(
+        with_quote, sources=[_KDP_QUOTE, _KDP_RISK, _KDP_DISCLOSURE]
+    )
+    assert not grounded and "the wholesale collapse of the coffee unit" in unsupported
+
+
+def test_evidence_gate_is_vacuous_without_material() -> None:
+    assert evidence_is_grounded("", sources=[_KDP_QUOTE]) == (True, [])
+    assert evidence_is_grounded("Anything at all.", sources=[]) == (True, [])
+    assert evidence_is_grounded("Anything at all.", sources=["", "   "]) == (True, [])
+
+
+def test_realization_evidence_gate_follows_the_cited_event() -> None:
+    events = [
+        RealizationEvent(
+            "2026-06-23", "exec_departure", "8.01", "Oliveira departs.", _KDP_DISCLOSURE
+        )
+    ]
+    faithful = RealizationVerdict(
+        is_realized=True,
+        event_index=1,
+        quote=_KDP_QUOTE,
+        evidence="The departure of the head of the Coffee Operating Unit realizes the risk.",
+        confidence=0.9,
+    )
+    embellished = RealizationVerdict(
+        is_realized=True,
+        event_index=1,
+        quote=_KDP_QUOTE,
+        evidence=(
+            "The departure of the head of the Coffee Operating Unit — the future standalone "
+            "coffee company's prospective CEO — realizes the risk."
+        ),
+        confidence=0.9,
+    )
+    assert realization_evidence_is_grounded(faithful, events, risk_text=_KDP_RISK)[0]
+    assert not realization_evidence_is_grounded(embellished, events, risk_text=_KDP_RISK)[0]
+    # A not-realized verdict renders no sentence, so there is nothing to ground.
+    assert realization_evidence_is_grounded(
+        RealizationVerdict(is_realized=False, event_index=None, confidence=0.1),
+        events,
+        risk_text=_KDP_RISK,
+    )[0]
+
+
+def test_pass_downgrades_ungrounded_evidence(engine: Engine) -> None:
+    # End to end: the quote verifies, so the first gate passes — but the sentence the page would
+    # render invents a title, so no materialization is surfaced and no link is stored.
+    _seed_risk(engine, acc="tenk", cik="C", filed_at="2026-02-01", explanation="Retention risk.")
+    _seed_8k(engine, acc="e1", cik="C", filing_date="2026-05-01", summary=_KDP_DISCLOSURE)
+    model = _FakeRealModel(
+        RealizationVerdict(
+            is_realized=True,
+            event_index=1,
+            quote="has informed the Company of his intention to depart",
+            evidence=(
+                "The departure of the head of the Coffee Operating Unit — the future standalone "
+                "coffee company's prospective CEO — realizes the retention risk."
+            ),
+            confidence=0.9,
+        )
+    )
+    counts = realization_pass(
+        engine, model, model_name="m", judge_ver=_JV, realization_ver=_RV, limit=10
+    )
+    assert counts == {"realized": 0, "not_realized": 1, "failed": 0, "candidates": 1}
+    with engine.begin() as c:
+        row = c.execute(
+            text("SELECT is_realized, realizing_accession, evidence, quote FROM risk_realizations")
+        ).one()
+    assert row == (0, None, "", "")
+
+
+def test_pass_stores_the_verified_quote(engine: Engine) -> None:
+    # The citation the gate checked is kept, so the rendered claim can be audited against it.
+    _seed_risk(engine, acc="tenk", cik="C", filed_at="2026-02-01", explanation="Retention risk.")
+    _seed_8k(engine, acc="e1", cik="C", filing_date="2026-05-01", summary=_KDP_DISCLOSURE)
+    model = _FakeRealModel(
+        RealizationVerdict(
+            is_realized=True,
+            event_index=1,
+            quote="has informed the Company of his intention to depart",
+            evidence="The departure of the head of the Coffee Operating Unit realizes the risk.",
+            confidence=0.9,
+        )
+    )
+    counts = realization_pass(
+        engine, model, model_name="m", judge_ver=_JV, realization_ver=_RV, limit=10
+    )
+    assert counts["realized"] == 1
+    with engine.begin() as c:
+        quote = c.execute(text("SELECT quote FROM risk_realizations")).scalar_one()
+    assert quote == "has informed the Company of his intention to depart"

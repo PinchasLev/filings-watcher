@@ -30,6 +30,7 @@ from filings_orchestrator.change_detection import (
     build_realization_judge,
     judge_realization,
     judge_version,
+    realization_evidence_is_grounded,
     realization_is_grounded,
     realization_version,
 )
@@ -141,6 +142,23 @@ def realization_pass(
                 realizing_accession=realizing.accession_number,
             )
             realizing = None
+        # Second gate, on the sentence the page actually renders. A verified quote proves the
+        # citation is real; it does not stop the surrounding sentence from asserting a title,
+        # figure, or attribution the filing never made. Evidence that cannot be traced back to
+        # the quote, the risk factor, or the disclosure is not shown.
+        if realizing is not None:
+            grounded, unsupported = realization_evidence_is_grounded(
+                verdict, candidates, risk_text=risk.risk_text
+            )
+            if not grounded:
+                emit(
+                    "realization_evidence_ungrounded",
+                    accession_number=risk.accession_number,
+                    change_seq=risk.change_seq,
+                    realizing_accession=realizing.accession_number,
+                    unsupported=", ".join(unsupported),
+                )
+                realizing = None
         is_realized = realizing is not None
         insert_risk_realization(
             engine,
@@ -152,6 +170,7 @@ def realization_pass(
             realizing_event_type=realizing.event_type if realizing else None,
             realizing_item=(realizing.item or None) if realizing else None,
             evidence=verdict.evidence if is_realized else "",
+            quote=verdict.quote if is_realized else "",
             confidence=verdict.confidence,
             checked_through=max(e.filing_date for e in events),
             judged_at=datetime.now(UTC).isoformat(),

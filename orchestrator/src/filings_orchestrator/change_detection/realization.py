@@ -340,6 +340,27 @@ _EVIDENCE_FUNCTION_WORDS = frozenset(
     }
 )
 
+# Words that grade a role's importance rather than name an office. On a bare role word they
+# form a CATEGORY reference ("a key executive", "a senior executive") — the sentence is
+# describing what kind of person this is, not asserting a title, so there is nothing for the
+# filing to corroborate. None of them appears in an SEC officer title on its own.
+_GENERIC_ROLE_MODIFIERS = frozenset(
+    {
+        "key",
+        "senior",
+        "top",
+        "certain",
+        "other",
+        "another",
+        "several",
+        "various",
+        "important",
+        "critical",
+        "significant",
+        "major",
+    }
+)
+
 # A role word anchors a person-attribution — precisely the class of claim the judge invented.
 _ROLE_KEYWORDS = frozenset(
     {
@@ -403,7 +424,8 @@ def _contains_run(haystack: Sequence[str], needle: Sequence[str]) -> bool:
 
 def _role_phrases(evidence: str) -> list[list[str]]:
     """The role-anchored noun phrases asserted by `evidence`: each role word, the modifiers
-    immediately before it, and any `of ...` complement after it."""
+    immediately before it, and any `of ...` complement after it. A bare role word carries no
+    attribution and is skipped, as is one qualified only by a significance adjective."""
     raw = _raw_tokens(evidence)
     toks = [t.lower() for t in raw]
     phrases: list[list[str]] = []
@@ -428,6 +450,13 @@ def _role_phrases(evidence: str) -> list[list[str]]:
             if complement > cursor:
                 end = complement
         phrase = _content(toks[start:end])
+        # A significance adjective on a bare role word names a category of person, not an
+        # office: "a key executive" is how the sentence refers to the risk's subject, and the
+        # filing has no such phrase to match because there is no title being claimed. A longer
+        # phrase is a composite title ("senior vice president") and stays checked in full, so
+        # inflating a real title still fails.
+        if len(phrase) == 2 and phrase[0] in _GENERIC_ROLE_MODIFIERS:
+            continue
         if len(phrase) >= 2:
             phrases.append(phrase)
     return phrases

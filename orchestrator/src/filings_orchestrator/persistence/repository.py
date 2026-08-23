@@ -2404,6 +2404,7 @@ def select_risks_needing_realization(
     judge_version: str,
     realization_version: str,
     limit: int,
+    recheck_not_realized: bool = False,
 ) -> list[RiskToTrack]:
     """Return up to `limit` flagged specific risks that need a realization (re)check for
     (judge_version, realization_version): a risk with no verdict yet, OR a not-realized
@@ -2411,6 +2412,12 @@ def select_risks_needing_realization(
     whose company has at least one subsequent material 8-K are returned (others can never
     realize). This makes the tracker continuous — a risk is re-judged as new filings land,
     not judged once and frozen.
+
+    `recheck_not_realized` drops the "since it was last checked" qualifier, so every
+    not-realized verdict is re-judged against the events it has already seen. The version tag
+    covers what the judge reads, not the code that vets its answer, so a change to the
+    grounding gates leaves stored verdicts stale with nothing to re-derive them — this is the
+    one-off repair for that, run by hand after such a change rather than on a timer.
 
     Scoped to change_type='added' — risk factors genuinely new this year. This mirrors the
     service, which surfaces a materialization only for an added factor (a materialization
@@ -2431,6 +2438,11 @@ def select_risks_needing_realization(
           AND rr.model_id=v.model_id AND rr.change_seq=v.change_seq
           AND rr.judge_version=:judge_version AND rr.realization_version=:realization_version"""
     recheck_after = "COALESCE(rr.checked_through, pf.filed_at)"
+    stale_verdict = (
+        "rr.is_realized=0"
+        if recheck_not_realized
+        else f"rr.is_realized=0 AND {_subsequent_event_after(recheck_after)}"
+    )
     sql = text(
         f"""
         SELECT v.accession_number, v.section, v.model_id, v.change_seq,
@@ -2460,8 +2472,7 @@ def select_risks_needing_realization(
            AND (
              NOT EXISTS (SELECT 1 FROM risk_realizations rr WHERE {rr_match})
              OR EXISTS (SELECT 1 FROM risk_realizations rr
-                         WHERE {rr_match} AND rr.is_realized=0
-                           AND {_subsequent_event_after(recheck_after)})
+                         WHERE {rr_match} AND {stale_verdict})
            )
          ORDER BY v.accession_number, v.change_seq
          LIMIT :limit

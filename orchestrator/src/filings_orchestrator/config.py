@@ -141,7 +141,13 @@ def load_config() -> Config:
         anthropic_api_key=get_secret("ANTHROPIC_API_KEY"),
         langsmith_api_key=get_secret("LANGSMITH_API_KEY"),
         langsmith_project=get_config_str("LANGSMITH_PROJECT", "filings-watcher"),
-        langsmith_tracing=get_config_bool("LANGSMITH_TRACING", default=True),
+        # Off by default. The workspace has been rejecting every trace for at least a month
+        # — 17,057 rate-limit and 14,200 forbidden responses in the retained journal, the
+        # signature of an exhausted trace quota — while OTel carried the tracing that is
+        # actually read. A sink that fails silently is worse than no sink: 31,000 failed
+        # uploads look exactly like a healthy exporter with nothing to send. Set
+        # LANGSMITH_TRACING=true to turn it back on once the quota is sorted.
+        langsmith_tracing=get_config_bool("LANGSMITH_TRACING", default=False),
         edgar_user_agent=require_env("EDGAR_USER_AGENT"),
         filings_db_path=get_config_str("FILINGS_DB_PATH", default_db_path),
         anthropic_daily_cost_cap_usd=get_config_float(

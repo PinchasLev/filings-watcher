@@ -248,11 +248,47 @@ def build_user_content(
 _TOC_NOISE = re.compile(r"\d+\s*table of contents", re.IGNORECASE)
 
 
+# EDGAR sets its prose with typographic punctuation — curly quotes, en and em dashes, soft
+# hyphens — while a model transcribing a span from it emits the ASCII equivalents. None of that
+# carries meaning the citation check is about, and demanding byte-identical typography rejected
+# faithful quotes wholesale: of eight the gate refused in one production run, SEVEN differed from
+# their filing by nothing else, each diverging at a possessive or a defined term in quotes. The
+# eighth invented a dollar figure and still fails after folding, which is the point — this narrows
+# the check to typography and leaves the anti-fabrication guard doing its job.
+_TYPOGRAPHIC_FOLD = str.maketrans(
+    {
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201a": "'",
+        "\u201b": "'",
+        "\u2032": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u201e": '"',
+        "\u201f": '"',
+        "\u2033": '"',
+        "\u2010": "-",
+        "\u2011": "-",
+        "\u2012": "-",
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2015": "-",
+        "\u2212": "-",
+        "\u2026": "...",
+        "\u00ad": "",
+        "\u200b": "",
+        "\ufeff": "",
+    }
+)
+
+
 def _normalize_for_quote(value: str) -> str:
-    """Fold text for verbatim-quote checking: strip interspersed 'N Table of Contents' page-break
-    artifacts (EDGAR injects these mid-sentence), then collapse all whitespace to single spaces and
-    lowercase — so a genuine quote is not rejected over cosmetic source noise."""
-    return " ".join(_TOC_NOISE.sub(" ", value).split()).lower()
+    """Fold text for verbatim-quote checking: map typographic punctuation to its ASCII
+    equivalent, strip interspersed 'N Table of Contents' page-break artifacts (EDGAR injects
+    these mid-sentence), then collapse all whitespace to single spaces and lowercase — so a
+    genuine quote is not rejected over cosmetic source noise. What survives the fold is the
+    wording, which is what the citation check is actually about."""
+    return " ".join(_TOC_NOISE.sub(" ", value.translate(_TYPOGRAPHIC_FOLD)).split()).lower()
 
 
 def quote_is_grounded(quote: str, source_text: str, *, min_chars: int = 12) -> bool:

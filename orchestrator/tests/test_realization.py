@@ -513,11 +513,11 @@ def test_pass_downgrades_ungrounded_realization(engine: Engine) -> None:
         "quote_rejected": 1,
         "evidence_rejected": 0,
     }
+    # The claim itself is retained for diagnosis (see test_pass_keeps_the_claim_a_gate_refused);
+    # what must hold here is that it does not read as realized, so nothing surfaces.
     with engine.begin() as c:
-        row = c.execute(
-            text("SELECT is_realized, realizing_accession FROM risk_realizations")
-        ).one()
-    assert row == (0, None)
+        realized_flag = c.execute(text("SELECT is_realized FROM risk_realizations")).scalar_one()
+    assert realized_flag == 0
 
 
 def test_pass_not_realized_stores_no_link(engine: Engine) -> None:
@@ -711,11 +711,94 @@ def test_pass_downgrades_ungrounded_evidence(engine: Engine) -> None:
         "quote_rejected": 0,
         "evidence_rejected": 1,
     }
+    # Same contract as the quote gate: the sentence is kept for diagnosis, but the verdict does
+    # not read as realized, so the page shows nothing.
+    with engine.begin() as c:
+        realized_flag = c.execute(text("SELECT is_realized FROM risk_realizations")).scalar_one()
+    assert realized_flag == 0
+
+
+def test_pass_keeps_the_claim_a_gate_refused(engine: Engine) -> None:
+    # The refused claim is the only evidence of what the gate turned down. Storing it is what
+    # makes an over-strict gate diagnosable instead of merely countable — is_realized stays 0,
+    # so nothing reaches the page.
+    _seed_risk(engine, acc="tenk", cik="C", filed_at="2026-02-01", explanation="Retention risk.")
+    _seed_8k(engine, acc="e1", cik="C", filing_date="2026-05-01", summary="An executive departed.")
+    model = _FakeRealModel(
+        RealizationVerdict(
+            is_realized=True,
+            event_index=1,
+            quote="a quote that is nowhere in the disclosure",
+            evidence="The departure realizes the retention risk.",
+            confidence=0.9,
+        )
+    )
+    counts = realization_pass(
+        engine, model, model_name="m", judge_ver=_JV, realization_ver=_RV, limit=10
+    )
+    assert counts["quote_rejected"] == 1 and counts["realized"] == 0
     with engine.begin() as c:
         row = c.execute(
-            text("SELECT is_realized, realizing_accession, evidence, quote FROM risk_realizations")
+            text(
+                "SELECT is_realized, rejected_by, rejected_detail, quote, evidence, "
+                "realizing_accession FROM risk_realizations"
+            )
         ).one()
-    assert row == (0, None, "", "")
+    is_realized, rejected_by, detail, quote, evidence, realizing = row
+    assert is_realized == 0, "a refused claim must never read as realized"
+    assert rejected_by == "quote"
+    assert quote == "a quote that is nowhere in the disclosure"
+    assert evidence == "The departure realizes the retention risk."
+    # The filing the quote was checked against, so the check can be reproduced later.
+    assert realizing == "e1"
+    assert detail == ""
+
+
+def test_pass_records_what_the_evidence_gate_objected_to(engine: Engine) -> None:
+    # The evidence gate does have a reportable objection — the phrases it could not trace — and
+    # that is what makes its rejections triageable without re-running the judge.
+    _seed_risk(engine, acc="tenk", cik="C", filed_at="2026-02-01", explanation="Retention risk.")
+    _seed_8k(engine, acc="e1", cik="C", filing_date="2026-05-01", summary=_KDP_DISCLOSURE)
+    model = _FakeRealModel(
+        RealizationVerdict(
+            is_realized=True,
+            event_index=1,
+            quote="has informed the Company of his intention to depart",
+            evidence=(
+                "The departure of the head of the Coffee Operating Unit — the future standalone "
+                "coffee company's prospective CEO — realizes the risk."
+            ),
+            confidence=0.9,
+        )
+    )
+    counts = realization_pass(
+        engine, model, model_name="m", judge_ver=_JV, realization_ver=_RV, limit=10
+    )
+    assert counts["evidence_rejected"] == 1 and counts["realized"] == 0
+    with engine.begin() as c:
+        row = c.execute(
+            text("SELECT is_realized, rejected_by, rejected_detail FROM risk_realizations")
+        ).one()
+    assert row[0] == 0
+    assert row[1] == "evidence"
+    assert "prospective ceo" in row[2]
+
+
+def test_pass_marks_no_rejection_when_the_judge_simply_found_nothing(engine: Engine) -> None:
+    # The distinction the columns exist to draw: a plain not-realized verdict carries no claim,
+    # so there is nothing refused and nothing to store.
+    _seed_risk(engine, acc="tenk", cik="C", filed_at="2026-02-01")
+    _seed_8k(engine, acc="e1", cik="C", filing_date="2026-05-01")
+    model = _FakeRealModel(RealizationVerdict(is_realized=False, event_index=None, confidence=0.1))
+    realization_pass(engine, model, model_name="m", judge_ver=_JV, realization_ver=_RV, limit=10)
+    with engine.begin() as c:
+        row = c.execute(
+            text(
+                "SELECT rejected_by, rejected_detail, quote, evidence, realizing_accession "
+                "FROM risk_realizations"
+            )
+        ).one()
+    assert row == (None, "", "", "", None)
 
 
 def test_pass_stores_the_verified_quote(engine: Engine) -> None:

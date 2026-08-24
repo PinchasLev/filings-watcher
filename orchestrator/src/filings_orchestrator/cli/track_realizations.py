@@ -144,6 +144,13 @@ def realization_pass(
         realizing = (
             events[idx - 1] if (verdict.is_realized and idx and 1 <= idx <= len(events)) else None
         )
+        # The claim exactly as the judge made it, kept whether or not a gate goes on to refuse
+        # it. A refused claim is stored with is_realized=0 and never reaches the page, but it is
+        # the only record of what the gate turned down — without it a rejection is
+        # indistinguishable in the data from the judge simply finding nothing.
+        claimed = realizing
+        rejected_by: str | None = None
+        rejected_detail = ""
         # Bounded-operator gate: a realized verdict must cite a quote that appears verbatim in the
         # realizing 8-K's disclosure. An ungrounded "quote" (fabricated or paraphrased) is
         # downgraded to not-realized, so an unverifiable materialization is never surfaced.
@@ -155,6 +162,9 @@ def realization_pass(
                 realizing_accession=realizing.accession_number,
             )
             quote_rejected += 1
+            # No detail to record: the gate's whole objection is that the stored quote is not a
+            # span of the realizing filing, and the quote and that filing are both kept below.
+            rejected_by = "quote"
             realizing = None
         # Second gate, on the sentence the page actually renders. A verified quote proves the
         # citation is real; it does not stop the surrounding sentence from asserting a title,
@@ -173,6 +183,8 @@ def realization_pass(
                     unsupported=", ".join(unsupported),
                 )
                 evidence_rejected += 1
+                rejected_by = "evidence"
+                rejected_detail = ", ".join(unsupported)
                 realizing = None
         is_realized = realizing is not None
         insert_risk_realization(
@@ -181,14 +193,16 @@ def realization_pass(
             judge_version=judge_ver,
             realization_version=realization_ver,
             is_realized=is_realized,
-            realizing_accession=realizing.accession_number if realizing else None,
-            realizing_event_type=realizing.event_type if realizing else None,
-            realizing_item=(realizing.item or None) if realizing else None,
-            evidence=verdict.evidence if is_realized else "",
-            quote=verdict.quote if is_realized else "",
+            realizing_accession=claimed.accession_number if claimed else None,
+            realizing_event_type=claimed.event_type if claimed else None,
+            realizing_item=(claimed.item or None) if claimed else None,
+            evidence=verdict.evidence if claimed else "",
+            quote=verdict.quote if claimed else "",
             confidence=verdict.confidence,
             checked_through=max(e.filing_date for e in events),
             judged_at=datetime.now(UTC).isoformat(),
+            rejected_by=rejected_by,
+            rejected_detail=rejected_detail,
         )
         if is_realized:
             realized += 1

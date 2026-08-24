@@ -438,6 +438,20 @@ _ROLE_KEYWORDS = frozenset(
 )
 
 _TOKEN_RE = re.compile(r"[A-Za-z]+|\d+(?:[.,]\d+)*")
+# "8-K", "10-Q", "20-F" — the NAME of a document, not a quantity. The tokenizer splits
+# hyphenated compounds, so "The 8-K discloses..." yields a bare "8" that the invented-figure
+# check then hunts for in the sources and cannot find. Two of three evidence rejections in one
+# production run were this, refusing sound verdicts over the phrase every evidence sentence
+# naturally opens with. Stripped before the figure scan only; the letters stay readable to every
+# other check.
+_SEC_FORM_RE = re.compile(r"\b\d{1,2}-[A-Za-z]{1,2}\b")
+
+# Punctuation a quotation carries at its edges belongs to the sentence doing the quoting, not to
+# the source. A filing ending "...or not completed." quoted mid-sentence becomes
+# "...or not completed," — the convention, not a misquote. Compared literally that one character
+# sinks the whole span, so the edges are trimmed before the check. Anything internal still has to
+# match.
+_QUOTE_EDGE_PUNCT = " .,;:!?"
 _QUOTED_RE = re.compile(r"[\"\u201c]([^\"\u201d]{6,})[\"\u201d]")
 
 
@@ -534,14 +548,15 @@ def evidence_is_grounded(evidence: str, *, sources: Sequence[str]) -> tuple[bool
         if not any(_contains_run(sc, phrase) for sc in src_content):
             unsupported.append(" ".join(phrase))
 
-    for token in _tokens(evidence):
+    for token in _tokens(_SEC_FORM_RE.sub(" ", evidence)):
         if any(c.isdigit() for c in token) and not any(token in t for t in src_tokens):
             unsupported.append(token)
 
     for span in _QUOTED_RE.findall(evidence):
-        folded = _normalize_for_quote(span)
-        if not any(folded in s for s in src_normalized):
-            unsupported.append(span.strip())
+        trimmed = span.strip(_QUOTE_EDGE_PUNCT)
+        folded = _normalize_for_quote(trimmed)
+        if folded and not any(folded in s for s in src_normalized):
+            unsupported.append(trimmed)
 
     # Preserve order, drop repeats.
     return (not unsupported), list(dict.fromkeys(unsupported))

@@ -666,6 +666,51 @@ def test_evidence_still_rejects_an_inflated_title() -> None:
     assert "senior vice president logistics" in unsupported
 
 
+def test_evidence_does_not_read_a_form_name_as_a_figure() -> None:
+    # Both refusals of this kind in one production run. Every evidence sentence naturally opens
+    # "The 8-K discloses...", the tokenizer splits the compound, and a bare "8" was hunted for
+    # as an invented figure.
+    source = (
+        "Chegg received a notice from the NYSE for failing to maintain the minimum average "
+        "closing share price of $1.00 over a consecutive 30 trading-day period."
+    )
+    evidence = (
+        "The 8-K discloses that Chegg received a new NYSE non-compliance notice for failing to "
+        "maintain the minimum average closing share price of $1.00, directly realizing the risk."
+    )
+    grounded, unsupported = evidence_is_grounded(evidence, sources=[source, "", source])
+    assert grounded, unsupported
+    # A 10-Q, 6-K or 20-F reference is the same kind of name and equally not a claim.
+    for form in ("10-Q", "6-K", "20-F", "10-K"):
+        ok, un = evidence_is_grounded(f"The {form} discloses the departure.", sources=[source])
+        assert ok, (form, un)
+
+
+def test_evidence_tolerates_the_quoters_own_terminal_punctuation() -> None:
+    # The filing ends the clause with a period; quoted mid-sentence it takes a comma, which is
+    # the convention rather than a misquote. Refused verbatim, this cost a sound verdict.
+    source = (
+        "Such transactions remain subject to closing conditions, and may be delayed, "
+        "restructured or not completed. Even if completed, such transactions could disrupt "
+        "operations."
+    )
+    evidence = (
+        'The risk factor warns that announced transactions may be "delayed, restructured or '
+        'not completed," and the Gateway Amendment explicitly restructures one.'
+    )
+    grounded, unsupported = evidence_is_grounded(evidence, sources=["", source, source])
+    assert grounded, unsupported
+
+
+def test_evidence_still_rejects_a_span_the_source_never_contains() -> None:
+    # Trimming the edges must not rescue a span whose interior is invented.
+    source = "The Company completed the previously announced separation of its coffee business."
+    evidence = 'The filing states the separation was "abandoned after a failed vote," realizing it.'
+    grounded, unsupported = evidence_is_grounded(evidence, sources=["", source, source])
+    assert not grounded
+    assert "abandoned after a failed vote" in unsupported
+
+
 def test_evidence_rejects_invented_figures_and_quoted_spans() -> None:
     with_figure = (
         "The departure of the head of the Coffee Operating Unit, costing $450 million, realizes "

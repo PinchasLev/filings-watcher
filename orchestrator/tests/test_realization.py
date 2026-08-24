@@ -561,6 +561,47 @@ _KDP_QUOTE = (
 )
 
 
+def test_quote_gate_folds_edgar_typography() -> None:
+    # Real refusals from production. EDGAR sets possessives and defined terms with curly
+    # punctuation; the model transcribes them as ASCII. The wording is identical, so the
+    # citation is genuine and must pass.
+    cases = [
+        (
+            "NVIDIA\u2019s aggregate payment obligation is cumulatively capped at $105 billion.",
+            "NVIDIA's aggregate payment obligation is cumulatively capped at $105 billion.",
+        ),
+        (
+            "issued $800,000,000 5.000% Senior Notes due 2028 (the \u201c2028 Notes\u201d)",
+            'issued $800,000,000 5.000% Senior Notes due 2028 (the "2028 Notes")',
+        ),
+        (
+            "the Company\u2019s common stock will be subject to NYSE\u2019s suspension",
+            "the Company's common stock will be subject to NYSE's suspension",
+        ),
+        (
+            "the Separation \u2014 announced in March \u2014 remains on track",
+            "the Separation - announced in March - remains on track",
+        ),
+    ]
+    for source, quoted in cases:
+        assert quote_is_grounded(quoted, source), f"should be grounded: {quoted!r}"
+
+
+def test_quote_gate_still_refuses_an_invented_figure() -> None:
+    # The eighth refusal from that same run, and the reason the gate exists. The filing does
+    # discuss dispositions and liquidity, so this is semantically plausible — the figures are
+    # invented. Folding punctuation must not make it pass.
+    source = (
+        "The Company completed several dispositions during the quarter and continues to "
+        "evaluate its liquidity position in light of upcoming maturities."
+    )
+    fabricated = (
+        "These dispositions are expected to deliver over $80 million in near-term liquidity "
+        "as part of a broader $275 million plan"
+    )
+    assert not quote_is_grounded(fabricated, source)
+
+
 def test_evidence_rejects_a_title_the_filing_never_gives() -> None:
     # The regression case. Every word of the invented title appears somewhere in the 8-K —
     # "future", "standalone", "coffee", "CEO" — but never as this phrase describing this person.

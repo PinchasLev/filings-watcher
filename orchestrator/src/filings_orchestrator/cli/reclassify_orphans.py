@@ -168,9 +168,10 @@ def main() -> None:
 
     # Backlog-depth alarm (ADR 0031): surface a deep, non-draining orphan backlog
     # before attempting this run's heal, so the standing condition pages even
-    # while the reconciler chips away at it. dedup_key per UTC date keeps a
-    # multi-hour backlog to one page per day (the drainer's repeat window
-    # re-pages it through the day while it persists).
+    # while the reconciler chips away at it. One key for the condition, not one
+    # per day: a per-day key started a fresh "new" page every midnight, so a
+    # month-long backlog never read as the one ongoing condition it was. Re-checked
+    # every tick, so it announces its own clearing once the backlog drains.
     backlog_threshold = get_config_float(
         "CLASSIFY_BACKLOG_ALERT_THRESHOLD", _DEFAULT_BACKLOG_ALERT_THRESHOLD
     )
@@ -182,7 +183,8 @@ def main() -> None:
             body=f"{total_orphans} filings are unclassified and not draining "
             f"(threshold {int(backlog_threshold)}). The classify reconciler may be falling "
             f"behind — check for cost-cap throttling or persistent classification failures.",
-            dedup_key=f"classify_backlog:{datetime.now(UTC).date().isoformat()}",
+            dedup_key="classify_backlog",
+            announce_clear=True,
             orphans=total_orphans,
             already_abandoned=already_abandoned,
         )
@@ -251,15 +253,22 @@ def main() -> None:
                     # A dead-lettered filing is the canonical "needs a human"
                     # signal (ADR 0030/0031): it has burned tokens N times on a
                     # deterministic failure and no automatic path will retry it.
-                    # dedup_key on the accession so the drainer pages once, not
-                    # every time a later run re-encounters it.
+                    # Keyed by CAUSE, not by filing: one bad record and a
+                    # systemic failure across thousands both page once, and the
+                    # page's occurrence count is what tells them apart. Keyed
+                    # per filing, one cause paged 15,173 times. The accession
+                    # named is the first of the episode — query the outbox, or
+                    # `reclassify-orphans --dry-run --force`, for the rest.
                     emit_alert(
                         engine,
                         ALERT,
                         "Classification abandoned",
-                        body=f"{accession} failed classification {attempts} times "
-                        f"({type(exc).__name__}) and was dead-lettered; it needs review.",
-                        dedup_key=f"classification_abandoned:{accession}",
+                        body=f"Filings are failing classification with {type(exc).__name__} "
+                        f"and being dead-lettered after {attempts} attempts; no automatic path "
+                        f"retries them. The occurrence count is the number of filings so far. "
+                        f"First in this episode: {accession}.",
+                        dedup_key=f"classification_abandoned:{type(exc).__name__}",
+                        announce_clear=True,
                         accession=accession,
                         attempts=attempts,
                         error_class=type(exc).__name__,

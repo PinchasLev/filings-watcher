@@ -32,9 +32,18 @@ single root cause that keeps tripping (a hot-looping panic, a standing absence
 condition) pages at most once per window instead of on every occurrence. Once
 the window lapses, a still-firing condition re-pages as a "still broken"
 reminder; when the condition clears the producer simply stops emitting and the
-reminders stop (the implicit "resolved" — an explicit resolve is a future
-enhancement). Within a single pass, the first row for a key delivers and later
-ones coalesce. Choose the key at the granularity the operator acts on: per-entity
+reminders stop. Within a single pass, the first row for a key delivers and later
+ones coalesce.
+
+**Episodes, so one message tells a one-off from an ongoing condition.** Every page
+for a keyed alert carries the key's current episode, reconstructed from the outbox
+itself: first seen, occurrences, last seen, and a status — `new` for the first
+trip, `ongoing` for a reminder. A key that opted in (`announce_clear`) also gets a
+`cleared` message once it has been quiet for the repeat window, so a one-off reads
+as a page then an all-clear, and an ongoing condition as reminders whose duration
+and count keep growing. "Cleared" means the producer stopped reporting it — the
+condition stopped tripping, or the producer stopped running; a dead host is the
+heartbeat's job to catch. Choose the key at the granularity the operator acts on: per-entity
 for "this filing needs review", per-cause for "the system is broken".
 
 Needs the DB path always; needs the two webhook URLs only for a real pass
@@ -45,6 +54,7 @@ non-zero if any delivery POST failed (so the timer surfaces a stuck channel).
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from datetime import UTC, datetime, timedelta
 
@@ -52,12 +62,24 @@ import httpx
 from sqlalchemy import Engine
 
 from filings_orchestrator.alerting.emit import ALERT, INFO
-from filings_orchestrator.alerting.notify import DiscordNotifier, Notification, Notifier
+from filings_orchestrator.alerting.notify import (
+    CLEARED,
+    NEW,
+    ONGOING,
+    DiscordNotifier,
+    Notification,
+    Notifier,
+)
 from filings_orchestrator.alerting.outbox import (
+    CLEARED_SUFFIX,
+    Episode,
     PendingAlert,
+    current_episode,
     delivered_dedup_keys,
     fetch_undelivered_alerts,
+    insert_alert,
     mark_alert_delivered,
+    quiet_conditions,
     record_alert_delivery_failure,
 )
 from filings_orchestrator.config import (
@@ -71,6 +93,63 @@ from filings_orchestrator.persistence import open_engine
 
 _DEFAULT_INFO_TTL_MINUTES = 30.0
 _DEFAULT_REPEAT_HOURS = 4.0
+
+# How far back a quiet condition can still be announced as cleared. Bounds the scan, and keeps an
+# old episode from being announced long after anyone cared about it.
+_CLEAR_LOOKBACK = timedelta(days=7)
+
+# A webhook URL is a credential: its token is the whole of the authorization. httpx quotes the URL
+# in its error text, so it is redacted before the error is stored anywhere an operator can read.
+_WEBHOOK_URL = re.compile(r"https://(?:discord|discordapp)\.com/api/webhooks/\S+")
+
+
+def _redact(message: str) -> str:
+    return _WEBHOOK_URL.sub("<discord webhook URL redacted>", message)
+
+
+def _announce_clears(engine: Engine, now: datetime, window: timedelta, *, dry_run: bool) -> int:
+    """Write a cleared notice for every opted-in condition that has gone quiet; return the count.
+
+    Each notice is an ordinary outbox row, so this same pass delivers it, and a failed POST
+    retries like any other.
+    """
+    due = quiet_conditions(
+        engine,
+        quiet_before=(now - window).isoformat(),
+        seen_since=(now - _CLEAR_LOOKBACK).isoformat(),
+    )
+    for condition in due:
+        emit("alert_cleared", dedup_key=condition.dedup_key, last_seen=condition.last_seen)
+        if dry_run:
+            continue
+        with engine.begin() as conn:
+            insert_alert(
+                conn,
+                severity=condition.severity,
+                title=condition.title,
+                body=f"No new occurrences for {_hours(window)}.",
+                dedup_key=condition.dedup_key + CLEARED_SUFFIX,
+                created_at=now.isoformat(),
+            )
+    return len(due)
+
+
+def _hours(window: timedelta) -> str:
+    hours = window.total_seconds() / 3600
+    return f"{hours:g} hour" + ("" if hours == 1 else "s")
+
+
+def _status(engine: Engine, alert: PendingAlert, gap: timedelta) -> tuple[str, Episode] | None:
+    """Where a keyed alert stands: new, ongoing, or the all-clear, with its episode."""
+    if not alert.dedup_key:
+        return None
+    if alert.dedup_key.endswith(CLEARED_SUFFIX):
+        episode = current_episode(engine, alert.dedup_key.removesuffix(CLEARED_SUFFIX), gap=gap)
+        return (CLEARED, episode) if episode else None
+    episode = current_episode(engine, alert.dedup_key, gap=gap)
+    if episode is None:
+        return None
+    return (ONGOING if episode.first_seen < alert.created_at else NEW), episode
 
 
 def _is_stale(alert: PendingAlert, now: datetime, info_ttl_minutes: float) -> bool:
@@ -97,6 +176,8 @@ def _drain(
 ) -> dict[str, int]:
     """Run one delivery pass; return the per-outcome counts."""
     now = datetime.now(UTC)
+    window = timedelta(hours=repeat_hours)
+    cleared = _announce_clears(engine, now, window, dry_run=dry_run)
     pending = fetch_undelivered_alerts(engine, limit=limit)
 
     # One query for the whole batch: which dedup_keys paged within the repeat
@@ -116,8 +197,12 @@ def _drain(
             suppressed_stale += 1
             continue
 
-        if alert.dedup_key and (
-            alert.dedup_key in already_paged or alert.dedup_key in paged_this_pass
+        # A cleared notice is written once per episode by construction, so it is never a
+        # duplicate of anything; coalescing it would swallow the all-clear for a second episode.
+        if (
+            alert.dedup_key
+            and not alert.dedup_key.endswith(CLEARED_SUFFIX)
+            and (alert.dedup_key in already_paged or alert.dedup_key in paged_this_pass)
         ):
             emit("alert_suppressed", id=alert.id, reason="duplicate", dedup_key=alert.dedup_key)
             if not dry_run:
@@ -134,11 +219,14 @@ def _drain(
             unroutable += 1
             continue
 
+        standing = _status(engine, alert, window)
         notification = Notification(
             severity=alert.severity,
             title=alert.title,
             body=alert.body,
             fields=alert.fields,
+            status=standing[0] if standing else None,
+            episode=standing[1] if standing else None,
         )
         if dry_run:
             emit("alert_would_deliver", id=alert.id, severity=alert.severity, title=alert.title)
@@ -150,13 +238,14 @@ def _drain(
         try:
             notifier.send(url, notification)
         except Exception as exc:  # keep draining; this row retries next pass
-            record_alert_delivery_failure(engine, alert.id, f"{type(exc).__name__}: {exc}")
+            message = _redact(str(exc))
+            record_alert_delivery_failure(engine, alert.id, f"{type(exc).__name__}: {message}")
             emit(
                 "alert_delivery_failed",
                 id=alert.id,
                 severity=alert.severity,
                 error_class=type(exc).__name__,
-                message=str(exc),
+                message=message,
             )
             failed += 1
             continue
@@ -174,6 +263,7 @@ def _drain(
         "suppressed_dup": suppressed_dup,
         "failed": failed,
         "unroutable": unroutable,
+        "cleared": cleared,
     }
 
 

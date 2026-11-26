@@ -7,6 +7,7 @@ Discord) is exercised in test_alarm_drain.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -107,3 +108,33 @@ def test_insert_alert_enlists_in_caller_transaction() -> None:
             insert_alert(conn, severity=ALERT, title="should roll back")
             raise RuntimeError("boom")
     assert fetch_undelivered_alerts(engine) == []
+
+
+def test_migration_redacts_webhook_urls_already_stored(tmp_path: Path) -> None:
+    """Rows written before the drainer redacted its errors still hold the full webhook URL, token
+    included, and the ops console shows last_error. Migration 028 scrubs them."""
+    before = tmp_path / "before"
+    before.mkdir()
+    for sql in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        if sql.name < "028":
+            shutil.copy(sql, before / sql.name)
+    engine = open_engine(":memory:")
+    apply_migrations(engine, migrations_dir=before)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO alerts_outbox (created_at, severity, title, last_error) "
+                "VALUES ('2026-11-01T00:00:00+00:00', 'alert', 't', :err)"
+            ),
+            {
+                "err": "HTTPStatusError: Client error '429 Too Many Requests' for url "
+                "'https://discord.com/api/webhooks/123/SECRET-TOKEN'\nFor more information..."
+            },
+        )
+
+    apply_migrations(engine, migrations_dir=MIGRATIONS_DIR)
+
+    with engine.begin() as conn:
+        last_error = conn.execute(text("SELECT last_error FROM alerts_outbox")).scalar_one()
+    assert "SECRET-TOKEN" not in last_error
+    assert last_error.startswith("HTTPStatusError: Client error '429 Too Many Requests'")

@@ -18,6 +18,7 @@ from filings_orchestrator.alerting.notify import (
     Notification,
     _render_discord,
 )
+from filings_orchestrator.alerting.outbox import Episode
 
 
 def test_render_includes_title_body_and_fields() -> None:
@@ -71,3 +72,71 @@ def test_discord_notifier_raises_on_non_2xx() -> None:
     )
     with pytest.raises(httpx.HTTPStatusError):
         notifier.send("https://discord.test/webhook/abc", Notification(INFO, "t", None, {}))
+
+
+# --- Status and episode: the message says whether it is new, ongoing, or cleared ---
+
+_EPISODE = Episode(
+    first_seen="2026-10-26T11:15:00+00:00",
+    last_seen="2026-11-25T11:01:00+00:00",
+    occurrences=37464,
+)
+
+
+def _note(status: str | None, episode: Episode | None = _EPISODE) -> dict[str, object]:
+    payload = _render_discord(
+        Notification(
+            severity=ALERT,
+            title="Anthropic credit exhausted",
+            body=None,
+            fields={"error_class": "BadRequestError"},
+            status=status,
+            episode=episode,
+        )
+    )
+    embeds = payload["embeds"]
+    assert isinstance(embeds, list)
+    embed = embeds[0]
+    assert isinstance(embed, dict)
+    return embed
+
+
+def _fields(embed: dict[str, object]) -> dict[str, str]:
+    grid = embed["fields"]
+    assert isinstance(grid, list)
+    return {f["name"]: f["value"] for f in grid}
+
+
+def test_ongoing_reminder_says_so_and_carries_its_history() -> None:
+    embed = _note("ongoing")
+    assert embed["title"] == "Still failing: Anthropic credit exhausted"
+    fields = _fields(embed)
+    assert fields["Status"] == "ongoing"
+    assert fields["Occurrences"] == "37464"
+    assert fields["First seen"] == "2026-10-26 11:15 UTC"
+    assert fields["Lasted"] == "29d 23h"
+    assert fields["error_class"] == "BadRequestError"  # the producer's own fields still follow
+
+
+def test_cleared_reads_green_with_its_span() -> None:
+    embed = _note("cleared")
+    assert embed["title"] == "Cleared: Anthropic credit exhausted"
+    assert embed["color"] == 0x22C55E
+    assert _fields(embed)["Status"] == "cleared"
+
+
+def test_new_alert_keeps_its_plain_title_and_alert_color() -> None:
+    one = Episode(
+        first_seen="2026-11-26T10:00:00+00:00", last_seen="2026-11-26T10:00:00+00:00", occurrences=1
+    )
+    embed = _note("new", one)
+    assert embed["title"] == "Anthropic credit exhausted"
+    assert embed["color"] == 0xE01E2B
+    fields = _fields(embed)
+    assert fields["Occurrences"] == "1"
+    assert "Lasted" not in fields  # a single occurrence has no span
+
+
+def test_statuses_are_distinguishable_by_color() -> None:
+    colors = {_note(s)["color"] for s in ("new", "ongoing", "cleared")}
+    assert len(colors) == 3

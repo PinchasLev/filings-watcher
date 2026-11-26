@@ -15,7 +15,7 @@ transaction wrapper over it. The read/update half is the drainer's work set.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import NamedTuple
 
 from sqlalchemy import Connection, Engine, bindparam, text
@@ -31,6 +31,25 @@ class PendingAlert(NamedTuple):
     body: str | None
     fields: dict[str, object]
     dedup_key: str | None
+    announce_clear: bool = False
+
+
+class Episode(NamedTuple):
+    """One unbroken run of a key's occurrences: the condition from first trip to latest.
+
+    Rows closer together than the gap that ends an episode belong to the same one; a longer
+    silence starts a new one. `first_seen` and `last_seen` are ISO-8601 UTC strings.
+    """
+
+    first_seen: str
+    last_seen: str
+    occurrences: int
+
+
+# A cleared notice is itself an outbox row, so it is delivered, retried and audited like any
+# other. It carries the key with this suffix, which keeps it out of the key's own occurrence
+# count (an exact match) while staying findable from the key.
+CLEARED_SUFFIX = "#cleared"
 
 
 def insert_alert(
@@ -42,6 +61,7 @@ def insert_alert(
     fields: dict[str, object] | None = None,
     dedup_key: str | None = None,
     created_at: str | None = None,
+    announce_clear: bool = False,
 ) -> None:
     """Append one row to `alerts_outbox` using the caller's connection.
 
@@ -53,14 +73,18 @@ def insert_alert(
     `fields` is serialized to the `fields_json` column; `created_at` defaults
     to now (UTC, ISO 8601). Delivery columns (`delivered_at`, `attempts`,
     `last_error`) take their schema defaults — this is the producer half only.
+    `announce_clear` opts the key into a "cleared" message once it goes quiet
+    (see migration 028).
     """
     conn.execute(
         text(
             """
             INSERT INTO alerts_outbox (
-                created_at, severity, title, body, fields_json, dedup_key
+                created_at, severity, title, body, fields_json, dedup_key, announce_clear
             )
-            VALUES (:created_at, :severity, :title, :body, :fields_json, :dedup_key)
+            VALUES (
+                :created_at, :severity, :title, :body, :fields_json, :dedup_key, :announce_clear
+            )
             """
         ),
         {
@@ -70,6 +94,7 @@ def insert_alert(
             "body": body,
             "fields_json": json.dumps(fields or {}),
             "dedup_key": dedup_key,
+            "announce_clear": 1 if announce_clear else 0,
         },
     )
 
@@ -81,7 +106,7 @@ def fetch_undelivered_alerts(engine: Engine, *, limit: int | None = None) -> lis
     from migration 008). `limit` bounds a single drain pass; None returns all.
     """
     sql = """
-        SELECT id, created_at, severity, title, body, fields_json, dedup_key
+        SELECT id, created_at, severity, title, body, fields_json, dedup_key, announce_clear
           FROM alerts_outbox
          WHERE delivered_at IS NULL
          ORDER BY created_at, id
@@ -99,6 +124,7 @@ def fetch_undelivered_alerts(engine: Engine, *, limit: int | None = None) -> lis
             body=r[4],
             fields=json.loads(r[5]) if r[5] else {},
             dedup_key=r[6],
+            announce_clear=bool(r[7]),
         )
         for r in rows
     ]
@@ -149,13 +175,19 @@ def record_alert_delivery_failure(engine: Engine, alert_id: int, error: str) -> 
 
 
 def delivered_dedup_keys(engine: Engine, keys: list[str], *, delivered_since: str) -> set[str]:
-    """Return which of `keys` were delivered at or after `delivered_since`.
+    """Return which of `keys` were actually POSTED at or after `delivered_since`.
 
     This is the drainer's renotification window: a key delivered *recently*
     (within the repeat interval) suppresses a fresh pending alert, but a key
     last delivered *before* `delivered_since` is eligible to page again — so a
     standing, still-firing condition re-pages once per window as a "still
     broken" reminder, rather than alerting once and going silent forever.
+
+    Only a real post opens the window. A row coalesced by dedup is also stamped
+    `delivered_at` (it leaves the work set) but with no POST counted, and letting
+    it count meant every suppression restarted the window: a condition emitted
+    more often than the window paged once and then never again. That is how a
+    daily-index stall emitted hourly for 26 days and reached Discord once.
 
     `delivered_since` is an ISO-8601 UTC cutoff; our timestamps share the
     `+00:00` offset, so the lexicographic `>=` is a correct time comparison.
@@ -170,6 +202,7 @@ def delivered_dedup_keys(engine: Engine, keys: list[str], *, delivered_since: st
                 SELECT DISTINCT dedup_key
                   FROM alerts_outbox
                  WHERE delivered_at IS NOT NULL
+                   AND attempts > 0
                    AND delivered_at >= :delivered_since
                    AND dedup_key IN :keys
                 """
@@ -177,3 +210,97 @@ def delivered_dedup_keys(engine: Engine, keys: list[str], *, delivered_since: st
             {"delivered_since": delivered_since, "keys": keys},
         ).fetchall()
     return {r[0] for r in rows}
+
+
+def current_episode(engine: Engine, key: str, *, gap: timedelta) -> Episode | None:
+    """Reconstruct the episode `key` is in now, from its rows already in the outbox.
+
+    Walks the key's rows newest first and stops at the first silence longer than `gap`: that is
+    where the condition last cleared. None if the key has no rows.
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT created_at FROM alerts_outbox WHERE dedup_key = :key "
+                "ORDER BY created_at DESC"
+            ),
+            {"key": key},
+        ).fetchall()
+    if not rows:
+        return None
+    last_seen = rows[0][0]
+    first_seen = last_seen
+    count = 0
+    later = datetime.fromisoformat(last_seen)
+    for (created_at,) in rows:
+        at = datetime.fromisoformat(created_at)
+        if later - at > gap:
+            break
+        first_seen, later, count = created_at, at, count + 1
+    return Episode(first_seen=first_seen, last_seen=last_seen, occurrences=count)
+
+
+class QuietCondition(NamedTuple):
+    """An opted-in key that paged, then went quiet without its clearing being announced."""
+
+    dedup_key: str
+    severity: str
+    title: str
+    last_seen: str
+
+
+def quiet_conditions(engine: Engine, *, quiet_before: str, seen_since: str) -> list[QuietCondition]:
+    """Return the opted-in keys that are due a "cleared" message.
+
+    A key is due when all of these hold: it opted in (`announce_clear`), its latest row is older
+    than `quiet_before` (quiet for a full window), that latest row is no older than `seen_since`
+    (so history is never re-announced), at least one row since the key last cleared was actually
+    POSTED (a condition the operator never heard about needs no all-clear), and no cleared notice
+    has been written since its latest row.
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT dedup_key, MAX(created_at) AS last_seen
+                  FROM alerts_outbox
+                 WHERE announce_clear = 1
+                   AND dedup_key IS NOT NULL
+                   AND created_at >= :seen_since
+                 GROUP BY dedup_key
+                HAVING MAX(created_at) < :quiet_before
+                """
+            ),
+            {"seen_since": seen_since, "quiet_before": quiet_before},
+        ).fetchall()
+        due: list[QuietCondition] = []
+        for key, last_seen in rows:
+            cleared_after = conn.execute(
+                text(
+                    "SELECT 1 FROM alerts_outbox WHERE dedup_key = :cleared "
+                    "AND created_at >= :last_seen LIMIT 1"
+                ),
+                {"cleared": key + CLEARED_SUFFIX, "last_seen": last_seen},
+            ).first()
+            if cleared_after is not None:
+                continue
+            last_cleared = conn.execute(
+                text("SELECT MAX(created_at) FROM alerts_outbox WHERE dedup_key = :cleared"),
+                {"cleared": key + CLEARED_SUFFIX},
+            ).scalar()
+            posted = conn.execute(
+                text(
+                    "SELECT severity, title FROM alerts_outbox WHERE dedup_key = :key "
+                    "AND attempts > 0 AND delivered_at IS NOT NULL "
+                    "AND created_at > :since ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"key": key, "since": last_cleared or ""},
+            ).first()
+            if posted is None:
+                continue
+            due.append(
+                QuietCondition(
+                    dedup_key=key, severity=posted[0], title=posted[1], last_seen=last_seen
+                )
+            )
+    return due

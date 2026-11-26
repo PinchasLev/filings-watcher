@@ -172,6 +172,7 @@ def test_apply_migrations_creates_tables_and_records_version() -> None:
         "025_risk_realizations",
         "026_risk_realization_quote",
         "027_risk_realization_rejection",
+        "028_alert_episodes",
     ]
 
     with engine.begin() as conn:

@@ -101,6 +101,7 @@ def run_check(engine: Engine, today_et: date, threshold: int) -> None:
                 f"cost-cap wedge, and confirm the timer is armed."
             ),
             dedup_key="ingest_cursor_stale",
+            announce_clear=True,
             cursor_filed_at=cursor_filed_at,
             lag_business_days=lag,
             threshold_business_days=threshold,

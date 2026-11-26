@@ -311,6 +311,7 @@ def _alert_on_classify_failure(
         title,
         body=body,
         dedup_key=f"classify_failure:{cause}",
+        announce_clear=True,
         accession_number=accession_number,
         error_class=type(exc).__name__,
     )

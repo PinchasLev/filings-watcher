@@ -213,3 +213,198 @@ def test_dry_run_writes_nothing() -> None:
     assert counts["suppressed_stale"] == 1
     assert notifier.sent == []
     assert _undelivered_titles(engine) == ["panic", "stale"]
+
+
+# --- Episodes: one message tells a one-off from an ongoing condition ---
+
+
+def _row(
+    engine: Engine,
+    *,
+    key: str,
+    hours_ago: float,
+    posted: bool = False,
+    suppressed: bool = False,
+    announce_clear: bool = False,
+    title: str = "Daily-index reconciler is stalled",
+) -> None:
+    """Seed one outbox row at a chosen age and delivery state: pending, posted, or coalesced."""
+    at = (datetime.now(UTC) - timedelta(hours=hours_ago)).isoformat()
+    with engine.begin() as conn:
+        insert_alert(
+            conn,
+            severity=ALERT,
+            title=title,
+            dedup_key=key,
+            created_at=at,
+            announce_clear=announce_clear,
+        )
+        if posted or suppressed:
+            conn.execute(
+                text(
+                    "UPDATE alerts_outbox SET delivered_at = :at, attempts = :n "
+                    "WHERE id = (SELECT MAX(id) FROM alerts_outbox)"
+                ),
+                {"at": at, "n": 1 if posted else 0},
+            )
+
+
+def test_a_condition_firing_more_often_than_the_window_still_repages() -> None:
+    """The bug that kept a 26-day stall to a single page: each coalesced row was stamped
+    delivered and restarted the window, so an hourly condition never re-paged. Only a real post
+    may open the window."""
+    engine = _fresh_db()
+    _row(engine, key="ingest_cursor_stale", hours_ago=5, posted=True)
+    for h in (4, 3, 2, 1):
+        _row(engine, key="ingest_cursor_stale", hours_ago=h, suppressed=True)
+    _row(engine, key="ingest_cursor_stale", hours_ago=0)
+    notifier = FakeNotifier()
+
+    counts = _drain_once(engine, notifier, repeat_hours=4.0)
+
+    assert counts["delivered"] == 1
+    note = notifier.sent[0][1]
+    assert note.status == "ongoing"
+    assert note.episode is not None
+    assert note.episode.occurrences == 6
+    first_row_at = (datetime.now(UTC) - timedelta(hours=5)).isoformat()
+    assert note.episode.first_seen[:13] == first_row_at[:13]  # the episode began 5 hours ago
+
+
+def test_first_trip_is_new_with_one_occurrence() -> None:
+    engine = _fresh_db()
+    _row(engine, key="classify_failure:anthropic_credit_exhausted", hours_ago=0)
+    notifier = FakeNotifier()
+
+    _drain_once(engine, notifier)
+
+    note = notifier.sent[0][1]
+    assert note.status == "new"
+    assert note.episode is not None and note.episode.occurrences == 1
+
+
+def test_a_silence_longer_than_the_window_starts_a_new_episode() -> None:
+    engine = _fresh_db()
+    _row(engine, key="k", hours_ago=10, posted=True)  # an earlier, finished episode
+    _row(engine, key="k", hours_ago=0)
+    notifier = FakeNotifier()
+
+    _drain_once(engine, notifier, repeat_hours=4.0)
+
+    note = notifier.sent[0][1]
+    assert note.status == "new"
+    assert note.episode is not None and note.episode.occurrences == 1
+
+
+def test_keyless_alert_carries_no_episode() -> None:
+    engine = _fresh_db()
+    _seed(engine, severity=ALERT, title="panic")
+    notifier = FakeNotifier()
+
+    _drain_once(engine, notifier)
+
+    note = notifier.sent[0][1]
+    assert note.status is None and note.episode is None
+
+
+def test_opted_in_condition_announces_its_clearing_once() -> None:
+    engine = _fresh_db()
+    _row(engine, key="classify_backlog", hours_ago=6, posted=True, announce_clear=True)
+    _row(engine, key="classify_backlog", hours_ago=5, suppressed=True, announce_clear=True)
+    notifier = FakeNotifier()
+
+    counts = _drain_once(engine, notifier, repeat_hours=4.0)
+
+    assert counts["cleared"] == 1
+    note = notifier.sent[0][1]
+    assert note.status == "cleared"
+    assert note.title == "Daily-index reconciler is stalled"  # the condition's own headline
+    assert note.episode is not None and note.episode.occurrences == 2
+
+    # The next pass must not announce the same clearing again.
+    notifier2 = FakeNotifier()
+    assert _drain_once(engine, notifier2, repeat_hours=4.0)["cleared"] == 0
+    assert notifier2.sent == []
+
+
+def test_condition_still_firing_is_not_cleared() -> None:
+    engine = _fresh_db()
+    _row(engine, key="classify_backlog", hours_ago=6, posted=True, announce_clear=True)
+    _row(engine, key="classify_backlog", hours_ago=1, suppressed=True, announce_clear=True)
+
+    assert _drain_once(engine, FakeNotifier(), repeat_hours=4.0)["cleared"] == 0
+
+
+def test_key_not_opted_in_is_never_announced_cleared() -> None:
+    """Per-entity keys from before this change are all quiet; announcing each would be a storm."""
+    engine = _fresh_db()
+    _row(engine, key="classification_abandoned:0001-26-000001", hours_ago=6, posted=True)
+
+    assert _drain_once(engine, FakeNotifier(), repeat_hours=4.0)["cleared"] == 0
+
+
+def test_condition_quiet_beyond_the_lookback_is_not_announced() -> None:
+    engine = _fresh_db()
+    _row(engine, key="classify_backlog", hours_ago=24 * 10, posted=True, announce_clear=True)
+
+    assert _drain_once(engine, FakeNotifier(), repeat_hours=4.0)["cleared"] == 0
+
+
+def test_a_recurrence_after_clearing_is_new_and_clears_again() -> None:
+    engine = _fresh_db()
+    _row(engine, key="k", hours_ago=12, posted=True, announce_clear=True)
+    _drain_once(engine, FakeNotifier(), repeat_hours=4.0)  # announces the first clearing
+    with engine.begin() as conn:  # age that notice to match the episode it closed
+        old = (datetime.now(UTC) - timedelta(hours=7)).isoformat()
+        conn.execute(
+            text("UPDATE alerts_outbox SET created_at = :old WHERE dedup_key = 'k#cleared'"),
+            {"old": old},
+        )
+    _row(engine, key="k", hours_ago=0, announce_clear=True)
+    notifier = FakeNotifier()
+
+    _drain_once(engine, notifier, repeat_hours=4.0)
+
+    assert [n.status for _, n in notifier.sent] == ["new"]
+
+    with engine.begin() as conn:  # let the recurrence go quiet too
+        old = (datetime.now(UTC) - timedelta(hours=5)).isoformat()
+        conn.execute(
+            text(
+                "UPDATE alerts_outbox SET created_at = :old, delivered_at = :old "
+                "WHERE dedup_key = 'k'"
+            ),
+            {"old": old},
+        )
+    notifier2 = FakeNotifier()
+    assert _drain_once(engine, notifier2, repeat_hours=4.0)["cleared"] == 1
+    assert [n.status for _, n in notifier2.sent] == ["cleared"]
+
+
+class _LeakyNotifier:
+    def send(self, webhook_url: str, notification: Notification) -> None:
+        raise RuntimeError(
+            "Client error '429 Too Many Requests' for url "
+            "'https://discord.com/api/webhooks/1516106895679684780/SECRET-TOKEN-abc'"
+        )
+
+
+def test_webhook_url_is_redacted_from_the_stored_error() -> None:
+    engine = _fresh_db()
+    _seed(engine, severity=ALERT, title="will fail")
+
+    _drain(
+        engine,
+        _LeakyNotifier(),
+        CHANNELS,
+        limit=None,
+        info_ttl_minutes=30.0,
+        repeat_hours=4.0,
+        dry_run=False,
+    )
+
+    with engine.begin() as conn:
+        last_error = conn.execute(text("SELECT last_error FROM alerts_outbox")).scalar_one()
+    assert "SECRET-TOKEN" not in last_error
+    assert "429 Too Many Requests" in last_error  # the useful part survives
+    assert "redacted" in last_error

@@ -253,8 +253,9 @@ def test_backlog_alert_fires_when_orphans_exceed_threshold(
     ]
     assert len(backlog) == 1
     assert backlog[0].severity == "alert"
-    assert backlog[0].dedup_key is not None
-    assert backlog[0].dedup_key.startswith("classify_backlog:")
+    # One key for the condition (not one per day), opted into an all-clear.
+    assert backlog[0].dedup_key == "classify_backlog"
+    assert backlog[0].announce_clear
     assert backlog[0].fields["orphans"] == 1
 
 

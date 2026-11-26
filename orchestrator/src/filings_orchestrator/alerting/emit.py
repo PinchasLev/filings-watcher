@@ -40,6 +40,7 @@ def emit_alert(
     *,
     body: str | None = None,
     dedup_key: str | None = None,
+    announce_clear: bool = False,
     **fields: Any,
 ) -> None:
     """Append one alert to the outbox in its own transaction.
@@ -55,7 +56,14 @@ def emit_alert(
     collapses one root cause that trips across many entities into a single page
     instead of a storm. Within the drainer's repeat window (ALERT_REPEAT_HOURS)
     a key pages at most once; a still-firing condition re-pages once per window
-    until the producer stops emitting it.
+    until the producer stops emitting it, and every page carries the key's
+    episode (first seen, occurrences, last seen).
+
+    `announce_clear=True` asks for a "cleared" message once the key has gone a
+    full repeat window without firing. Use it for a CONDITION the producer
+    re-checks more often than that window — an outage, a stalled cursor, a deep
+    backlog — so a one-off reads as a page then an all-clear. Leave it off for a
+    producer that checks rarely, which would read as cleared between checks.
     """
     if severity not in _VALID_SEVERITIES:
         raise ValueError(
@@ -69,4 +77,5 @@ def emit_alert(
             body=body,
             fields=dict(fields),
             dedup_key=dedup_key,
+            announce_clear=announce_clear,
         )

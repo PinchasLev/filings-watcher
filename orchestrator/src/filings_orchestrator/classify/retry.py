@@ -25,7 +25,10 @@ from collections.abc import Callable
 from anthropic import (
     APIConnectionError,
     APITimeoutError,
+    AuthenticationError,
+    BadRequestError,
     InternalServerError,
+    PermissionDeniedError,
     RateLimitError,
 )
 
@@ -54,6 +57,27 @@ def is_retryable_error(exc: BaseException) -> bool:
     abandonment, so a transient outage does not park otherwise-healthy filings.
     """
     return isinstance(exc, _RETRYABLE_EXC)
+
+
+def is_credit_exhausted(exc: BaseException) -> bool:
+    """True if Anthropic rejected the call because the account's credit balance ran out.
+
+    The API reports this as a 400, the status it also uses for a malformed request, so the
+    class alone cannot tell them apart; the message is what does.
+    """
+    return isinstance(exc, BadRequestError) and "credit balance" in str(exc).lower()
+
+
+def is_account_halt(exc: BaseException) -> bool:
+    """True if `exc` says the ACCOUNT cannot make calls — credit exhausted, or the key rejected.
+
+    These are not a property of the filing being classified. Every call fails identically until
+    a human tops up the balance or fixes the key, and then every call succeeds again. A caller
+    that bounds re-attempts per filing must not charge one of these against the filing: doing so
+    turned a single lapse in the account's credit into a dead letter for every filing that
+    happened to be tried during it.
+    """
+    return is_credit_exhausted(exc) or isinstance(exc, AuthenticationError | PermissionDeniedError)
 
 
 def with_retries[T](

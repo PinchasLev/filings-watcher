@@ -16,13 +16,18 @@ skips it forever. This reconciler is the classify-layer counterpart to
 **Dead-letter (ADR 0030).** Most orphans come from transient or credit failures
 and heal on the next attempt. A few may fail deterministically — the model
 completes but its output fails our schema, re-burning tokens on every retry.
-Each such *non-transient* failure bumps the filing's `classify_attempts`; once it
-reaches `_MAX_CLASSIFY_ATTEMPTS` the filing is **abandoned** (surfaced via a
+Each such failure bumps the filing's `classify_attempts`; once it reaches
+`_MAX_CLASSIFY_ATTEMPTS` the filing is **abandoned** (surfaced via a
 `classification_abandoned` event) and dropped from the normal work set, so
 repeated runs do not re-charge poison records. `--force` re-includes the
-abandoned set — e.g. after a model/prompt change, or an auth/credit fix that was
-mis-counted as a content failure. Transient failures (`is_retryable_error`)
-never touch the counter.
+abandoned set — e.g. after a model/prompt change.
+
+Only a failure that belongs to the FILING counts. Transient failures
+(`is_retryable_error`) never touch the counter, and neither does an account halt
+(`is_account_halt` — credit exhausted, key rejected): every call fails the same way
+until a human acts, so the run stops at the first one rather than walking the rest
+of the backlog into the same error. Before that distinction, a month-long credit
+lapse dead-lettered all 15,173 filings tried during it.
 
 Cost-cap gated: before each filing it checks today's spend against
 `ANTHROPIC_DAILY_COST_CAP_USD` and stops cleanly once reached, so a large
@@ -42,7 +47,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 
 from filings_orchestrator.alerting import ALERT, INFO, emit_alert
-from filings_orchestrator.classify.retry import is_retryable_error
+from filings_orchestrator.classify.retry import is_account_halt, is_retryable_error
 from filings_orchestrator.cli._pipeline import classify_and_reduce, verify_taxonomy
 from filings_orchestrator.config import (
     MissingConfigError,
@@ -216,6 +221,19 @@ def main() -> None:
             reduce_failed = classify_and_reduce(engine, document)
         except Exception as exc:  # heal the rest of the backlog; surface this one
             failed += 1
+            if is_account_halt(exc):
+                # The account cannot make calls, so nothing about this filing is in
+                # question and every remaining one would fail identically. Stop, and
+                # leave the backlog exactly as it was for the run after the top-up.
+                emit(
+                    "reclassify_stopped",
+                    reason="account_halt",
+                    accession=accession,
+                    error_class=type(exc).__name__,
+                    message=str(exc),
+                    reclassified=reclassified,
+                )
+                break
             retryable = is_retryable_error(exc)
             # Only deterministic (non-transient) failures count toward abandonment:
             # a transient outage must not park otherwise-healthy filings.

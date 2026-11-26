@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sys
 
-from anthropic import AuthenticationError, BadRequestError, PermissionDeniedError
+from anthropic import AuthenticationError, PermissionDeniedError
 from sqlalchemy import Engine
 
 from filings_orchestrator.alerting import ALERT, emit_alert
@@ -28,7 +28,11 @@ from filings_orchestrator.classify.classifier import (
     _MIN_EXHIBIT_TEXT_CHARS,
 )
 from filings_orchestrator.classify.exhibits import render_exhibits, scan_red_flags
-from filings_orchestrator.classify.retry import is_retryable_error, with_retries
+from filings_orchestrator.classify.retry import (
+    is_credit_exhausted,
+    is_retryable_error,
+    with_retries,
+)
 from filings_orchestrator.edgar import EdgarClient, FilingDocument, fetch_filing_document
 from filings_orchestrator.edgar.filing_resolver import resolve_filing
 from filings_orchestrator.log_events import emit
@@ -265,8 +269,7 @@ def _classify_failure_alert_params(exc: BaseException) -> tuple[str, str, str]:
     that still propagated after in-call retries — resolves on its own. Anything
     else is an unexpected failure worth eyes on the logs.
     """
-    message = str(exc).lower()
-    if isinstance(exc, BadRequestError) and "credit balance" in message:
+    if is_credit_exhausted(exc):
         return (
             "anthropic_credit_exhausted",
             "Anthropic credit exhausted — classification halted",

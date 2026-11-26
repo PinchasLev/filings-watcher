@@ -7,11 +7,18 @@ import pytest
 from anthropic import (
     APIConnectionError,
     AuthenticationError,
+    BadRequestError,
     InternalServerError,
+    PermissionDeniedError,
     RateLimitError,
 )
 
-from filings_orchestrator.classify.retry import with_retries
+from filings_orchestrator.classify.retry import (
+    is_account_halt,
+    is_credit_exhausted,
+    is_retryable_error,
+    with_retries,
+)
 
 
 def _make_rate_limit_error(message: str = "rate limited") -> RateLimitError:
@@ -150,3 +157,40 @@ def test_backoff_respects_max_delay() -> None:
         )
     # initial=10 already exceeds max=5: every wait clamps to 5.
     assert sleeps == [5.0, 5.0, 5.0]
+
+
+def _make_bad_request(message: str) -> BadRequestError:
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx.Response(400, request=request)
+    return BadRequestError(message=message, response=response, body=None)
+
+
+def _make_permission_error() -> PermissionDeniedError:
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx.Response(403, request=request)
+    return PermissionDeniedError(message="not allowed", response=response, body=None)
+
+
+@pytest.mark.parametrize(
+    ("exc", "credit", "halt"),
+    [
+        (_make_bad_request("Your credit balance is too low to access the API."), True, True),
+        (_make_auth_error(), False, True),
+        (_make_permission_error(), False, True),
+        # A 400 that is NOT about credit is a malformed request — the filing's problem.
+        (_make_bad_request("messages.0: invalid role"), False, False),
+        (_make_rate_limit_error(), False, False),
+        (RuntimeError("schema rejected the model output"), False, False),
+    ],
+    ids=["credit", "auth", "permission", "malformed", "rate_limit", "content"],
+)
+def test_account_halt_classification(exc: BaseException, credit: bool, halt: bool) -> None:
+    assert is_credit_exhausted(exc) is credit
+    assert is_account_halt(exc) is halt
+
+
+def test_account_halt_and_transient_are_disjoint() -> None:
+    """A halt is not an outage: one waits on a human, the other resolves on its own, and the
+    alert text and the dead-letter logic each depend on telling them apart."""
+    for exc in (_make_bad_request("credit balance is too low"), _make_auth_error()):
+        assert not is_retryable_error(exc)

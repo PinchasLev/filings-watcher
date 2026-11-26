@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import httpx
 import pytest
-from anthropic import APITimeoutError
+from anthropic import APITimeoutError, AuthenticationError, BadRequestError
 from sqlalchemy import Engine, text
 
 from filings_orchestrator.alerting.outbox import fetch_undelivered_alerts
@@ -411,3 +411,66 @@ def test_force_retries_the_abandoned_set(
         main()
     mock_cr.assert_called_once()
     assert list_orphaned_accessions(open_engine(str(configured_db))) == []
+
+
+def _api_response(status: int) -> httpx.Response:
+    return httpx.Response(
+        status, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    )
+
+
+def _attempts(engine: Engine, accession: str) -> int:
+    with engine.begin() as conn:
+        return int(
+            conn.execute(
+                text("SELECT classify_attempts FROM filings WHERE accession_number = :a"),
+                {"a": accession},
+            ).scalar_one()
+        )
+
+
+@pytest.mark.parametrize(
+    "halt",
+    [
+        BadRequestError(
+            "Your credit balance is too low to access the Anthropic API.",
+            response=_api_response(400),
+            body=None,
+        ),
+        AuthenticationError("invalid x-api-key", response=_api_response(401), body=None),
+    ],
+    ids=["credit_exhausted", "auth_rejected"],
+)
+def test_account_halt_stops_the_run_without_charging_the_filing(
+    configured_db: Path, monkeypatch: pytest.MonkeyPatch, halt: Exception
+) -> None:
+    """A lapsed balance or rejected key is the account's failure, not the filing's. It must not
+    count toward the dead letter, and the run must stop rather than walk the rest of the backlog
+    into the same error — the path that once dead-lettered 15,173 filings in one outage."""
+    engine = open_engine(str(configured_db))
+    upsert_filing_document(engine, _document(ORPHAN))
+    upsert_filing_document(engine, _document(CLASSIFIED))  # a second orphan, never reached
+    for _ in range(_MAX_CLASSIFY_ATTEMPTS - 1):  # one more charged attempt would abandon it
+        increment_classify_attempt(engine, ORPHAN)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr("sys.argv", ["reclassify-orphans"])
+
+    events: list[str] = []
+    with (
+        patch(_CLASSIFY_PATCH, side_effect=halt) as mock_cr,
+        patch(_EMIT_PATCH, side_effect=lambda name, **_: events.append(name)),
+        pytest.raises(SystemExit) as exc,
+    ):
+        main()
+
+    assert exc.value.code == 1  # still a failed run, so the operator sees it
+    assert mock_cr.call_count == 1  # stopped at the first halt
+    assert "reclassify_stopped" in events
+    assert "classification_abandoned" not in events
+    fresh = open_engine(str(configured_db))
+    assert _attempts(fresh, ORPHAN) == _MAX_CLASSIFY_ATTEMPTS - 1  # not charged
+    assert _attempts(fresh, CLASSIFIED) == 0
+    # Both are still in the normal work set, ready for the run after the top-up.
+    assert sorted(list_orphaned_accessions(fresh, max_attempts=_MAX_CLASSIFY_ATTEMPTS)) == sorted(
+        [ORPHAN, CLASSIFIED]
+    )
